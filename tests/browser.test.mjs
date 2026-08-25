@@ -69,20 +69,42 @@ async function logout() {
 
 log('\n== 1. 로그인 전 ==');
 await page.goto(BASE, { waitUntil: 'networkidle' });
-await step('비회원에게는 로그인 안내가 보임', async () => {
-  await page.waitForSelector('.empty h3', { timeout: 6000 });
-  const t = await page.locator('.empty h3').innerText();
+await step('비회원도 홈 화면 자체는 보임 (목록만 가려짐)', async () => {
+  await page.waitForSelector('.hero__title', { timeout: 6000 });
+  await page.waitForSelector('#projects', { timeout: 6000 });
+  if (await page.locator('.tile').count()) throw new Error('과제 목록이 노출됨');
+  const t = await page.locator('#projectGrid .empty h3').innerText();
   if (!t.includes('로그인이 필요합니다')) throw new Error(t);
+});
+await step('히어로와 목록 자리에 로그인 버튼', async () => {
+  const hero = page.locator('.hero a[href="#/login"]');
+  if (!(await hero.count())) throw new Error('히어로에 로그인 버튼 없음');
+  if ((await hero.first().innerText()).trim() !== '로그인 하기') {
+    throw new Error(await hero.first().innerText());
+  }
+  if (!(await page.locator('#projectGrid a[href="#/login"]').count())) {
+    throw new Error('목록 자리에 로그인 버튼 없음');
+  }
+});
+await step('히어로 문구가 로그인 안내로 바뀜', async () => {
+  const lead = await page.locator('.hero__lead').innerText();
+  if (!lead.includes('과제 제출과 강의자료는 로그인이 필요합니다')) throw new Error(lead);
+  if (lead.includes('마감 전까지는')) throw new Error('예전 문구가 남아 있음');
 });
 await step('헤더에 로그인 · 회원가입 버튼', async () => {
   if (!(await page.locator('#gnavActions a[href="#/login"]').count())) throw new Error('로그인 버튼 없음');
   if (!(await page.locator('#gnavActions a[href="#/signup"]').count())) throw new Error('회원가입 버튼 없음');
 });
-await step('회원 전용 메뉴는 감춰짐', async () => {
+await step('회원 전용 메뉴는 감춰지고 홈·이용안내는 남음', async () => {
   const materials = page.locator('.gnav__links a[data-nav="materials"]');
   if (!(await materials.isHidden())) throw new Error('강의자료 메뉴가 보임');
-  if (!(await page.locator('.gnav__links a[data-nav="guide"]').isVisible())) {
-    throw new Error('이용안내는 보여야 함');
+  if (!(await page.locator('.gnav__links a[data-nav="my"]').isHidden())) {
+    throw new Error('내 제출물 메뉴가 보임');
+  }
+  for (const nav of ['home', 'guide']) {
+    if (!(await page.locator(`.gnav__links a[data-nav="${nav}"]`).isVisible())) {
+      throw new Error(`${nav} 메뉴는 보여야 함`);
+    }
   }
 });
 await step('주소로 직접 들어가도 강의자료가 막힘', async () => {
@@ -216,7 +238,7 @@ await step('안내 제목이 "과제 제출 방법"', async () => {
   const h = await page.locator('.band h2').first().innerText();
   if (h.trim() !== '과제 제출 방법') throw new Error(h);
   const steps = await page.locator('.step h3').allInnerTexts();
-  const want = ['참석자 정보', '제출할 과제 목록 선택', '과제 내용'];
+  const want = ['회원가입', '제출할 과제 목록 선택', '과제 내용'];
   if (JSON.stringify(steps) !== JSON.stringify(want)) throw new Error(steps.join(' / '));
 });
 await step('프로젝트 그리드가 한 행에 2개', async () => {
@@ -595,6 +617,17 @@ await step('로그아웃 뒤 새로고침해도 로그인 상태가 안 살아�
   const t = await page.locator('.empty h3').innerText();
   if (!t.includes('로그인이 필요합니다')) throw new Error(t);
 });
+await step('로그인하면 홈에 목록이 나오고, 로그아웃하면 다시 가려짐', async () => {
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: USER.email, password: 'new-pass-2026' });
+  await page.waitForSelector('.tile', { timeout: 8000 });
+
+  await logout();                                   // 로그아웃하면 로그인 화면으로 갑니다
+  await page.goto(`${BASE}#/`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#projectGrid .empty h3', { timeout: 6000 });
+  if (await page.locator('.tile').count()) throw new Error('목록이 그대로 남아 있음');
+});
 
 /* =================================================== 11. 라우팅/반응형 == */
 
@@ -629,11 +662,18 @@ await step('모바일 뷰포트 — 가로 스크롤 없음', async () => {
     document.documentElement.scrollWidth - document.documentElement.clientWidth);
   if (overflow > 1) throw new Error(`가로 오버플로 ${overflow}px`);
 });
-await step('모바일 드로어에도 계정 버튼', async () => {
+await step('모바일 드로어는 처음에 닫혀 있음', async () => {
+  if (!(await page.locator('#gnavDrawer').isHidden())) throw new Error('서랍이 열린 채로 뜸');
+});
+await step('모바일 드로어 열고 닫기', async () => {
   await page.locator('#gnavBurger').click();
   await page.waitForSelector('#gnavDrawer:not([hidden])', { timeout: 3000 });
+  if (!(await page.locator('#gnavDrawer').isVisible())) throw new Error('서랍이 안 보임');
   const t = await page.locator('#gnavDrawerActions').innerText();
-  if (!t.includes('로그아웃')) throw new Error(t);
+  if (!/로그아웃|로그인/.test(t)) throw new Error(t);
+
+  await page.locator('#gnavBurger').click();
+  await page.waitForSelector('#gnavDrawer', { state: 'hidden', timeout: 3000 });
 });
 
 await browser.close();

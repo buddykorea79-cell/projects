@@ -178,6 +178,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   padding: var(--space-3) var(--gutter) var(--space-4);
   display: flex; flex-direction: column; gap: var(--space-1);
 }
+/* display:flex 가 hidden 속성의 기본 display:none 을 덮어써서 서랍이 늘 열려 보였습니다. */
+.gnav__drawer[hidden] { display: none; }
 .gnav__drawer a { color: var(--text-black); font-weight: 600; padding: 12px 0; text-decoration: none; }
 .gnav__drawer-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
 @media (min-width: 1024px) { .gnav__drawer { display: none !important; } }

@@ -3,7 +3,7 @@ import { store, submissionOpen } from '../store/index.js';
 import { CONFIG } from '../config.js';
 import { esc, attr, fmtDate, isPastDue } from '../utils.js';
 import { spinner, emptyState } from '../ui.js';
-import { isAdmin, currentUser } from '../auth.js';
+import { isAdmin, isSignedIn, currentUser } from '../auth.js';
 
 export function projectCard(p) {
   const open = submissionOpen(p);
@@ -32,6 +32,8 @@ export function projectCard(p) {
 }
 
 export async function homeView(mount) {
+  const signed = isSignedIn();
+
   mount.innerHTML = `
     <section class="hero">
       <div class="wrap hero__inner">
@@ -41,13 +43,17 @@ export async function homeView(mount) {
           <h1 class="hero__title">여기에서 과제를 제출하고,<br>강의자료를 받을 수 있습니다.</h1>
           <p class="hero__lead">
             로그인하면 제출자 정보가 자동으로 채워집니다.
-            마감 전까지는 언제든 내용을 고치거나 삭제할 수 있어요.
+            과제 제출과 강의자료는 로그인이 필요합니다.
           </p>
           <div class="row">
-            <button class="btn btn--primary btn--lg" type="button" data-scroll-projects>
-              진행중 프로젝트 보기
-            </button>
-            <a class="btn btn--outline btn--lg" href="#/materials">강의자료 받기</a>
+            ${signed ? `
+              <button class="btn btn--primary btn--lg" type="button" data-scroll-projects>
+                진행중 프로젝트 보기
+              </button>
+              <a class="btn btn--outline btn--lg" href="#/materials">강의자료 받기</a>`
+    : `
+              <a class="btn btn--primary btn--lg" href="#/login">로그인 하기</a>
+              <a class="btn btn--outline btn--lg" href="#/signup">회원가입</a>`}
           </div>
         </div>
         <div class="hero__art" aria-hidden="true">
@@ -78,7 +84,7 @@ export async function homeView(mount) {
           <div class="steps">
             <div class="step">
               <div class="step__n">1</div>
-              <h3>참석자 정보</h3>
+              <h3>회원가입</h3>
               <p>기관명·성명·이메일로 한 번 가입하면 다음부터는 로그인만 하면 됩니다.</p>
             </div>
             <div class="step">
@@ -102,7 +108,7 @@ export async function homeView(mount) {
         <div class="page-head">
           <div>
             <h2 class="page-title">프로젝트</h2>
-            <p class="page-sub">참여할 과제를 선택하세요.</p>
+            <p class="page-sub">${signed ? '참여할 과제를 선택하세요.' : '로그인하면 과제 목록이 보입니다.'}</p>
           </div>
           ${isAdmin() ? '<a class="btn btn--outline" href="#/admin/project/new">＋ 프로젝트 개설</a>' : ''}
         </div>
@@ -116,6 +122,20 @@ export async function homeView(mount) {
   });
 
   const grid = mount.querySelector('#projectGrid');
+
+  // 로그인 전에는 목록을 부르지 않습니다 — 화면 구성은 그대로 두고 안내만 보여줍니다.
+  if (!signed) {
+    grid.innerHTML = emptyState({
+      title: '로그인이 필요합니다',
+      body: '과제 제출과 강의자료는 회원만 이용할 수 있습니다. 가입은 승인 절차 없이 바로 됩니다.',
+      action: `<div class="row" style="justify-content:center">
+          <a class="btn btn--primary" href="#/login">로그인 하기</a>
+          <a class="btn btn--outline" href="#/signup">회원가입</a>
+        </div>`,
+    });
+    return;
+  }
+
   try {
     const projects = await store.listProjects();
     if (!projects.length) {
@@ -124,7 +144,7 @@ export async function homeView(mount) {
         body: '관리자가 프로젝트를 개설하면 이곳에 표시됩니다.',
         action: isAdmin()
           ? '<a class="btn btn--primary" href="#/admin/project/new">첫 프로젝트 개설하기</a>'
-          : '<a class="btn btn--outline" href="#/admin">관리자 로그인</a>',
+          : '',
       });
       return;
     }

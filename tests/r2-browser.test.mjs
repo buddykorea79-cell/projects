@@ -68,11 +68,16 @@ const bob = await person('밥');
 
 log('\n== 1. 로그인 벽 ==');
 
-await step('비회원은 홈에서 로그인 안내를 봄', async () => {
+await step('비회원도 홈은 보이되 과제 목록만 가려짐', async () => {
   await admin.goto(origin, { waitUntil: 'networkidle' });
-  await admin.waitForSelector('.empty h3', { timeout: 10000 });
-  const title = await admin.locator('.empty h3').innerText();
+  await admin.waitForSelector('.hero__title', { timeout: 10000 });
+  await admin.waitForSelector('#projectGrid .empty h3', { timeout: 10000 });
+  const title = await admin.locator('#projectGrid .empty h3').innerText();
   if (!title.includes('로그인')) throw new Error(title);
+  if (await admin.locator('.tile').count()) throw new Error('과제 목록이 노출됨');
+  if (!(await admin.locator('#projectGrid a[href="#/login"]').count())) {
+    throw new Error('로그인 버튼이 없음');
+  }
 });
 
 await step('비회원은 강의자료·내 제출물도 막힘', async () => {

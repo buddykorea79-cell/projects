@@ -18,8 +18,11 @@ import {
 
 const main = $('#main');
 
-/** 로그인 없이 볼 수 있는 화면. 나머지는 전부 회원 전용입니다. */
-const PUBLIC_PATHS = new Set(['/login', '/signup', '/guide']);
+/**
+ * 로그인 없이 볼 수 있는 화면. 나머지는 전부 회원 전용입니다.
+ * 홈은 소개용이라 열어 두되, 프로젝트 목록은 homeView 가 로그인 안내로 대체합니다.
+ */
+const PUBLIC_PATHS = new Set(['/', '/login', '/signup', '/guide']);
 
 /* ------------------------------------------------------------- 크롬 -- */
 
@@ -51,7 +54,7 @@ function renderNavLinks() {
   const signed = isSignedIn();
   document.querySelectorAll('.gnav__links a, .gnav__drawer a').forEach((a) => {
     const href = a.getAttribute('href') || '';
-    const memberOnly = ['#/', '#/materials', '#/my'].includes(href);
+    const memberOnly = ['#/materials', '#/my'].includes(href);
     a.hidden = memberOnly && !signed;
   });
 }
@@ -226,9 +229,11 @@ async function boot() {
   window.addEventListener('ah:auth', () => {
     renderAuthButtons();
     renderNavLinks();
-    // 보는 도중 세션이 끊겼다면(만료·정지) 오류 대신 로그인 안내를 보여줍니다.
     const path = R.currentPath();
-    if (!isSignedIn() && !PUBLIC_PATHS.has(path)) signInWall(path);
+    // 보는 도중 세션이 끊겼다면(만료·정지) 오류 대신 로그인 안내를 보여줍니다.
+    if (!isSignedIn() && !PUBLIC_PATHS.has(path)) { signInWall(path); return; }
+    // 홈은 로그인 여부에 따라 내용이 달라지므로 다시 그립니다.
+    if (path === '/') R.resolve();
   });
   R.start();
 }
