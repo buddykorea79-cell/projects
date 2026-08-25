@@ -1,0 +1,15 @@
+{
+  "name": "assignment-hub-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:parse": "node parse.test.mjs",
+    "test:github": "node github.test.mjs",
+    "test:browser": "node browser.test.mjs",
+    "test": "npm run test:parse && npm run test:github"
+  },
+  "devDependencies": {
+    "acorn": "^8.14.0",
+    "playwright": "^1.49.1"
+  }
+}

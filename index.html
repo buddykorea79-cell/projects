@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>과제 제출 · Assignment Hub</title>
+<meta name="description" content="교육생 과제 제출 플랫폼 — 프로젝트를 개설하고 과제를 제출·수정·관리합니다." />
+<meta name="theme-color" content="#1E3932" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%23006241'/%3E%3Cpath d='M9 16.6l4.6 4.6L23 11.8' stroke='%23fff' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="./assets/css/styles.css" />
+</head>
+<body>
+
+<a class="skip-link" href="#main">본문으로 건너뛰기</a>
+
+<header class="gnav" id="gnav">
+  <div class="gnav__inner">
+    <a class="gnav__brand" href="#/" aria-label="홈으로">
+      <span class="gnav__mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="32" height="32"><circle cx="16" cy="16" r="16" fill="#006241"/><path d="M9 16.6l4.6 4.6L23 11.8" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+      <span class="gnav__word">Assignment&nbsp;Hub</span>
+    </a>
+
+    <nav class="gnav__links" aria-label="주 메뉴">
+      <a href="#/" data-nav="home">프로젝트</a>
+      <a href="#/my" data-nav="my">내 제출물</a>
+      <a href="#/guide" data-nav="guide">이용안내</a>
+    </nav>
+
+    <div class="gnav__actions" id="gnavActions"><!-- rendered by app --></div>
+
+    <button class="gnav__burger" id="gnavBurger" aria-label="메뉴 열기" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+  <div class="gnav__drawer" id="gnavDrawer" hidden>
+    <a href="#/">프로젝트</a>
+    <a href="#/my">내 제출물</a>
+    <a href="#/guide">이용안내</a>
+    <div class="gnav__drawer-actions" id="gnavDrawerActions"></div>
+  </div>
+</header>
+
+<main id="main" class="main" tabindex="-1"><!-- views render here --></main>
+
+<footer class="foot">
+  <div class="foot__inner">
+    <div class="foot__col">
+      <h3>Assignment Hub</h3>
+      <p>교육생 과제 제출·관리 플랫폼</p>
+    </div>
+    <div class="foot__col">
+      <h4>바로가기</h4>
+      <a href="#/">프로젝트 목록</a>
+      <a href="#/my">내 제출물 조회</a>
+      <a href="#/guide">이용안내</a>
+    </div>
+    <div class="foot__col">
+      <h4>관리</h4>
+      <a href="#/admin">관리자 로그인</a>
+      <a href="#/guide#storage">저장소 설정</a>
+    </div>
+    <div class="foot__col foot__col--meta">
+      <p class="foot__meta" id="footMeta"></p>
+    </div>
+  </div>
+  <div class="foot__bar"><p>© <span id="footYear"></span> Assignment Hub. Built for training programs.</p></div>
+</footer>
+
+<button class="frap" id="frap" type="button" aria-label="과제 제출하기" hidden>
+  <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+    <path d="M12 5v14M5 12h14" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+  </svg>
+</button>
+
+<div class="toaster" id="toaster" aria-live="polite" aria-atomic="false"></div>
+<div class="modal-root" id="modalRoot"></div>
+
+<script type="module" src="./assets/js/app.js"></script>
+</body>
+</html>

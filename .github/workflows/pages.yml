@@ -1,0 +1,45 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    # 제출이 들어올 때마다 data/·uploads/ 가 커밋됩니다.
+    # 그때는 사이트 코드가 그대로이므로 재배포할 필요가 없습니다.
+    paths-ignore:
+      - 'data/**'
+      - 'uploads/**'
+      - 'docs/**'
+      - '**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 배포는 한 번에 하나씩. 진행 중인 배포는 취소하지 않습니다.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      # 빌드 단계가 없는 순수 정적 사이트입니다. 레포 루트를 그대로 올립니다.
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
