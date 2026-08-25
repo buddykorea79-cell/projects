@@ -1,7 +1,7 @@
 /** 강의자료 다운로드 — 공용 비밀번호로 잠금을 풀고 파일을 내려받습니다. */
 import { store } from '../store/index.js';
 import { CONFIG } from '../config.js';
-import { esc, attr, fmtDate, fmtBytes, extOf, downloadLink } from '../utils.js';
+import { esc, attr, fmtDate, fmtBytes, extOf, downloadLink, linkify, firstUrl } from '../utils.js';
 import {
   spinner, emptyState, toastOk, toastErr, fieldError, clearErrors, focusFirstError, busy,
 } from '../ui.js';
@@ -39,7 +39,7 @@ export async function materialsView(mount) {
     </section>
 
     <section class="section">
-      <div class="wrap wrap--mid">
+      <div class="wrap">
         <div id="materialList">${spinner()}</div>
       </div>
     </section>`;
@@ -133,8 +133,11 @@ async function renderList(mount) {
       return;
     }
 
-    mount.innerHTML = `<div class="stack-4">${items.map((m) => `
-      <article class="card">
+    // 한 행에 2칸. 카드 높이가 달라도 그리드가 알아서 맞춰 줍니다.
+    mount.innerHTML = `<div class="grid">${items.map((m) => {
+      const link = firstUrl(m.description);
+      return `
+      <article class="card material">
         <div class="page-head" style="margin-bottom:var(--space-2)">
           <div>
             <h2 style="font-size:1.9rem;color:var(--sb-green);font-weight:600">${esc(m.title)}</h2>
@@ -144,16 +147,31 @@ async function renderList(mount) {
           </div>
           ${isAdmin() ? `<a class="btn btn--outline btn--sm" href="#/admin/material/${attr(m.id)}">편집</a>` : ''}
         </div>
-        ${m.description ? `<div class="prose" style="font-size:1.5rem;color:var(--text-black-soft);margin-bottom:var(--space-3)">${esc(m.description)}</div>` : ''}
+        ${m.description ? `<div class="prose material__desc">${linkify(m.description)}</div>` : ''}
+        ${link ? `
+          <div class="row" style="margin-bottom:var(--space-3)">
+            <a class="btn btn--outline btn--sm" href="${attr(link)}" target="_blank" rel="noopener noreferrer">
+              바로가기
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M14 4h6v6M20 4l-8.5 8.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+                <path d="M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+              </svg>
+              <span class="sr-only">(새 창)</span>
+            </a>
+          </div>` : ''}
         <div class="filelist" data-files="${attr(m.id)}"></div>
-      </article>`).join('')}</div>`;
+      </article>`;
+    }).join('')}</div>`;
 
     // 파일 URL 은 저장소에 따라 비동기로 만들어집니다.
     for (const m of items) {
       const holder = mount.querySelector(`[data-files="${CSS.escape(m.id)}"]`);
       if (!holder) continue;
       if (!(m.files || []).length) {
-        holder.innerHTML = '<p style="color:var(--text-black-soft);font-size:1.4rem">첨부된 파일이 없습니다.</p>';
+        // 링크만 있는 자료라면 위 "바로가기" 가 이미 행동을 안내하므로 조용히 둡니다.
+        holder.innerHTML = firstUrl(m.description)
+          ? ''
+          : '<p style="color:var(--text-black-soft);font-size:1.4rem">첨부된 파일이 없습니다.</p>';
         continue;
       }
       const rows = [];

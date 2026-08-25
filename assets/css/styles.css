@@ -428,6 +428,20 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .media-card__view img, .media-card__view video { width: 100%; height: 100%; object-fit: cover; }
 .media-card__bar { padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
+/* 강의자료 카드 — 2열 그리드에서 높이가 달라도 파일 목록이 아래로 정렬됩니다. */
+.material { display: flex; flex-direction: column; }
+.material__desc {
+  font-size: 1.5rem; color: var(--text-black-soft);
+  margin-bottom: var(--space-3);
+}
+.material .filelist { margin-top: auto; }
+/* 설명 안의 주소는 링크로 보이게 — 긴 주소는 카드 밖으로 나가지 않도록 끊습니다. */
+.material__desc a {
+  color: var(--green-accent); text-decoration: underline;
+  text-underline-offset: 2px; word-break: break-all;
+}
+.material__desc a:hover { color: var(--sb-green); }
+
 .expander { border-bottom: 1px solid var(--hairline); }
 .expander__btn {
   width: 100%; display: flex; justify-content: space-between; align-items: center; gap: var(--space-3);

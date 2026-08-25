@@ -210,11 +210,56 @@ await step('강의자료에 PDF 아닌 파일은 거부', async () => {
   await page.waitForSelector('.toast--err', { timeout: 3000 });
   if (await page.locator('#matPicker .fileitem').count()) throw new Error('거부 실패');
 });
-await step('파일 없이 저장하면 막힘', async () => {
-  await page.fill('#matForm [name="title"]', '파일 없는 자료');
+await step('파일도 링크도 없으면 저장이 막힘', async () => {
+  await page.fill('#matForm [name="title"]', '내용 없는 자료');
   await page.locator('#matForm button[type="submit"]').click();
   await page.waitForSelector('.field__err', { timeout: 3000 });
-  if (page.url().includes('#/materials')) throw new Error('파일 없이 저장됨');
+  if (page.url().includes('#/materials')) throw new Error('빈 자료가 저장됨');
+});
+await step('설명에 주소만 있으면 파일 없이도 저장됨', async () => {
+  await page.fill('#matForm [name="title"]', '3강 · 온라인 강의 영상');
+  await page.fill('#matForm [name="session"]', '3주차');
+  await page.fill('#matForm [name="description"]',
+    '녹화본은 https://example.com/lecture?id=3&t=10 에서 볼 수 있습니다.');
+  await page.locator('#matForm button[type="submit"]').click();
+  await page.waitForURL(/#\/materials/, { timeout: 8000 });
+});
+await step('강의자료 목록이 한 행에 2칸', async () => {
+  await page.waitForSelector('.material', { timeout: 8000 });
+  const cols = await page.evaluate(() =>
+    getComputedStyle(document.querySelector('#materialList .grid'))
+      .gridTemplateColumns.split(' ').length);
+  if (cols !== 2) throw new Error(`컬럼 ${cols}개`);
+});
+await step('설명 속 주소가 새 창 링크로 변환됨', async () => {
+  const a = page.locator('.material__desc a').first();
+  if (!(await a.count())) throw new Error('링크가 만들어지지 않음');
+  if (await a.getAttribute('target') !== '_blank') throw new Error('새 창이 아님');
+  if (!(await a.getAttribute('rel') || '').includes('noopener')) throw new Error('rel 누락');
+  const href = await a.getAttribute('href');
+  if (href !== 'https://example.com/lecture?id=3&t=10') throw new Error(`href = ${href}`);
+});
+await step('"바로가기" 버튼이 새 창으로 열림', async () => {
+  const go = page.locator('.material a.btn--outline', { hasText: '바로가기' }).first();
+  if (!(await go.count())) throw new Error('바로가기 버튼 없음');
+  if (await go.getAttribute('target') !== '_blank') throw new Error('새 창이 아님');
+  if (await go.getAttribute('href') !== 'https://example.com/lecture?id=3&t=10') {
+    throw new Error(await go.getAttribute('href'));
+  }
+});
+await step('설명의 HTML 은 주입되지 않고 글자로 표시', async () => {
+  await page.goto(`${BASE}#/admin/material/new`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#matForm', { timeout: 5000 });
+  await page.fill('#matForm [name="title"]', '주입 시험');
+  await page.fill('#matForm [name="description"]',
+    '<img src=x onerror=alert(1)> 그리고 https://safe.example.com');
+  await page.locator('#matForm button[type="submit"]').click();
+  await page.waitForURL(/#\/materials/, { timeout: 8000 });
+  await page.waitForSelector('.material__desc', { timeout: 8000 });
+  const injected = await page.locator('.material__desc img').count();
+  if (injected) throw new Error('HTML 이 주입됨');
+  const text = await page.locator('.material__desc').first().innerText();
+  if (!text.includes('<img')) throw new Error('원문이 글자로 안 보임: ' + text);
 });
 await step('관리자는 비밀번호 없이 열람', async () => {
   await page.goto(`${BASE}#/materials`, { waitUntil: 'networkidle' });

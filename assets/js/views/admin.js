@@ -4,7 +4,7 @@ import { CONFIG, STORAGE_LABEL } from '../config.js';
 import { login, logout, session, isAdmin } from '../auth.js';
 import {
   esc, attr, fmtDate, fmtBytes, toLocalInput, fromLocalInput, csvCell,
-  downloadBlob, isPastDue, debounce,
+  downloadBlob, isPastDue, debounce, firstUrl,
 } from '../utils.js';
 import {
   spinner, emptyState, toastOk, toastErr, confirmModal, FilePicker,
@@ -292,12 +292,18 @@ export async function materialFormView(mount, { id }) {
           <label class="field">
             <span class="field__label">설명</span>
             <textarea class="textarea" name="description" maxlength="2000"
-              placeholder="자료 내용이나 참고 사항을 적어주세요.">${esc(m?.description || '')}</textarea>
+              placeholder="자료 내용이나 참고 사항을 적어주세요.&#10;주소(https://…)를 적으면 목록에서 새 창으로 열리는 바로가기가 생깁니다.">${esc(m?.description || '')}</textarea>
+            <span class="field__hint">
+              <code>https://</code> 로 시작하는 주소를 적으면 자동으로 링크가 됩니다.
+            </span>
           </label>
 
           <div class="field">
-            <span class="field__label">파일<span class="field__req">*</span></span>
+            <span class="field__label">파일</span>
             <div id="matPicker"></div>
+            <span class="field__hint">
+              설명에 주소를 넣었다면 파일은 없어도 됩니다. (둘 중 하나는 있어야 저장됩니다)
+            </span>
           </div>
 
           <div class="row row--between" style="margin-top:var(--space-4)">
@@ -324,8 +330,11 @@ export async function materialFormView(mount, { id }) {
     clearErrors(form);
     let ok = true;
     if (!form.title.value.trim()) { fieldError(form.title, '제목을 입력하세요.'); ok = false; }
-    if (!picker.total) {
-      fieldError(mount.querySelector('#matPicker'), '파일을 최소 1개 첨부하세요.'); ok = false;
+    // 파일이든 링크든, 수강생이 실제로 열 수 있는 것이 하나는 있어야 합니다.
+    if (!picker.total && !firstUrl(form.description.value)) {
+      fieldError(mount.querySelector('#matPicker'),
+        '파일을 첨부하거나, 설명에 https:// 로 시작하는 주소를 넣어주세요.');
+      ok = false;
     }
     if (!ok) { focusFirstError(form); return; }
 

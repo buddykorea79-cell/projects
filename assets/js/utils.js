@@ -141,6 +141,33 @@ export function csvCell(v) {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+/** 텍스트에서 처음 나오는 http(s) 주소. 없으면 null. */
+export function firstUrl(text) {
+  const m = String(text || '').match(/https?:\/\/[^\s<>"']+/);
+  if (!m) return null;
+  return m[0].replace(/[.,!?)\]}]+$/, '') || null;
+}
+
+/**
+ * 텍스트 안의 http(s) 주소를 새 창으로 열리는 링크로 바꿉니다.
+ *
+ * 먼저 esc() 로 전부 이스케이프한 뒤 링크 태그만 끼워 넣기 때문에
+ * 본문에 HTML 을 써넣어도 주입되지 않습니다. http/https 만 인식하므로
+ * javascript: 같은 스킴은 링크가 되지 않습니다.
+ */
+export function linkify(text) {
+  return esc(text).replace(/https?:\/\/[^\s<]+/g, (match) => {
+    // "…참고하세요." 처럼 뒤에 붙은 문장부호는 주소에서 떼어냅니다.
+    // 세미콜론은 &amp; 같은 엔티티의 끝이라 일부러 제외했습니다.
+    const trail = match.match(/[.,!?)\]}]+$/);
+    const url = trail ? match.slice(0, -trail[0].length) : match;
+    if (!url) return match;
+    const href = url.replace(/&amp;/g, '&');
+    return `<a href="${attr(href)}" target="_blank" rel="noopener noreferrer">${url}</a>`
+      + (trail ? trail[0] : '');
+  });
+}
+
 /**
  * 첨부를 내려받는 링크의 href 와 부가 속성을 저장소별로 만들어 줍니다.
  *  - r2     : 같은 도메인 API. `download=1` 을 붙이면 서버가 파일명까지 지정합니다.
