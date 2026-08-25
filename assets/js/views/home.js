@@ -37,14 +37,16 @@ export async function homeView(mount) {
       <div class="wrap hero__inner">
         <div class="stack-4">
           <p class="hero__eyebrow">${esc(CONFIG.orgName)}</p>
-          <h1 class="hero__title">과제, 여기에 제출하세요.</h1>
+          <h1 class="hero__title">여기에서 과제를 제출하고,<br>강의자료를 다운로드 받을 수 있습니다.</h1>
           <p class="hero__lead">
             기관명·성명·이메일만 있으면 됩니다. 제출 후 발급되는 수정코드로
             언제든 내용을 고치거나 삭제할 수 있어요.
           </p>
           <div class="row">
-            <a class="btn btn--primary btn--lg" href="#projects">진행중 프로젝트 보기</a>
-            <a class="btn btn--outline btn--lg" href="#/my">내 제출물 조회</a>
+            <button class="btn btn--primary btn--lg" type="button" data-scroll-projects>
+              진행중 프로젝트 보기
+            </button>
+            <a class="btn btn--outline btn--lg" href="#/materials">강의자료 다운로드</a>
           </div>
         </div>
         <div class="hero__art" aria-hidden="true">
@@ -71,22 +73,22 @@ export async function homeView(mount) {
     <section class="band">
       <div class="wrap">
         <div class="stack-4">
-          <h2>제출은 세 단계면 끝납니다</h2>
+          <h2>과제 제출 방법</h2>
           <div class="steps">
             <div class="step">
               <div class="step__n">1</div>
+              <h3>제출할 과제 목록 선택</h3>
+              <p>프로젝트에서 제출할 과제 목록을 클릭합니다.</p>
+            </div>
+            <div class="step">
+              <div class="step__n">2</div>
               <h3>참석자 정보</h3>
               <p>기관명 · 성명 · 이메일을 입력합니다.</p>
             </div>
             <div class="step">
-              <div class="step__n">2</div>
+              <div class="step__n">3</div>
               <h3>과제 내용</h3>
               <p>제목과 설명을 쓰고 이미지·영상·문서를 첨부합니다.</p>
-            </div>
-            <div class="step">
-              <div class="step__n">3</div>
-              <h3>수정코드 보관</h3>
-              <p>발급된 코드로 나중에 수정·삭제할 수 있습니다.</p>
             </div>
           </div>
         </div>
@@ -105,6 +107,11 @@ export async function homeView(mount) {
         <div id="projectGrid">${spinner()}</div>
       </div>
     </section>`;
+
+  // `href="#projects"` 는 해시 라우터가 경로로 오해하므로 스크롤로 처리합니다.
+  mount.querySelector('[data-scroll-projects]')?.addEventListener('click', () => {
+    mount.querySelector('#projects')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 
   const grid = mount.querySelector('#projectGrid');
   try {

@@ -134,21 +134,26 @@ export function lightbox(url, kind, name) {
 export class FilePicker {
   /**
    * @param {HTMLElement} mount
-   * @param {{existing?: Array, maxFiles?: number, onRemoveExisting?: Function}} opts
+   * @param {{existing?: Array, onRemoveExisting?: Function,
+   *          policy?: {maxFiles:number, maxFileMB:number, allowedExt:string[]},
+   *          hint?: string}} opts
    */
   constructor(mount, opts = {}) {
     this.mount = mount;
     this.files = [];
     this.existing = opts.existing || [];
     this.onRemoveExisting = opts.onRemoveExisting || null;
-    this.maxFiles = opts.maxFiles ?? CONFIG.upload.maxFiles;
+    // 과제 첨부와 강의자료는 허용 형식·용량이 다릅니다.
+    this.policy = opts.policy || CONFIG.upload;
+    this.hint = opts.hint || '';
+    this.maxFiles = this.policy.maxFiles;
     this.render();
   }
 
   get total() { return this.files.length + this.existing.length; }
 
   render() {
-    const { maxFileMB, allowedExt } = CONFIG.upload;
+    const { maxFileMB, allowedExt } = this.policy;
     this.mount.innerHTML = `
       <div class="drop" data-drop tabindex="0" role="button"
            aria-label="파일을 선택하거나 이곳에 끌어다 놓으세요">
@@ -160,7 +165,7 @@ export class FilePicker {
         </svg>
         <div class="drop__title">파일을 끌어다 놓거나 클릭해 선택</div>
         <div class="drop__hint">
-          이미지 · 동영상 · 문서 &nbsp;|&nbsp; 최대 ${this.maxFiles}개, 개당 ${maxFileMB}MB<br>
+          ${esc(this.hint || '이미지 · 동영상 · 문서')} &nbsp;|&nbsp; 최대 ${this.maxFiles}개, 개당 ${maxFileMB}MB<br>
           ${esc(allowedExt.join(', '))}
         </div>
         <input type="file" multiple hidden data-input
@@ -189,7 +194,7 @@ export class FilePicker {
   }
 
   add(incoming) {
-    const { maxFileMB, allowedExt } = CONFIG.upload;
+    const { maxFileMB, allowedExt } = this.policy;
     const limit = maxFileMB * 1024 * 1024;
 
     for (const file of incoming) {

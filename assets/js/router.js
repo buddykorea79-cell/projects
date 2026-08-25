@@ -41,26 +41,40 @@ export function go(path, { replace = false } = {}) {
 }
 
 let resolving = false;
+let queued = false;
 
+/** 현재 주소에 맞는 화면을 한 번 그립니다. */
+async function renderCurrent() {
+  const path = currentPath();
+  const query = currentQuery();
+  if (onBefore) onBefore(path);
+
+  for (const r of routes) {
+    const m = path.match(r.regex);
+    if (!m) continue;
+    const params = {};
+    r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+    await r.handler(params, query);
+    if (onAfter) onAfter(path);
+    return;
+  }
+  await notFound();
+  if (onAfter) onAfter(path);
+}
+
+/**
+ * 화면을 그리는 도중 또 이동이 들어오면(렌더가 끝나기 전에 링크를 누르는 경우)
+ * 그 요청을 버리지 않고 큐에 넣었다가 이어서 처리합니다.
+ * 그냥 return 하면 마지막 이동이 조용히 사라져 화면이 주소와 어긋납니다.
+ */
 export async function resolve() {
-  if (resolving) return;
+  if (resolving) { queued = true; return; }
   resolving = true;
   try {
-    const path = currentPath();
-    const query = currentQuery();
-    if (onBefore) onBefore(path);
-
-    for (const r of routes) {
-      const m = path.match(r.regex);
-      if (!m) continue;
-      const params = {};
-      r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
-      await r.handler(params, query);
-      if (onAfter) onAfter(path);
-      return;
-    }
-    await notFound();
-    if (onAfter) onAfter(path);
+    do {
+      queued = false;
+      await renderCurrent();
+    } while (queued);
   } finally {
     resolving = false;
   }

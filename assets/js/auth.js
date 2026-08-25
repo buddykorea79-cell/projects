@@ -9,6 +9,7 @@ import { CONFIG } from './config.js';
 import { sha256, normEmail } from './utils.js';
 
 const SESSION_KEY = 'ah.admin';
+const MATERIALS_KEY = 'ah.materials';
 
 /** 콘솔에서 새 비밀번호 해시를 만들 때 쓰는 헬퍼. window 에도 노출됩니다. */
 export async function hashAdmin(email, password) {
@@ -52,6 +53,43 @@ export function session() {
 }
 
 export function isAdmin() { return Boolean(session()); }
+
+/* ------------------------------------------------- 강의자료 공용 비밀번호 -- */
+
+/** 콘솔에서 새 강의자료 비밀번호 해시를 만들 때 쓰는 헬퍼. */
+export async function hashMaterials(password) {
+  const h = await sha256(`materials:${password}:${CONFIG.passwordSalt}`);
+  console.log(`materialsHash: ${h}`);
+  return h;
+}
+
+/**
+ * 강의자료 열람 비밀번호를 확인하고 통과하면 세션에 기록합니다.
+ * 수강생 전체가 공유하는 암호라 개인 인증이 아니라 외부인 차단용입니다.
+ */
+export async function unlockMaterials(password) {
+  const given = await sha256(`materials:${password}:${CONFIG.passwordSalt}`);
+  if (!timingSafeEqual(given, CONFIG.materialsHash || '0'.repeat(64))) {
+    throw new Error('비밀번호가 올바르지 않습니다.');
+  }
+  const until = Date.now() + (CONFIG.materialsSessionHours || 12) * 3600 * 1000;
+  try { sessionStorage.setItem(MATERIALS_KEY, String(until)); } catch { /* ignore */ }
+  return true;
+}
+
+export function lockMaterials() {
+  try { sessionStorage.removeItem(MATERIALS_KEY); } catch { /* ignore */ }
+}
+
+/** 관리자는 비밀번호 없이 항상 열람할 수 있습니다. */
+export function materialsUnlocked() {
+  if (isAdmin()) return true;
+  try {
+    const until = Number(sessionStorage.getItem(MATERIALS_KEY) || 0);
+    if (!until || until < Date.now()) { lockMaterials(); return false; }
+    return true;
+  } catch { return false; }
+}
 
 function timingSafeEqual(a, b) {
   if (a.length !== b.length) return false;

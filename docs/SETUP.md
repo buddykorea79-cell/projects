@@ -147,7 +147,8 @@ wrangler secret put TURNSTILE_SECRET
 ## 운영 팁
 
 **과정 시작 전**
-- 관리자 비밀번호를 바꾸세요 (README 참고)
+- 관리자 비밀번호와 강의자료 공용 비밀번호를 바꾸세요 (README 참고)
+- 강의자료를 미리 등록하고, 수강생에게 공용 비밀번호를 안내하세요
 - 프로젝트를 미리 개설하고 마감일시를 넣어두세요
 - 첨부 정책(`upload.maxFileMB`, `allowedExt`)을 과제 성격에 맞게 조정하세요
 
@@ -171,6 +172,7 @@ wrangler secret put TURNSTILE_SECRET
 | 한계 | 왜 | 대안 |
 |---|---|---|
 | 관리자 인증이 서버측이 아님 | 정적 사이트에 검증할 서버가 없음 | Cloudflare Access(무료, Google 로그인 연동) 를 `#/admin` 앞에 걸면 진짜 인증이 됩니다 |
+| 강의자료 비밀번호가 파일 접근을 막지는 못함 | 잠금은 화면만 가리고, 파일 자체는 raw URL 로 공개됨 | 자료를 외부에 완전히 숨겨야 하면 private 레포 + 프록시 경유 다운로드가 필요합니다 — 요청 주시면 붙여드립니다 |
 | 이메일 자동 발송 없음 | 정적 사이트는 메일을 보낼 수 없음 | 워커에 Resend·SendGrid API 호출을 추가하면 제출 확인 메일을 보낼 수 있습니다 |
 | 첨부 100MB 이상 | GitHub Contents API 제한 | 큰 영상은 YouTube·Vimeo 링크를 본문에 적게 하세요 |
 | 실시간 동시 편집 | 파일 기반 저장 | 이 용도에는 과합니다. 필요하면 Supabase 무료 티어로 |

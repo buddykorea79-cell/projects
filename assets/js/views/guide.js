@@ -11,6 +11,13 @@ const FAQ = [
      + '2단계에서 제목·설명·첨부파일을 입력하면 끝입니다. 제출이 끝나면 수정코드가 발급됩니다.',
   },
   {
+    id: 'materials',
+    q: '강의자료는 어떻게 받나요?',
+    a: '상단 메뉴의 [강의자료] 를 누르고, 수업에서 안내받은 비밀번호를 한 번 입력하면 '
+     + '목록이 열립니다. 이후 12시간 동안은 다시 묻지 않습니다. '
+     + '비밀번호를 모르면 담당 강사에게 문의하세요.',
+  },
+  {
     id: 'code',
     q: '수정코드를 잃어버렸어요.',
     a: '같은 브라우저에서 제출했다면 [내 제출물] 화면의 "코드 자동 입력" 버튼으로 되찾을 수 있습니다. '
@@ -67,7 +74,15 @@ export function guideView(mount) {
         </div>
 
         <div class="card" id="admin">
-          <h2 class="page-title" style="font-size:2rem;margin-bottom:var(--space-3)">관리자 계정 바꾸기</h2>
+          <h2 class="page-title" style="font-size:2rem;margin-bottom:var(--space-3)">비밀번호 바꾸기</h2>
+          <h3 style="font-size:1.6rem;margin-bottom:8px">강의자료 열람 비밀번호</h3>
+          <p style="color:var(--text-black-soft);line-height:1.8;margin-bottom:var(--space-3)">
+            수강생이 함께 쓰는 공용 암호입니다. 콘솔에서
+            <code>await hashMaterials('새-비밀번호')</code> 를 실행해 나온 해시를
+            <code>config.js</code> 의 <code>materialsHash</code> 에 넣으세요.
+          </p>
+
+          <h3 style="font-size:1.6rem;margin-bottom:8px;margin-top:var(--space-4)">관리자 계정</h3>
           <p style="color:var(--text-black-soft);line-height:1.8">
             계정은 <code>assets/js/config.js</code> 안의 <code>admins</code> 배열에 하드코딩되어 있습니다.
             비밀번호는 원문이 아니라 SHA-256 해시로만 저장됩니다. 새 해시는 이 사이트 어느 화면에서든

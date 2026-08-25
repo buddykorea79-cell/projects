@@ -194,6 +194,24 @@ export class GitHubStore {
 
   get projectsPath()    { return `${this.cfg.dataDir}/projects.json`; }
   get submissionsPath() { return `${this.cfg.dataDir}/submissions.json`; }
+  get materialsPath()   { return `${this.cfg.dataDir}/materials.json`; }
+
+  /**
+   * 새 파일들을 uploads/ 아래에 커밋하고 레코드의 files 배열을 채웁니다.
+   * 색인보다 파일을 먼저 올립니다 — 반대로 하면 파일 없는 항목이 잠깐 보입니다.
+   */
+  async attachFiles(rec, newFiles, subdir) {
+    for (const file of newFiles) {
+      const fid = uid('f_');
+      const path = `${this.cfg.uploadDir}/${subdir}/${fid}_${safeName(file.name)}`;
+      const base64 = await fileToBase64(file);
+      await this.putFile(path, base64, `feat(uploads): ${safeName(file.name)}`);
+      rec.files.push({
+        id: fid, name: file.name, size: file.size, type: file.type || '',
+        storage: 'github', path,
+      });
+    }
+  }
 
   /* ---------------------------------------------------------- projects */
 
@@ -251,22 +269,7 @@ export class GitHubStore {
     if (isNew) { rec.id = uid('s_'); rec.createdAt = now; }
     rec.updatedAt = now;
 
-    // 첨부를 먼저 올린 뒤 색인을 갱신합니다.
-    // (색인이 먼저 커밋되면 파일 없는 항목이 잠깐 보일 수 있습니다.)
-    for (const file of newFiles) {
-      const fid = uid('f_');
-      const path = `${this.cfg.uploadDir}/${rec.id}/${fid}_${safeName(file.name)}`;
-      const base64 = await fileToBase64(file);
-      await this.putFile(path, base64, `feat(uploads): ${safeName(file.name)}`);
-      rec.files.push({
-        id: fid,
-        name: file.name,
-        size: file.size,
-        type: file.type || '',
-        storage: 'github',
-        path,
-      });
-    }
+    await this.attachFiles(rec, newFiles, rec.id);
 
     await this.mutateJSON(this.submissionsPath, [], (list) => {
       const arr = Array.isArray(list) ? list : [];
@@ -285,6 +288,47 @@ export class GitHubStore {
       (Array.isArray(list) ? list : []).filter((s) => s.id !== id),
     `chore(submissions): remove ${id}`);
   }
+
+  /* --------------------------------------------------------- materials */
+
+  async listMaterials() {
+    const rows = await this.readJSON(this.materialsPath, []);
+    return (Array.isArray(rows) ? rows : [])
+      .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  }
+
+  async getMaterial(id) {
+    return (await this.listMaterials()).find((m) => m.id === id) || null;
+  }
+
+  async saveMaterial(material, newFiles = []) {
+    const now = new Date().toISOString();
+    const rec = { ...material, files: [...(material.files || [])] };
+    const isNew = !rec.id;
+    if (isNew) { rec.id = uid('m_'); rec.createdAt = now; }
+    rec.updatedAt = now;
+
+    await this.attachFiles(rec, newFiles, `materials/${rec.id}`);
+
+    await this.mutateJSON(this.materialsPath, [], (list) => {
+      const arr = Array.isArray(list) ? list : [];
+      const i = arr.findIndex((m) => m.id === rec.id);
+      if (i >= 0) arr[i] = rec; else arr.push(rec);
+      return arr;
+    }, `${isNew ? 'feat' : 'chore'}(materials): ${isNew ? 'add' : 'update'} ${rec.title || rec.id}`);
+
+    return rec;
+  }
+
+  async deleteMaterial(id) {
+    const m = await this.getMaterial(id);
+    if (m) for (const f of m.files || []) await this.deleteFile(f);
+    await this.mutateJSON(this.materialsPath, [], (list) =>
+      (Array.isArray(list) ? list : []).filter((x) => x.id !== id),
+    `chore(materials): remove ${id}`);
+  }
+
+  /* -------------------------------------------------------------- files */
 
   async deleteFile(fileRef) {
     if (!fileRef?.path) return;
@@ -309,6 +353,7 @@ export class GitHubStore {
       exportedAt: new Date().toISOString(),
       projects: await this.listProjects(),
       submissions: await this.listSubmissions(),
+      materials: await this.listMaterials(),
     };
   }
 
@@ -318,6 +363,9 @@ export class GitHubStore {
     }
     if (dump.submissions) {
       await this.mutateJSON(this.submissionsPath, [], () => dump.submissions, 'chore(submissions): import');
+    }
+    if (dump.materials) {
+      await this.mutateJSON(this.materialsPath, [], () => dump.materials, 'chore(materials): import');
     }
   }
 }

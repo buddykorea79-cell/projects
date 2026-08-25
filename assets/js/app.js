@@ -1,7 +1,7 @@
 /** 앱 진입점 — 저장소 초기화, 라우팅, 전역 크롬(헤더/푸터/Frap). */
 import { CONFIG, STORAGE_LABEL } from './config.js';
 import { initStore, currentMode, submissionOpen, store } from './store/index.js';
-import { session, logout, hashAdmin } from './auth.js';
+import { session, logout, hashAdmin, hashMaterials } from './auth.js';
 import { $, esc } from './utils.js';
 import { toastErr, emptyState } from './ui.js';
 import * as R from './router.js';
@@ -10,12 +10,14 @@ import { homeView } from './views/home.js';
 import { projectView, submitView, receiptView } from './views/project.js';
 import { myView, submissionView, editSubmissionView } from './views/my.js';
 import { guideView } from './views/guide.js';
+import { materialsView } from './views/materials.js';
 import {
-  loginView, adminView, projectFormView, adminSubmissionsView,
+  loginView, adminView, projectFormView, adminSubmissionsView, materialFormView,
 } from './views/admin.js';
 
-/* 콘솔에서 관리자 해시를 만들 수 있게 노출합니다 (문서화된 헬퍼). */
+/* 콘솔에서 비밀번호 해시를 만들 수 있게 노출합니다 (문서화된 헬퍼). */
 window.hashAdmin = hashAdmin;
+window.hashMaterials = hashMaterials;
 
 const main = $('#main');
 
@@ -48,6 +50,7 @@ function markActiveNav(path) {
   document.querySelectorAll('.gnav__links a').forEach((a) => {
     const nav = a.dataset.nav;
     const active = (nav === 'home' && (key === 'home' || key === 'p'))
+      || (nav === 'materials' && key === 'materials')
       || (nav === 'my' && (key === 'my' || key === 's'))
       || (nav === 'guide' && key === 'guide');
     if (active) a.setAttribute('aria-current', 'page');
@@ -75,7 +78,9 @@ function setupDrawer() {
 /** Frap 버튼 — 접수중인 프로젝트가 하나라도 있을 때만 띄웁니다. */
 async function updateFrap(path) {
   const frap = $('#frap');
-  if (path.startsWith('/admin') || path.includes('/submit')) { frap.hidden = true; return; }
+  if (path.startsWith('/admin') || path.startsWith('/materials') || path.includes('/submit')) {
+    frap.hidden = true; return;
+  }
   try {
     const projects = await store.listProjects();
     const open = projects.filter(submissionOpen);
@@ -112,6 +117,7 @@ const view = (fn) => async (params, query) => {
 function registerRoutes() {
   R.route('/',                        view((m) => homeView(m)));
   R.route('/guide',                   view((m) => guideView(m)));
+  R.route('/materials',               view((m) => materialsView(m)));
   R.route('/my',                      view((m) => myView(m)));
 
   R.route('/p/:id',                   view((m, p) => projectView(m, p)));
@@ -124,6 +130,7 @@ function registerRoutes() {
   R.route('/admin',                   view((m) => adminView(m)));
   R.route('/admin/login',             view((m) => loginView(m)));
   R.route('/admin/project/:id',       view((m, p) => projectFormView(m, p)));
+  R.route('/admin/material/:id',      view((m, p) => materialFormView(m, p)));
   R.route('/admin/submissions/:projectId', view((m, p) => adminSubmissionsView(m, p)));
 
   R.setNotFound(view((m) => {
@@ -152,7 +159,7 @@ function registerRoutes() {
 async function boot() {
   $('#footYear').textContent = new Date().getFullYear();
   $('#footMeta').textContent = `저장소: ${STORAGE_LABEL[currentMode()]}`;
-  document.title = `과제 제출 · ${CONFIG.siteName}`;
+  document.title = CONFIG.siteName;
 
   setupDrawer();
   renderAuthButtons();

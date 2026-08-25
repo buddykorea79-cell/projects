@@ -30,6 +30,35 @@ await step('시드 프로젝트 2건 표시', async () => {
   const n = await page.locator('.tile').count();
   if (n !== 2) throw new Error(`tile count = ${n}`);
 });
+await step('히어로 문구가 새 문구로 표시', async () => {
+  const t = await page.locator('.hero__title').innerText();
+  if (!t.includes('여기에서 과제를 제출하고') || !t.includes('강의자료를 다운로드'))
+    throw new Error(t);
+});
+await step('안내 제목이 "과제 제출 방법"', async () => {
+  const h = await page.locator('.band h2').first().innerText();
+  if (h.trim() !== '과제 제출 방법') throw new Error(h);
+  const steps = await page.locator('.step h3').allInnerTexts();
+  const want = ['제출할 과제 목록 선택', '참석자 정보', '과제 내용'];
+  if (JSON.stringify(steps) !== JSON.stringify(want)) throw new Error(steps.join(' / '));
+});
+await step('프로젝트 그리드가 한 행에 2개', async () => {
+  const cols = await page.evaluate(() =>
+    getComputedStyle(document.querySelector('.grid')).gridTemplateColumns.split(' ').length);
+  if (cols !== 2) throw new Error(`컬럼 ${cols}개`);
+});
+await step('"진행중 프로젝트 보기"가 목록으로 스크롤 (404 아님)', async () => {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.locator('[data-scroll-projects]').click();
+  await page.waitForTimeout(900);
+  if (!(await page.locator('.tile').first().isVisible())) throw new Error('스크롤 안 됨');
+  if (await page.locator('.empty h3').count()) throw new Error('404 화면이 떴음');
+  if (page.url().endsWith('#projects')) throw new Error('해시가 오염됨');
+});
+await step('헤더에 강의자료 메뉴 존재', async () => {
+  const href = await page.locator('.gnav__links a[data-nav="materials"]').getAttribute('href');
+  if (href !== '#/materials') throw new Error(href);
+});
 
 log('\n== 2. 프로젝트 상세 ==');
 await step('첫 프로젝트 열기', async () => {
@@ -121,13 +150,13 @@ await step('첨부 이미지가 렌더됨', async () => {
 log('\n== 5. 관리자 ==');
 await step('잘못된 비밀번호 거부', async () => {
   await page.goto(`${BASE}#/admin`, { waitUntil: 'networkidle' });
-  await page.fill('#loginForm [name="email"]', 'admin@example.com');
+  await page.fill('#loginForm [name="email"]', 'aireader@mois.go.kr');
   await page.fill('#loginForm [name="password"]', 'wrong');
   await page.locator('#loginForm button[type="submit"]').click();
   await page.waitForSelector('.field__err', { timeout: 4000 });
 });
 await step('올바른 자격증명으로 로그인', async () => {
-  await page.fill('#loginForm [name="password"]', 'Assignment!2026');
+  await page.fill('#loginForm [name="password"]', 'dlrhd26');
   await page.locator('#loginForm button[type="submit"]').click();
   await page.waitForSelector('.stat', { timeout: 6000 });
 });
@@ -152,7 +181,68 @@ await step('제출물 관리 화면 + 검색', async () => {
   await page.waitForSelector('.toolbar', { timeout: 5000 });
 });
 
-log('\n== 6. 라우팅 / 반응형 ==');
+log('\n== 6. 강의자료 ==');
+await step('관리자가 PDF 자료 등록', async () => {
+  await page.goto(`${BASE}#/admin/material/new`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#matForm', { timeout: 5000 });
+  await page.fill('#matForm [name="title"]', '1강 · AI 리더십 개론');
+  await page.fill('#matForm [name="session"]', '1주차');
+  await page.fill('#matForm [name="description"]', '수업에서 사용한 슬라이드입니다.');
+  await page.setInputFiles('#matPicker [data-input]', {
+    name: '1강_AI리더십개론.pdf', mimeType: 'application/pdf',
+    buffer: Buffer.from('%PDF-1.4\n%강의자료\n'),
+  });
+  await page.waitForSelector('#matPicker .fileitem', { timeout: 3000 });
+  await page.locator('#matForm button[type="submit"]').click();
+  await page.waitForURL(/#\/materials/, { timeout: 8000 });
+});
+await step('강의자료에 PDF 아닌 파일은 거부', async () => {
+  await page.goto(`${BASE}#/admin/material/new`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#matPicker', { timeout: 5000 });
+  await page.setInputFiles('#matPicker [data-input]', {
+    name: '사진.png', mimeType: 'image/png', buffer: Buffer.from('89504e47', 'hex'),
+  });
+  await page.waitForSelector('.toast--err', { timeout: 3000 });
+  if (await page.locator('#matPicker .fileitem').count()) throw new Error('거부 실패');
+});
+await step('파일 없이 저장하면 막힘', async () => {
+  await page.fill('#matForm [name="title"]', '파일 없는 자료');
+  await page.locator('#matForm button[type="submit"]').click();
+  await page.waitForSelector('.field__err', { timeout: 3000 });
+  if (page.url().includes('#/materials')) throw new Error('파일 없이 저장됨');
+});
+await step('관리자는 비밀번호 없이 열람', async () => {
+  await page.goto(`${BASE}#/materials`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.fileitem', { timeout: 5000 });
+  if (await page.locator('#gateForm').count()) throw new Error('관리자에게 잠금이 걸림');
+});
+await step('로그아웃하면 비밀번호 잠금이 걸림', async () => {
+  await page.evaluate(() => sessionStorage.clear());
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('#gateForm', { timeout: 5000 });
+});
+await step('틀린 비밀번호는 거부', async () => {
+  await page.fill('#gateForm [name="password"]', 'wrong');
+  await page.locator('#gateForm button[type="submit"]').click();
+  await page.waitForSelector('.field__err', { timeout: 4000 });
+});
+await step('AI2026 으로 잠금 해제 + 다운로드 링크 노출', async () => {
+  await page.fill('#gateForm [name="password"]', 'AI2026');
+  await page.locator('#gateForm button[type="submit"]').click();
+  await page.waitForSelector('.fileitem', { timeout: 5000 });
+  const name = await page.locator('.fileitem__name').first().innerText();
+  if (!name.includes('1강_AI리더십개론.pdf')) throw new Error(name);
+  const dl = page.locator('.fileitem a.btn--primary').first();
+  if (!(await dl.isVisible())) throw new Error('내려받기 버튼 없음');
+  const href = await dl.getAttribute('href');
+  if (!href || !href.startsWith('blob:')) throw new Error(`href = ${href}`);
+});
+await step('잠금 해제 후 새로고침해도 유지', async () => {
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('.fileitem', { timeout: 5000 });
+});
+
+log('\n== 7. 라우팅 / 반응형 ==');
 await step('404 처리', async () => {
   await page.goto(`${BASE}#/does-not-exist`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.empty h3', { timeout: 4000 });

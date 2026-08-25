@@ -6,7 +6,7 @@
 import { uid } from '../utils.js';
 
 const DB_NAME = 'assignment-hub';
-const DB_VER = 1;
+const DB_VER = 2;
 
 let dbPromise = null;
 
@@ -26,6 +26,9 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains('blobs')) {
         db.createObjectStore('blobs', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('materials')) {
+        db.createObjectStore('materials', { keyPath: 'id' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -135,6 +138,41 @@ export class LocalStore {
     await tx('submissions', 'readwrite', (os) => os.delete(id));
   }
 
+  /* ----------------------------------------------------------- materials */
+
+  async listMaterials() {
+    const rows = await tx('materials', 'readonly', (os) => wrap(os.getAll()));
+    return (rows || []).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  }
+
+  async getMaterial(id) {
+    return (await tx('materials', 'readonly', (os) => wrap(os.get(id)))) || null;
+  }
+
+  async saveMaterial(material, newFiles = []) {
+    const now = new Date().toISOString();
+    const rec = { ...material, files: [...(material.files || [])] };
+    if (!rec.id) { rec.id = uid('m_'); rec.createdAt = now; }
+    rec.updatedAt = now;
+
+    for (const file of newFiles) {
+      const fid = uid('f_');
+      await tx('blobs', 'readwrite', (os) => os.put({ id: fid, blob: file }));
+      rec.files.push({
+        id: fid, name: file.name, size: file.size, type: file.type || '', storage: 'idb',
+      });
+    }
+
+    await tx('materials', 'readwrite', (os) => os.put(rec));
+    return rec;
+  }
+
+  async deleteMaterial(id) {
+    const m = await this.getMaterial(id);
+    if (m) for (const f of m.files || []) await this.deleteFile(f);
+    await tx('materials', 'readwrite', (os) => os.delete(id));
+  }
+
   /* --------------------------------------------------------------- files */
 
   async deleteFile(fileRef) {
@@ -166,6 +204,7 @@ export class LocalStore {
       exportedAt: new Date().toISOString(),
       projects: await this.listProjects(),
       submissions: await this.listSubmissions(),
+      materials: await this.listMaterials(),
     };
   }
 
@@ -176,6 +215,9 @@ export class LocalStore {
     }
     for (const s of dump.submissions || []) {
       await tx('submissions', 'readwrite', (os) => os.put(s));
+    }
+    for (const m of dump.materials || []) {
+      await tx('materials', 'readwrite', (os) => os.put(m));
     }
   }
 }

@@ -185,6 +185,49 @@ await t('프로젝트 삭제가 하위 제출물까지 정리', async () => {
   }
 });
 
+console.log('\n== 강의자료 ==');
+
+let material;
+await t('강의자료 등록 → data/materials.json + uploads/materials/', async () => {
+  const pdf = new File([new Uint8Array([37, 80, 68, 70])], '1강 자료.pdf', { type: 'application/pdf' });
+  material = await store.saveMaterial({
+    title: '1강 · AI 리더십 개론', session: '1주차', description: '수업 슬라이드', files: [],
+  }, [pdf]);
+  eq(material.files.length, 1, '파일 수');
+  const p = material.files[0].path;
+  if (!p.startsWith('uploads/materials/')) throw new Error(`경로: ${p}`);
+  if (!repo.has(p)) throw new Error('레포에 없음');
+  if (!repo.has('data/materials.json')) throw new Error('색인 없음');
+});
+
+await t('강의자료 목록 조회 · 한글 보존', async () => {
+  const list = await store.listMaterials();
+  eq(list.length, 1, '개수');
+  eq(list[0].title, '1강 · AI 리더십 개론', '제목');
+  eq(list[0].session, '1주차', '회차');
+  const raw = Buffer.from(repo.get('data/materials.json').content, 'base64').toString('utf8');
+  if (!raw.includes('1강 · AI 리더십 개론')) throw new Error('한글 깨짐');
+});
+
+await t('강의자료가 제출물 색인과 섞이지 않음', async () => {
+  eq((await store.listSubmissions()).length, 0, '제출물');
+  eq((await store.listMaterials()).length, 1, '강의자료');
+});
+
+await t('강의자료 수정이 기존 파일을 유지', async () => {
+  const before = material.files[0].path;
+  const upd = await store.saveMaterial({ ...material, title: '1강 · 수정본' });
+  eq(upd.title, '1강 · 수정본', '제목');
+  if (!repo.has(before)) throw new Error('파일이 사라짐');
+});
+
+await t('강의자료 삭제가 파일까지 정리', async () => {
+  const p = material.files[0].path;
+  await store.deleteMaterial(material.id);
+  eq((await store.listMaterials()).length, 0, '색인');
+  if (repo.has(p)) throw new Error(`파일이 남음: ${p}`);
+});
+
 console.log('\n== 워커 보안 검사 ==');
 
 const call = (body, origin = 'https://site.test') => workerMod.fetch(
@@ -237,6 +280,13 @@ await t('알 수 없는 경로는 404', async () => {
   const r = await workerMod.fetch(new Request('https://proxy.test/anything',
     { method: 'POST', headers: { Origin: 'https://site.test' }, body: '{}' }), ENV);
   eq(r.status, 404, 'status');
+});
+
+await t('백업 내보내기에 세 종류가 모두 포함', async () => {
+  const dump = await store.exportAll();
+  for (const k of ['projects', 'submissions', 'materials']) {
+    if (!Array.isArray(dump[k])) throw new Error(`${k} 누락`);
+  }
 });
 
 console.log('\n== 토큰 모드 (프록시 없음) ==');

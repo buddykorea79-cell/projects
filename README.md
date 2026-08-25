@@ -1,7 +1,7 @@
-# Assignment Hub — 교육생 과제 제출 사이트
+# AI 리더스 아카데미 지원센터
 
-기관·교육 과정에서 **과제를 받고, 목록으로 보고, 제출자가 직접 수정·삭제하게** 해주는
-정적 웹사이트입니다. 빌드 도구 없이 순수 HTML·CSS·ES 모듈로 되어 있고,
+교육 과정에서 **과제를 받고, 목록으로 보고, 제출자가 직접 수정·삭제하게** 하고
+**강의자료를 배포**하는 정적 웹사이트입니다. 빌드 도구 없이 순수 HTML·CSS·ES 모듈로 되어 있고,
 **GitHub Pages 에 그대로 올리면 동작**합니다.
 
 디자인은 첨부해 주신 스타벅스 디자인 시스템 문서를 따랐습니다 —
@@ -13,22 +13,28 @@
 ## 무엇이 되나요
 
 **교육생 (로그인 없음)**
-- 프로젝트 목록에서 과제 선택
+- 프로젝트 목록에서 과제 선택 — 한 행에 2개씩 배치
 - 2단계 제출 — ① 기관명·성명·이메일 ② 제목·설명·첨부파일
 - 이미지·동영상·문서 드래그&드롭 업로드 (형식·크기·개수 자동 검증)
 - 제출 완료 시 **수정코드** 발급 → 확인증 텍스트 파일로 저장 가능
 - `내 제출물` 에서 **이메일 + 수정코드**로 인증하고 수정·삭제
 - 코드 하나로 같은 이메일의 모든 제출물이 열립니다
 
+**강의자료 다운로드 (공용 비밀번호)**
+- 상단 메뉴 `강의자료` → 공용 비밀번호 입력 → 자료 목록
+- 한 번 입력하면 12시간 유지, 관리자는 비밀번호 없이 열람
+- 현재 비밀번호는 **`AI2026`** 입니다
+
 **관리자 (하드코딩 계정)**
 - 프로젝트 개설·편집·삭제 (마감일시, 접수 상태, 공개 범위, 기관명 필수 여부, 첨부 허용 여부)
+- 강의자료 등록·편집·삭제 (PDF·PPT·ZIP, 자료당 10개까지, 개당 50MB)
 - 전체 제출물 표 — 검색·정렬, 첨부 미리보기, 강제 삭제
 - **CSV 내려받기** (엑셀에서 한글 안 깨지도록 BOM 포함)
 - 전체 백업 JSON 내보내기 / 복원
 - 저장소 모드 전환, GitHub 토큰 등록
 
-기본 계정은 `admin@example.com` / `Assignment!2026` 입니다.
-**반드시 바꾸세요** — 방법은 [비밀번호 바꾸기](#관리자-비밀번호-바꾸기)에 있습니다.
+현재 관리자 계정은 `aireader@mois.go.kr` / `dlrhd26` 입니다.
+바꾸는 방법은 [비밀번호 바꾸기](#비밀번호-바꾸기)에 있습니다.
 
 ---
 
@@ -73,9 +79,11 @@ GitHub Pages 는 파일을 내보내기만 합니다. 레포에 커밋하려면 
 GitHub 모드에서 레포 자체가 데이터베이스입니다.
 
 ```
-data/projects.json        프로젝트 배열
-data/submissions.json     제출물 메타데이터 배열
-uploads/<제출ID>/<파일>    첨부 원본
+data/projects.json             프로젝트 배열
+data/submissions.json          제출물 메타데이터 배열
+data/materials.json            강의자료 메타데이터 배열
+uploads/<제출ID>/<파일>         과제 첨부 원본
+uploads/materials/<자료ID>/…   강의자료 원본
 ```
 
 읽기는 `raw.githubusercontent.com` 에서 인증 없이 가져오므로 API 사용량을 쓰지 않습니다.
@@ -84,16 +92,26 @@ uploads/<제출ID>/<파일>    첨부 원본
 
 ---
 
-## 관리자 비밀번호 바꾸기
+## 비밀번호 바꾸기
 
-비밀번호는 원문이 아니라 SHA-256 해시로만 `config.js` 에 들어갑니다.
-사이트 아무 화면에서나 개발자도구 콘솔을 열고:
+두 비밀번호 모두 원문이 아니라 SHA-256 해시로만 `config.js` 에 들어갑니다.
+사이트 아무 화면에서나 개발자도구 콘솔을 열고 실행하세요.
+
+**관리자 계정**
 
 ```js
 await hashAdmin('my@email.com', '새-비밀번호')
 ```
 
-출력된 해시를 `assets/js/config.js` 의 `admins` 에 붙여넣고 커밋하면 끝입니다.
+출력된 해시를 `assets/js/config.js` 의 `admins` 에 붙여넣습니다.
+
+**강의자료 공용 비밀번호** (수강생 전체가 함께 쓰는 암호)
+
+```js
+await hashMaterials('새-비밀번호')
+```
+
+출력된 해시를 `assets/js/config.js` 의 `materialsHash` 에 붙여넣습니다.
 
 > **정직하게 말씀드리면**: 정적 사이트에는 인증을 검증할 서버가 없습니다.
 > 이 로그인은 관리 화면을 가리는 잠금이지 서버측 인증이 아니고, 해시는 공개됩니다.
@@ -112,6 +130,9 @@ await hashAdmin('my@email.com', '새-비밀번호')
 | `siteName`, `orgName` | 사이트·기관 이름 |
 | `admins`, `passwordSalt` | 관리자 계정 (해시) |
 | `adminSessionHours` | 로그인 유지 시간 |
+| `materialsHash` | 강의자료 열람 비밀번호 (해시) |
+| `materialsSessionHours` | 강의자료 열람 유지 시간 |
+| `materials.*` | 강의자료 업로드 정책 (개수·용량·확장자) |
 | `storage` | `'local'` 또는 `'github'` |
 | `github.*` | 레포 정보, 데이터 경로, 프록시 주소 |
 | `upload.maxFileMB` / `maxFiles` / `allowedExt` | 첨부 정책 |
@@ -136,7 +157,7 @@ assets/js/
     local.js                IndexedDB 어댑터
     github.js               GitHub 레포 어댑터
   views/
-    home.js  project.js  my.js  admin.js  guide.js
+    home.js  project.js  my.js  materials.js  admin.js  guide.js
 data/                       GitHub 모드의 데이터베이스
 uploads/                    GitHub 모드의 첨부 보관함
 worker/                     (선택) 쓰기 프록시 — 토큰 없는 제출을 가능하게
@@ -163,4 +184,5 @@ python3 -m http.server 8000
 - `prefers-reduced-motion` 존중
 - 375px 모바일에서 가로 스크롤 없음 · 넓은 표는 자체 스크롤
 - 인쇄 시 네비게이션·버튼 숨김
+- 320px~1600px 전 구간에서 가로 스크롤 없음 (테스트로 검증)
 - Chrome·Edge·Safari·Firefox 최신 버전 기준

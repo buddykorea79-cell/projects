@@ -7,7 +7,7 @@ import {
   downloadBlob, isPastDue, debounce,
 } from '../utils.js';
 import {
-  spinner, emptyState, toastOk, toastErr, confirmModal,
+  spinner, emptyState, toastOk, toastErr, confirmModal, FilePicker,
   fieldError, clearErrors, focusFirstError, busy,
 } from '../ui.js';
 import { go } from '../router.js';
@@ -108,6 +108,17 @@ export async function adminView(mount) {
           <div id="adminProjects">${spinner()}</div>
         </div>
 
+        <div class="card" style="margin-bottom:var(--space-5)">
+          <div class="page-head" style="margin-bottom:var(--space-3)">
+            <h2 class="page-title" style="font-size:2rem">강의자료</h2>
+            <div class="row">
+              <a class="btn btn--primary btn--sm" href="#/admin/material/new">＋ 자료 등록</a>
+              <a class="btn btn--quiet btn--sm" href="#/materials">다운로드 화면 보기</a>
+            </div>
+          </div>
+          <div id="adminMaterials">${spinner()}</div>
+        </div>
+
         <div class="card">
           <h2 class="page-title" style="font-size:2rem;margin-bottom:var(--space-3)">저장소</h2>
           <div id="storagePanel"></div>
@@ -155,8 +166,8 @@ export async function adminView(mount) {
   });
 
   try {
-    const [projects, submissions] = await Promise.all([
-      store.listProjects(), store.listSubmissions(),
+    const [projects, submissions, materials] = await Promise.all([
+      store.listProjects(), store.listSubmissions(), store.listMaterials(),
     ]);
     const openCount = projects.filter((p) => p.status === 'open' && !isPastDue(p.dueAt)).length;
     const fileCount = submissions.reduce((n, s) => n + (s.files || []).length, 0);
@@ -167,7 +178,8 @@ export async function adminView(mount) {
       ${stat(openCount, '접수중')}
       ${stat(submissions.length, '총 제출물')}
       ${stat(people, '제출 인원')}
-      ${stat(fileCount, '첨부 파일')}`;
+      ${stat(fileCount, '첨부 파일')}
+      ${stat(materials.length, '강의자료')}`;
 
     const counts = new Map();
     submissions.forEach((s) => counts.set(s.projectId, (counts.get(s.projectId) || 0) + 1));
@@ -205,9 +217,156 @@ export async function adminView(mount) {
         </div>`;
     }
 
+    const mHolder = mount.querySelector('#adminMaterials');
+    if (!materials.length) {
+      mHolder.innerHTML = emptyState({
+        title: '등록된 강의자료가 없습니다',
+        body: 'PDF 등 수업 자료를 올리면 수강생이 내려받을 수 있습니다.',
+        action: '<a class="btn btn--primary" href="#/admin/material/new">자료 등록</a>',
+      });
+    } else {
+      mHolder.innerHTML = `
+        <div class="tablewrap">
+          <table class="table">
+            <thead><tr><th>제목</th><th>회차</th><th>파일</th><th>용량</th><th>등록일</th><th></th></tr></thead>
+            <tbody>
+              ${materials.map((m) => {
+                const bytes = (m.files || []).reduce((n, f) => n + (f.size || 0), 0);
+                return `
+                <tr>
+                  <td>${esc(m.title)}</td>
+                  <td>${esc(m.session || '—')}</td>
+                  <td class="num">${(m.files || []).length}</td>
+                  <td class="num">${esc(bytes ? fmtBytes(bytes) : '—')}</td>
+                  <td>${esc(fmtDate(m.createdAt))}</td>
+                  <td style="white-space:nowrap">
+                    <a class="btn btn--outline btn--sm" href="#/admin/material/${attr(m.id)}">편집</a>
+                  </td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    }
   } catch (e) {
     mount.querySelector('#adminProjects').innerHTML =
       `<div class="notice notice--err">불러오지 못했습니다 — ${esc(e.message)}</div>`;
+  }
+}
+
+/* --------------------------------------------------- 강의자료 등록/편집 -- */
+
+export async function materialFormView(mount, { id }) {
+  if (!guard(mount)) return;
+  const isNew = !id || id === 'new';
+  const m = isNew ? null : await store.getMaterial(id);
+  if (!isNew && !m) { toastErr('강의자료를 찾을 수 없습니다.'); go('/admin'); return; }
+
+  const removedFiles = [];
+
+  mount.innerHTML = `
+    <section class="section">
+      <div class="wrap wrap--narrow">
+        <p class="crumb">
+          <a href="#/admin">관리자</a><span>/</span>
+          <a href="#/materials">강의자료</a><span>/</span>${isNew ? '등록' : '편집'}
+        </p>
+        <h1 class="page-title" style="margin-bottom:var(--space-4)">
+          ${isNew ? '강의자료 등록' : '강의자료 편집'}
+        </h1>
+
+        <form class="card" id="matForm" novalidate>
+          <label class="field">
+            <span class="field__label">제목<span class="field__req">*</span></span>
+            <input class="input" name="title" maxlength="120"
+                   placeholder="예) 1강 · AI 리더십 개론" value="${attr(m?.title || '')}" />
+          </label>
+
+          <label class="field">
+            <span class="field__label">회차 / 분류</span>
+            <input class="input" name="session" maxlength="60"
+                   placeholder="예) 1주차" value="${attr(m?.session || '')}" />
+            <span class="field__hint">목록에서 제목 옆에 표시됩니다. 비워도 됩니다.</span>
+          </label>
+
+          <label class="field">
+            <span class="field__label">설명</span>
+            <textarea class="textarea" name="description" maxlength="2000"
+              placeholder="자료 내용이나 참고 사항을 적어주세요.">${esc(m?.description || '')}</textarea>
+          </label>
+
+          <div class="field">
+            <span class="field__label">파일<span class="field__req">*</span></span>
+            <div id="matPicker"></div>
+          </div>
+
+          <div class="row row--between" style="margin-top:var(--space-4)">
+            ${isNew ? '<a class="btn btn--quiet" href="#/admin">← 취소</a>'
+              : '<button type="button" class="btn btn--danger" data-delete>자료 삭제</button>'}
+            <button class="btn btn--primary btn--lg" type="submit">
+              ${isNew ? '등록하기' : '변경사항 저장'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </section>`;
+
+  const form = mount.querySelector('#matForm');
+  const picker = new FilePicker(mount.querySelector('#matPicker'), {
+    existing: [...(m?.files || [])],
+    onRemoveExisting: (f) => removedFiles.push(f),
+    policy: CONFIG.materials,
+    hint: '강의자료 (PDF 권장)',
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearErrors(form);
+    let ok = true;
+    if (!form.title.value.trim()) { fieldError(form.title, '제목을 입력하세요.'); ok = false; }
+    if (!picker.total) {
+      fieldError(mount.querySelector('#matPicker'), '파일을 최소 1개 첨부하세요.'); ok = false;
+    }
+    if (!ok) { focusFirstError(form); return; }
+
+    const btn = form.querySelector('button[type="submit"]');
+    busy(btn, true, '저장 중…');
+    try {
+      await store.saveMaterial({
+        ...(m || {}),
+        title: form.title.value.trim(),
+        session: form.session.value.trim(),
+        description: form.description.value.trim(),
+        files: picker.existing,
+      }, picker.files);
+      for (const f of removedFiles) await store.deleteFile(f);
+      toastOk(isNew ? '강의자료가 등록되었습니다.' : '저장되었습니다.');
+      go('/materials');
+    } catch (err) {
+      busy(btn, false);
+      toastErr(`저장에 실패했습니다 — ${err.message}`);
+    }
+  });
+
+  const del = mount.querySelector('[data-delete]');
+  if (del) {
+    del.addEventListener('click', async () => {
+      const okConfirm = await confirmModal({
+        title: '강의자료를 삭제할까요?',
+        body: `"${m.title}" 과 파일 ${(m.files || []).length}건이 영구 삭제됩니다.`,
+        confirmLabel: '영구 삭제', danger: true,
+      });
+      if (!okConfirm) return;
+      busy(del, true, '삭제 중…');
+      try {
+        await store.deleteMaterial(m.id);
+        toastOk('삭제되었습니다.');
+        go('/materials');
+      } catch (e) {
+        busy(del, false);
+        toastErr(`삭제에 실패했습니다 — ${e.message}`);
+      }
+    });
   }
 }
 

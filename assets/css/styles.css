@@ -136,23 +136,32 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   max-width: 1240px; margin: 0 auto; padding-inline: var(--gutter);
   display: flex; align-items: center; gap: var(--space-4);
 }
-.gnav__brand { display: flex; align-items: center; gap: 10px; color: var(--sb-green); text-decoration: none; flex: 0 0 auto; }
+.gnav__brand {
+  display: flex; align-items: center; gap: 10px;
+  color: var(--sb-green); text-decoration: none;
+  flex: 0 1 auto; min-width: 0;          /* 긴 기관명이 헤더를 밀어내지 않도록 */
+}
 .gnav__brand:hover { text-decoration: none; }
-.gnav__mark { display: block; width: 32px; height: 32px; }
-.gnav__word { font-weight: 700; font-size: 1.7rem; letter-spacing: -0.16px; white-space: nowrap; }
-@media (max-width: 400px) { .gnav__word { display: none; } }
+.gnav__mark { display: block; width: 32px; height: 32px; flex: 0 0 auto; }
+.gnav__word {
+  font-weight: 700; font-size: 1.5rem; letter-spacing: -0.16px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+@media (min-width: 1200px) { .gnav__word { font-size: 1.7rem; } }
+@media (max-width: 360px)  { .gnav__word { display: none; } }
 
-.gnav__links { display: none; gap: var(--space-4); flex: 1 1 auto; }
+.gnav__links { display: none; gap: var(--space-3); flex: 0 0 auto; }
+@media (min-width: 1200px) { .gnav__links { gap: var(--space-4); } }
 .gnav__links a {
   color: var(--text-black); font-size: 1.4rem; font-weight: 600; text-decoration: none;
   padding: 6px 2px; border-bottom: 2px solid transparent; transition: border-color var(--duration) ease;
 }
 .gnav__links a:hover { border-bottom-color: var(--green-accent); text-decoration: none; }
 .gnav__links a[aria-current="page"] { color: var(--sb-green); border-bottom-color: var(--sb-green); }
-@media (min-width: 900px) { .gnav__links { display: flex; } }
+@media (min-width: 1024px) { .gnav__links { display: flex; } }
 
 .gnav__actions { display: none; gap: var(--space-2); align-items: center; margin-left: auto; }
-@media (min-width: 900px) { .gnav__actions { display: flex; } }
+@media (min-width: 1024px) { .gnav__actions { display: flex; } }
 
 .gnav__burger {
   margin-left: auto; width: 44px; height: 44px; display: grid; place-content: center; gap: 5px;
@@ -162,7 +171,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .gnav__burger[aria-expanded="true"] span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
 .gnav__burger[aria-expanded="true"] span:nth-child(2) { opacity: 0; }
 .gnav__burger[aria-expanded="true"] span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
-@media (min-width: 900px) { .gnav__burger { display: none; } }
+@media (min-width: 1024px) { .gnav__burger { display: none; } }
 
 .gnav__drawer {
   border-top: 1px solid var(--ceramic); background: var(--white);
@@ -171,7 +180,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 }
 .gnav__drawer a { color: var(--text-black); font-weight: 600; padding: 12px 0; text-decoration: none; }
 .gnav__drawer-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
-@media (min-width: 900px) { .gnav__drawer { display: none !important; } }
+@media (min-width: 1024px) { .gnav__drawer { display: none !important; } }
 
 /* -------------------------------------------------------------- buttons -- */
 .btn {
@@ -246,8 +255,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .tile__foot { margin-top: auto; padding-top: var(--space-3); border-top: 1px solid var(--hairline); display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 
 .grid { display: grid; gap: var(--space-4); grid-template-columns: 1fr; }
-@media (min-width: 620px)  { .grid { grid-template-columns: repeat(2, 1fr); } }
-@media (min-width: 1000px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+@media (min-width: 620px) { .grid { grid-template-columns: repeat(2, 1fr); } }
 
 /* --------------------------------------------------------------- badges -- */
 .badge {
@@ -265,7 +273,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 /* ------------------------------------------------------------ hero band -- */
 .hero { background: var(--neutral-warm); padding-block: var(--space-6) var(--space-7); }
 .hero__inner { display: grid; gap: var(--space-5); align-items: center; }
-@media (min-width: 900px) { .hero__inner { grid-template-columns: 60% 40%; } }
+/* 퍼센트로 나누면 gap 만큼 100% 를 넘겨 가로 스크롤이 생깁니다. fr 로 나눕니다. */
+@media (min-width: 900px) { .hero__inner { grid-template-columns: 3fr 2fr; } }
 .hero__eyebrow { font-size: 1.3rem; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: var(--green-accent); }
 .hero__title { font-size: 3.2rem; font-weight: 600; color: var(--sb-green); }
 @media (min-width: 768px) { .hero__title { font-size: 4.4rem; } }
