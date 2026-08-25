@@ -37,7 +37,7 @@ await step('시드 프로젝트 2건 표시', async () => {
 });
 await step('히어로 문구가 새 문구로 표시', async () => {
   const t = await page.locator('.hero__title').innerText();
-  if (!t.includes('여기에서 과제를 제출하고') || !t.includes('강의자료를 다운로드'))
+  if (!t.includes('여기에서 과제를 제출하고') || !t.includes('강의자료를 받을 수 있습니다'))
     throw new Error(t);
 });
 await step('안내 제목이 "과제 제출 방법"', async () => {

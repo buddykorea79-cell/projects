@@ -37,7 +37,7 @@ export async function homeView(mount) {
       <div class="wrap hero__inner">
         <div class="stack-4">
           <p class="hero__eyebrow">${esc(CONFIG.orgName)}</p>
-          <h1 class="hero__title">여기에서 과제를 제출하고,<br>강의자료를 다운로드 받을 수 있습니다.</h1>
+          <h1 class="hero__title">여기에서 과제를 제출하고,<br>강의자료를 받을 수 있습니다.</h1>
           <p class="hero__lead">
             기관명·성명·이메일만 있으면 됩니다. 제출 후 발급되는 수정코드로
             언제든 내용을 고치거나 삭제할 수 있어요.
