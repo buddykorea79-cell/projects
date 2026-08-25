@@ -58,13 +58,17 @@ R2 는 저장 10GB/월까지 무료이고, 이 용도에서 제일 중요한 점
 3. **Settings** → **Bindings** → **Add** → **R2 bucket**
 4. **Variable name** 에 **`BUCKET`** ← 이 이름 그대로여야 합니다
 5. **R2 bucket** 에서 A-1 에서 만든 버킷 선택
-6. **재배포**
+6. 저장
 
 **Production 과 Preview 양쪽 모두** 추가하세요. Preview 에 없으면 미리보기 배포에서만
 API 가 500 을 냅니다.
 
-> 6번을 빠뜨리기 쉽습니다. 바인딩을 저장하는 것만으로는 반영되지 않고,
-> 공식 문서도 "Redeploy your project for the binding to take effect" 라고 못박고 있습니다.
+> **바인딩은 저장만으로 반영되지 않습니다.** 공식 문서도
+> "Redeploy your project for the binding to take effect" 라고 못박고 있습니다.
+> 다만 아래 A-3 에서 브랜치를 머지하면 그 푸시가 자동 배포를 일으키므로,
+> **바인딩을 먼저 넣고 나중에 머지하면 수동 재배포가 필요 없습니다.**
+> 이미 머지를 끝냈다면 **Deployments** 탭 → 맨 위 배포의 점 세 개(⋯) 메뉴에서
+> 한 번 다시 돌리세요.
 
 <sub>출처: [Pages Functions — Bindings](https://developers.cloudflare.com/pages/functions/bindings/)</sub>
 
@@ -94,6 +98,9 @@ Pages 라면 `functions/api/[[path]].js` 가, Worker 라면 `shared/worker-entry
 `/api` 를 처리합니다.
 
 > 빌드 설정은 그대로 두세요. 빌드 명령 없음 / 출력 디렉터리 `/` 인 정적 사이트입니다.
+>
+> **순서가 중요합니다.** A-2(바인딩) → A-3(머지) 순으로 하면 머지가 일으키는 자동 배포가
+> 바인딩까지 함께 반영해 줍니다. 반대로 하면 수동 재배포를 한 번 더 해야 합니다.
 
 ### A-4. 확인
 
