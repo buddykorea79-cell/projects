@@ -1,28 +1,53 @@
 /**
- * Assignment Hub — R2 저장소 API
+ * Assignment Hub — R2 저장소 + 회원 API
  * ---------------------------------------------------------------------------
  * Cloudflare Pages Functions 와 독립 Worker 가 함께 쓰는 핸들러입니다.
  * 브라우저는 이 API 만 호출하고, R2 버킷은 서버(바인딩)에서만 접근합니다.
  *
- * 필요한 바인딩 / 환경변수
+ * 인증은 서버에서 처리합니다. 비밀번호 해시가 담긴 회원 명부(data/members.json)는
+ * 어떤 경로로도 브라우저에 내려가지 않고, 세션은 HttpOnly 쿠키로만 오갑니다.
+ *
+ * 제출물은 **서버가 소유**합니다. 브라우저가 색인 전체를 덮어쓸 수 없고,
+ * 본인 제출물만 고치거나 지울 수 있습니다(관리자는 전부).
+ *
+ * 바인딩 / 환경변수
  *   BUCKET               (필수) R2 버킷 바인딩
+ *   ADMIN_EMAILS         (선택) 관리자 이메일. 쉼표 구분. 미설정 시 아래 기본값
  *   ALLOWED_ORIGINS      (선택) 쉼표 구분. 비우면 같은 오리진만 허용
  *   MAX_UPLOAD_MB        (선택) 기본 100
- *   ALLOWED_EXT          (선택) 쉼표 구분. 비우면 아래 기본 목록
- *   MATERIALS_PASSWORD   (선택) 설정하면 강의자료 다운로드에 토큰이 필요해집니다
- *   TOKEN_SECRET         (MATERIALS_PASSWORD 를 쓸 때 필수) HMAC 서명 키
+ *   ALLOWED_EXT          (선택) 쉼표 구분
+ *   PBKDF2_ITERATIONS    (선택) 기본 15000 (무료 플랜 CPU 10ms 기준)
+ *   TOKEN_SECRET         (선택) 세션 서명 키. 없으면 R2 에 자동 생성
  *
  * 경로 (basePath 기본 '/api')
  *   GET    /health
- *   GET    /data/:name          -> { etag, data }   (없으면 [] 로 만들어 줍니다)
- *   PUT    /data/:name          <- { etag, data }   -> { etag } / 409 { current }
- *   POST   /upload?dir=&name=   <- 원본 바이트      -> { key, size, type }
- *   GET    /file/<key>          -> 파일 스트리밍
- *   DELETE /file/<key>          -> 삭제
- *   POST   /materials/token     <- { password }     -> { token, expiresAt }
+ *   POST   /auth/signup | /auth/login | /auth/logout | /auth/password
+ *   GET    /auth/me
+ *   GET    /auth/members            (관리자)
+ *   PATCH  /auth/members            (관리자) 역할·차단
+ *   POST   /auth/members/reset      (관리자) 임시 비밀번호 발급
+ *   GET    /data/projects|materials (로그인)   PUT (관리자)
+ *   GET    /submissions             (로그인, 권한에 따라 필터)
+ *   POST   /submissions             (로그인)
+ *   PATCH  /submissions/:id         (본인·관리자)
+ *   DELETE /submissions/:id         (본인·관리자)
+ *   POST   /upload                  (로그인)
+ *   GET    /file/<key>              (로그인)
+ *   DELETE /file/<key>              (관리자)
  */
+import {
+  SESSION_COOKIE, SESSION_TTL_MS,
+  hashPassword, verifyPassword, tempPassword,
+  signSession, readSession, cookieValue, sessionCookie, clearCookie,
+  readMembers, updateMembers, findMember, publicMember,
+  lockState, registerFailure, clearFailures,
+  validateSignup, normEmail, MIN_PASSWORD,
+} from './auth.js';
 
-const DATA_NAMES = new Set(['projects', 'submissions', 'materials']);
+/** 이 이메일로 가입하면 자동으로 관리자 권한이 붙습니다. */
+const DEFAULT_ADMIN_EMAILS = ['aireader@mois.go.kr'];
+
+const DATA_NAMES = new Set(['projects', 'materials']);
 
 const DEFAULT_EXT = [
   'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'heic',
@@ -34,15 +59,13 @@ const DEFAULT_EXT = [
 /**
  * 브라우저에서 바로 열어도 안전한 타입만 인라인으로 내보냅니다.
  * 나머지는 첨부(다운로드)로 강제합니다 — 같은 오리진에서 임의의 HTML/SVG 가
- * 실행되면 관리자 세션이나 저장된 토큰을 읽어갈 수 있기 때문입니다.
+ * 실행되면 세션 쿠키를 노린 공격에 쓰일 수 있기 때문입니다.
  */
 const SAFE_INLINE = new Set([
   'image/png', 'image/jpeg', 'image/gif', 'image/webp',
   'video/mp4', 'video/webm', 'video/quicktime',
   'application/pdf',
 ]);
-
-const TOKEN_TTL_MS = 6 * 3600 * 1000;
 
 export async function handleApi(request, env, { basePath = '/api' } = {}) {
   const url = new URL(request.url);
@@ -64,77 +87,366 @@ export async function handleApi(request, env, { basePath = '/api' } = {}) {
   }
 
   try {
-    if (path === '/health' && request.method === 'GET') {
-      return json({
-        ok: true,
-        mode: 'r2',
-        // 강의자료 다운로드에 비밀번호 토큰이 필요한지 — 클라이언트가 이 값에 맞춰 동작합니다.
-        materialsGate: isGated(env),
-        maxUploadMB: maxUploadMB(env),
-      }, 200, cors);
-    }
-
-    const dataMatch = path.match(/^\/data\/([a-z]+)$/);
-    if (dataMatch) {
-      const name = dataMatch[1];
-      if (!DATA_NAMES.has(name)) return json({ message: '알 수 없는 데이터입니다.' }, 404, cors);
-      if (request.method === 'GET') return readData(env, name, cors);
-      if (request.method === 'PUT') return writeData(request, env, name, cors);
-      return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
-    }
-
-    if (path === '/upload' && request.method === 'POST') {
-      return upload(request, env, url, cors);
-    }
-
-    if (path === '/materials/token' && request.method === 'POST') {
-      return materialsToken(request, env, cors);
-    }
-
-    if (path.startsWith('/file/')) {
-      const key = decodeURIComponent(path.slice('/file/'.length));
-      if (request.method === 'GET') return serveFile(env, key, url, cors);
-      if (request.method === 'DELETE') return deleteFile(env, key, cors);
-      return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
-    }
-
-    return json({ message: 'Not found' }, 404, cors);
+    return await route(request, env, url, path, cors);
   } catch (e) {
     return json({ message: `서버 오류: ${e.message}` }, 500, cors);
   }
 }
 
-/* ------------------------------------------------------------ 색인 JSON -- */
+async function route(request, env, url, path, cors) {
+  const method = request.method;
+
+  if (path === '/health' && method === 'GET') {
+    const me = await currentMember(request, env);
+    return json({
+      ok: true,
+      mode: 'r2',
+      members: true,
+      maxUploadMB: maxUploadMB(env),
+      signedIn: Boolean(me),
+      me: publicMember(me),
+    }, 200, cors);
+  }
+
+  /* ------------------------------------------------------------ 인증 -- */
+
+  if (path === '/auth/signup' && method === 'POST') return signup(request, env, url, cors);
+  if (path === '/auth/login' && method === 'POST') return login(request, env, url, cors);
+  if (path === '/auth/logout' && method === 'POST') {
+    return json({ ok: true }, 200, { ...cors, 'Set-Cookie': clearCookie(url) });
+  }
+  if (path === '/auth/me' && method === 'GET') {
+    const me = await currentMember(request, env);
+    if (!me) return json({ message: '로그인이 필요합니다.' }, 401, cors);
+    return json({ me: publicMember(me) }, 200, cors);
+  }
+  if (path === '/auth/password' && method === 'POST') return changePassword(request, env, cors);
+
+  if (path === '/auth/members') {
+    const admin = await requireAdmin(request, env);
+    if (admin.error) return json({ message: admin.error }, admin.status, cors);
+    if (method === 'GET') {
+      const { list } = await readMembers(env);
+      return json({ data: list.map(publicMember) }, 200, cors);
+    }
+    if (method === 'PATCH') return patchMember(request, env, admin.member, cors);
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
+  if (path === '/auth/members/reset' && method === 'POST') {
+    const admin = await requireAdmin(request, env);
+    if (admin.error) return json({ message: admin.error }, admin.status, cors);
+    return resetMemberPassword(request, env, cors);
+  }
+
+  /* ------------------------------------------- 프로젝트 · 강의자료 색인 -- */
+
+  const dataMatch = path.match(/^\/data\/([a-z]+)$/);
+  if (dataMatch) {
+    const name = dataMatch[1];
+    if (!DATA_NAMES.has(name)) return json({ message: '알 수 없는 데이터입니다.' }, 404, cors);
+
+    if (method === 'GET') {
+      const me = await currentMember(request, env);
+      if (!me) return json({ message: '로그인이 필요합니다.' }, 401, cors);
+      const { etag, data } = await readIndex(env, name);
+      return json({ etag, data }, 200, { ...cors, 'Cache-Control': 'no-store' });
+    }
+    if (method === 'PUT') {
+      const admin = await requireAdmin(request, env);
+      if (admin.error) return json({ message: admin.error }, admin.status, cors);
+      return writeIndexRequest(request, env, name, cors);
+    }
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
+
+  /* ------------------------------------------------------------ 제출물 -- */
+
+  if (path === '/submissions') {
+    if (method === 'GET') return listSubmissions(request, env, cors);
+    if (method === 'POST') return createSubmission(request, env, cors);
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
+  const subMatch = path.match(/^\/submissions\/([A-Za-z0-9_-]{1,64})$/);
+  if (subMatch) {
+    if (method === 'PATCH') return patchSubmission(request, env, subMatch[1], cors);
+    if (method === 'DELETE') return removeSubmission(request, env, subMatch[1], cors);
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
+
+  /* ------------------------------------------------------- 파일 -- */
+
+  if (path === '/upload' && method === 'POST') return upload(request, env, url, cors);
+
+  if (path.startsWith('/file/')) {
+    const key = decodeURIComponent(path.slice('/file/'.length));
+    if (method === 'GET') {
+      const me = await currentMember(request, env);
+      if (!me) return json({ message: '로그인이 필요합니다.' }, 401, cors);
+      return serveFile(env, key, url, cors);
+    }
+    if (method === 'DELETE') {
+      const admin = await requireAdmin(request, env);
+      if (admin.error) return json({ message: admin.error }, admin.status, cors);
+      return deleteFile(env, key, cors);
+    }
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
+
+  return json({ message: 'Not found' }, 404, cors);
+}
+
+/* ====================================================== 세션 · 권한 == */
+
+function adminEmails(env) {
+  const raw = String(env?.ADMIN_EMAILS || '').trim();
+  const list = raw ? raw.split(',') : DEFAULT_ADMIN_EMAILS;
+  return new Set(list.map((s) => normEmail(s)).filter(Boolean));
+}
+
+/** 관리자 이메일 목록에 있으면 저장된 역할과 무관하게 관리자로 봅니다. */
+function withRole(member, env) {
+  if (!member) return null;
+  const role = adminEmails(env).has(normEmail(member.email)) ? 'admin' : (member.role || 'member');
+  return { ...member, role };
+}
+
+export async function currentMember(request, env) {
+  const token = cookieValue(request.headers.get('Cookie'), SESSION_COOKIE);
+  const payload = await readSession(token, env);
+  if (!payload) return null;
+
+  const { list } = await readMembers(env);
+  const member = findMember(list, payload.sub);
+  if (!member) return null;
+  if ((member.status || 'active') !== 'active') return null;
+  return withRole(member, env);
+}
+
+async function requireMember(request, env) {
+  const member = await currentMember(request, env);
+  if (!member) return { error: '로그인이 필요합니다.', status: 401 };
+  return { member };
+}
+
+async function requireAdmin(request, env) {
+  const got = await requireMember(request, env);
+  if (got.error) return got;
+  if (got.member.role !== 'admin') return { error: '관리자만 할 수 있습니다.', status: 403 };
+  return got;
+}
+
+/* ========================================================= 회원 처리 == */
+
+async function signup(request, env, url, cors) {
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ message: '잘못된 요청 형식입니다.' }, 400, cors);
+
+  const errors = validateSignup(body);
+  if (Object.keys(errors).length) return json({ message: '입력을 확인하세요.', errors }, 400, cors);
+
+  const email = normEmail(body.email);
+  const passwordHash = await hashPassword(String(body.password), env);
+  let created = null;
+
+  const result = await updateMembers(env, (list) => {
+    if (findMember(list, email)) return null;      // 이미 가입됨 → 저장하지 않음
+    created = {
+      email,
+      name: String(body.name).trim().slice(0, 60),
+      institution: String(body.institution).trim().slice(0, 80),
+      passwordHash,
+      role: adminEmails(env).has(email) ? 'admin' : 'member',
+      status: 'active',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastLoginAt: null,
+      failedAttempts: 0,
+      lockedUntil: 0,
+    };
+    list.push(created);
+    return list;
+  });
+
+  if (!result.ok) {
+    return json({ message: '이미 가입된 이메일입니다. 로그인해 주세요.', errors: { email: '이미 가입된 이메일입니다.' } }, 409, cors);
+  }
+
+  const token = await issueToken(created, env);
+  return json({ me: publicMember(withRole(created, env)) }, 200,
+    { ...cors, 'Set-Cookie': sessionCookie(token, url) });
+}
+
+async function login(request, env, url, cors) {
+  const body = await request.json().catch(() => null);
+  const email = normEmail(body?.email);
+  const password = String(body?.password ?? '');
+
+  const { list } = await readMembers(env);
+  const member = findMember(list, email);
+
+  // 계정이 없어도 같은 문구를 돌려줍니다 — 어떤 이메일이 가입돼 있는지 새지 않도록.
+  const generic = { message: '이메일 또는 비밀번호가 올바르지 않습니다.' };
+  if (!member) {
+    // 존재 여부에 따라 응답 시간이 달라지지 않게 해시 계산을 한 번 돌립니다.
+    await verifyPassword(password, 'pbkdf2$sha256$15000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
+    return json(generic, 401, cors);
+  }
+
+  if ((member.status || 'active') !== 'active') {
+    return json({ message: '이용이 정지된 계정입니다. 관리자에게 문의하세요.' }, 403, cors);
+  }
+
+  const lock = lockState(member);
+  if (lock.locked) {
+    return json({
+      message: `로그인 시도가 많아 잠시 잠겼습니다. ${Math.ceil(lock.retryAfterSec / 60)}분 후 다시 시도하세요.`,
+    }, 429, cors);
+  }
+
+  const ok = await verifyPassword(password, member.passwordHash);
+  if (!ok) {
+    await updateMembers(env, (l) => {
+      const m = findMember(l, email);
+      if (m) registerFailure(m);
+      return l;
+    });
+    return json(generic, 401, cors);
+  }
+
+  await updateMembers(env, (l) => {
+    const m = findMember(l, email);
+    if (m) { clearFailures(m); m.lastLoginAt = new Date().toISOString(); }
+    return l;
+  });
+
+  const withRoles = withRole(member, env);
+  const token = await issueToken(withRoles, env);
+  return json({ me: publicMember(withRoles) }, 200,
+    { ...cors, 'Set-Cookie': sessionCookie(token, url) });
+}
+
+function issueToken(member, env) {
+  return signSession({
+    sub: normEmail(member.email),
+    role: member.role || 'member',
+    iat: Date.now(),
+    exp: Date.now() + SESSION_TTL_MS,
+  }, env);
+}
+
+async function changePassword(request, env, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+
+  const body = await request.json().catch(() => null);
+  const current = String(body?.current ?? '');
+  const next = String(body?.next ?? '');
+
+  if (next.length < MIN_PASSWORD) {
+    return json({ message: `새 비밀번호는 ${MIN_PASSWORD}자 이상이어야 합니다.` }, 400, cors);
+  }
+  if (!(await verifyPassword(current, got.member.passwordHash))) {
+    return json({ message: '현재 비밀번호가 올바르지 않습니다.' }, 401, cors);
+  }
+
+  const hash = await hashPassword(next, env);
+  await updateMembers(env, (l) => {
+    const m = findMember(l, got.member.email);
+    if (m) {
+      m.passwordHash = hash;
+      m.mustChangePassword = false;
+      m.updatedAt = new Date().toISOString();
+    }
+    return l;
+  });
+  return json({ ok: true }, 200, cors);
+}
+
+async function patchMember(request, env, admin, cors) {
+  const body = await request.json().catch(() => null);
+  const email = normEmail(body?.email);
+  if (!email) return json({ message: '대상 이메일이 필요합니다.' }, 400, cors);
+  if (email === normEmail(admin.email)) {
+    return json({ message: '자기 계정의 권한은 바꿀 수 없습니다.' }, 400, cors);
+  }
+
+  let updated = null;
+  const result = await updateMembers(env, (l) => {
+    const m = findMember(l, email);
+    if (!m) return null;
+    if (body.role === 'admin' || body.role === 'member') m.role = body.role;
+    if (body.status === 'active' || body.status === 'blocked') m.status = body.status;
+    m.updatedAt = new Date().toISOString();
+    updated = m;
+    return l;
+  });
+  if (!result.ok) return json({ message: '해당 회원을 찾을 수 없습니다.' }, 404, cors);
+  return json({ member: publicMember(withRole(updated, env)) }, 200, cors);
+}
+
+async function resetMemberPassword(request, env, cors) {
+  const body = await request.json().catch(() => null);
+  const email = normEmail(body?.email);
+  if (!email) return json({ message: '대상 이메일이 필요합니다.' }, 400, cors);
+
+  const temp = tempPassword();
+  const hash = await hashPassword(temp, env);
+
+  const result = await updateMembers(env, (l) => {
+    const m = findMember(l, email);
+    if (!m) return null;
+    m.passwordHash = hash;
+    m.mustChangePassword = true;
+    m.failedAttempts = 0;
+    m.lockedUntil = 0;
+    m.updatedAt = new Date().toISOString();
+    return l;
+  });
+  if (!result.ok) return json({ message: '해당 회원을 찾을 수 없습니다.' }, 404, cors);
+
+  // 메일을 보낼 수단이 없으므로 관리자가 직접 전달합니다.
+  return json({ tempPassword: temp }, 200, cors);
+}
+
+/* ====================================================== 색인 읽기/쓰기 == */
 
 const dataKey = (name) => `data/${name}.json`;
 
-/**
- * 색인을 읽습니다. 아직 없으면 빈 배열로 만들어 두고 그 etag 를 돌려줍니다.
- * 이렇게 해두면 이후 모든 쓰기가 "실제 etag 로 조건부 덮어쓰기" 한 가지 경로만
- * 타게 되어, 동시 제출에서 조용히 덮어쓰는 사고가 나지 않습니다.
- */
-async function readData(env, name, cors) {
+async function readIndex(env, name) {
   const key = dataKey(name);
   let obj = await env.BUCKET.get(key);
-
   if (!obj) {
     await env.BUCKET.put(key, '[]', {
       httpMetadata: { contentType: 'application/json; charset=utf-8' },
     });
     obj = await env.BUCKET.get(key);
-    if (!obj) return json({ message: '색인을 만들지 못했습니다.' }, 500, cors);
+    if (!obj) return { etag: null, data: [] };
   }
-
-  const text = await obj.text();
-  let data;
-  try { data = JSON.parse(text); } catch { data = []; }
-  if (!Array.isArray(data)) data = [];
-
-  return json({ etag: obj.etag, data }, 200, { ...cors, 'Cache-Control': 'no-store' });
+  let data = [];
+  try { data = JSON.parse(await obj.text()); } catch { data = []; }
+  return { etag: obj.etag, data: Array.isArray(data) ? data : [] };
 }
 
-/** etag 가 어긋나면 덮어쓰지 않고 409 와 함께 최신본을 돌려줍니다. */
-async function writeData(request, env, name, cors) {
+/** 서버 안에서 색인을 안전하게 갱신합니다(조건부 쓰기 + 재시도). */
+async function mutateIndex(env, name, mutate) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const { etag, data } = await readIndex(env, name);
+    const next = mutate(structuredClone(data));
+    if (next === null) return { ok: false, data };
+
+    const opts = {
+      httpMetadata: { contentType: 'application/json; charset=utf-8' },
+      ...(etag ? { onlyIf: { etagMatches: etag } } : {}),
+    };
+    const put = await env.BUCKET.put(dataKey(name), JSON.stringify(next, null, 2), opts);
+    if (put) return { ok: true, data: next };
+    await new Promise((r) => setTimeout(r, 80 * (attempt + 1) + Math.random() * 120));
+  }
+  throw new Error('동시 수정이 겹쳐 저장하지 못했습니다. 잠시 후 다시 시도하세요.');
+}
+
+/** 관리자가 프로젝트·강의자료 색인을 통째로 저장할 때 (etag 조건부). */
+async function writeIndexRequest(request, env, name, cors) {
   const body = await request.json().catch(() => null);
   if (!body || !Array.isArray(body.data)) {
     return json({ message: '잘못된 요청 형식입니다.' }, 400, cors);
@@ -143,31 +455,183 @@ async function writeData(request, env, name, cors) {
     return json({ message: 'etag 가 필요합니다. 먼저 GET 으로 읽으세요.' }, 428, cors);
   }
 
-  const key = dataKey(name);
-  const payload = JSON.stringify(body.data, null, 2);
-
-  const put = await env.BUCKET.put(key, payload, {
+  const put = await env.BUCKET.put(dataKey(name), JSON.stringify(body.data, null, 2), {
     onlyIf: { etagMatches: body.etag },
     httpMetadata: { contentType: 'application/json; charset=utf-8' },
   });
 
   if (!put) {
-    // 그 사이 다른 사람이 저장했습니다. 최신본을 함께 실어 보내 재시도를 돕습니다.
-    const current = await env.BUCKET.get(key);
-    let data = [];
-    if (current) {
-      try { data = JSON.parse(await current.text()); } catch { data = []; }
-    }
-    return json({
-      message: '동시 수정 충돌이 발생했습니다.',
-      current: { etag: current?.etag || null, data: Array.isArray(data) ? data : [] },
-    }, 409, cors);
+    const { etag, data } = await readIndex(env, name);
+    return json({ message: '동시 수정 충돌이 발생했습니다.', current: { etag, data } }, 409, cors);
   }
-
   return json({ etag: put.etag }, 200, cors);
 }
 
-/* ---------------------------------------------------------------- 업로드 -- */
+/* ========================================================= 제출물 == */
+
+const uid = (prefix) => `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+/** 회원별 업로드 폴더 이름. 이메일에서 바로 유추되지 않도록 해시를 씁니다. */
+async function memberKey(email) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normEmail(email)));
+  return `m_${Array.from(new Uint8Array(buf).slice(0, 8), (b) => b.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** 다른 사람 몫으로 보이지 않도록 작성자 정보는 항상 서버가 채웁니다. */
+function authorOf(member) {
+  return { institution: member.institution || '', name: member.name, email: normEmail(member.email) };
+}
+
+/** 열람자에 따라 내보낼 필드를 줄입니다. */
+function viewSubmission(sub, viewer) {
+  const mine = normEmail(sub.author?.email) === normEmail(viewer.email);
+  if (viewer.role === 'admin' || mine) return sub;
+  return { ...sub, author: { ...sub.author, email: undefined } };
+}
+
+async function listSubmissions(request, env, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  const [{ data: subs }, { data: projects }] = await Promise.all([
+    readIndex(env, 'submissions'), readIndex(env, 'projects'),
+  ]);
+
+  if (me.role === 'admin') return json({ data: subs }, 200, { ...cors, 'Cache-Control': 'no-store' });
+
+  const publicIds = new Set(projects.filter((p) => p.visibility === 'public').map((p) => p.id));
+  const visible = subs
+    .filter((s) => normEmail(s.author?.email) === normEmail(me.email) || publicIds.has(s.projectId))
+    .map((s) => viewSubmission(s, me));
+
+  return json({ data: visible }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+function checkProjectOpen(projects, projectId) {
+  const project = projects.find((p) => p.id === projectId);
+  if (!project) return '프로젝트를 찾을 수 없습니다.';
+  if (project.status !== 'open') return '관리자가 이 프로젝트의 제출을 마감했습니다.';
+  if (project.dueAt && new Date(project.dueAt).getTime() < Date.now()) return '제출 마감일이 지났습니다.';
+  return null;
+}
+
+/** 남의 업로드 폴더를 가리키지 못하게 막습니다. */
+function ownsFiles(files, prefix, isAdmin) {
+  if (isAdmin) return true;
+  return (files || []).every((f) => typeof f?.key === 'string' && f.key.startsWith(`uploads/${prefix}/`));
+}
+
+async function createSubmission(request, env, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  const body = await request.json().catch(() => null);
+  if (!body?.projectId || !String(body.title || '').trim() || !String(body.body || '').trim()) {
+    return json({ message: '제목과 설명을 입력하세요.' }, 400, cors);
+  }
+
+  const { data: projects } = await readIndex(env, 'projects');
+  const closed = checkProjectOpen(projects, body.projectId);
+  if (closed) return json({ message: closed }, 400, cors);
+
+  const prefix = await memberKey(me.email);
+  if (!ownsFiles(body.files, prefix, me.role === 'admin')) {
+    return json({ message: '첨부 파일 경로가 올바르지 않습니다.' }, 400, cors);
+  }
+
+  const now = new Date().toISOString();
+  const rec = {
+    id: uid('s_'),
+    projectId: body.projectId,
+    author: authorOf(me),
+    title: String(body.title).trim().slice(0, 200),
+    body: String(body.body).trim().slice(0, 20000),
+    files: Array.isArray(body.files) ? body.files.slice(0, 20) : [],
+    status: 'submitted',
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await mutateIndex(env, 'submissions', (list) => { list.push(rec); return list; });
+  return json({ submission: rec }, 200, cors);
+}
+
+async function patchSubmission(request, env, id, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ message: '잘못된 요청 형식입니다.' }, 400, cors);
+
+  const { data: subs } = await readIndex(env, 'submissions');
+  const existing = subs.find((s) => s.id === id);
+  if (!existing) return json({ message: '제출물을 찾을 수 없습니다.' }, 404, cors);
+
+  const mine = normEmail(existing.author?.email) === normEmail(me.email);
+  if (!mine && me.role !== 'admin') {
+    return json({ message: '본인 제출물만 수정할 수 있습니다.' }, 403, cors);
+  }
+
+  if (me.role !== 'admin') {
+    const { data: projects } = await readIndex(env, 'projects');
+    const closed = checkProjectOpen(projects, existing.projectId);
+    if (closed) return json({ message: closed }, 400, cors);
+  }
+
+  const prefix = await memberKey(existing.author?.email || me.email);
+  if (body.files && !ownsFiles(body.files, prefix, me.role === 'admin')) {
+    return json({ message: '첨부 파일 경로가 올바르지 않습니다.' }, 400, cors);
+  }
+
+  const keptKeys = new Set((body.files || existing.files || []).map((f) => f.key));
+  const removed = (existing.files || []).filter((f) => f.key && !keptKeys.has(f.key));
+
+  let updated = null;
+  await mutateIndex(env, 'submissions', (list) => {
+    const s = list.find((x) => x.id === id);
+    if (!s) return null;
+    if (typeof body.title === 'string' && body.title.trim()) s.title = body.title.trim().slice(0, 200);
+    if (typeof body.body === 'string' && body.body.trim()) s.body = body.body.trim().slice(0, 20000);
+    if (Array.isArray(body.files)) s.files = body.files.slice(0, 20);
+    // 이름·기관은 본인이 고칠 수 있게 두되, 이메일은 계정에 묶여 있으므로 고정입니다.
+    if (typeof body.name === 'string' && body.name.trim()) s.author.name = body.name.trim().slice(0, 60);
+    if (typeof body.institution === 'string') s.author.institution = body.institution.trim().slice(0, 80);
+    s.updatedAt = new Date().toISOString();
+    updated = s;
+    return list;
+  });
+
+  // 색인에서 빠진 첨부는 버킷에서도 지웁니다.
+  for (const f of removed) await env.BUCKET.delete(f.key).catch(() => {});
+
+  return json({ submission: updated }, 200, cors);
+}
+
+async function removeSubmission(request, env, id, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  const { data: subs } = await readIndex(env, 'submissions');
+  const existing = subs.find((s) => s.id === id);
+  if (!existing) return json({ ok: true }, 200, cors);
+
+  const mine = normEmail(existing.author?.email) === normEmail(me.email);
+  if (!mine && me.role !== 'admin') {
+    return json({ message: '본인 제출물만 삭제할 수 있습니다.' }, 403, cors);
+  }
+
+  await mutateIndex(env, 'submissions', (list) => list.filter((s) => s.id !== id));
+  for (const f of existing.files || []) {
+    if (f.key) await env.BUCKET.delete(f.key).catch(() => {});
+  }
+  return json({ ok: true }, 200, cors);
+}
+
+/* ============================================================ 업로드 == */
 
 function maxUploadMB(env) {
   const n = Number(env.MAX_UPLOAD_MB);
@@ -191,15 +655,26 @@ function safeName(name) {
 }
 
 async function upload(request, env, url, cors) {
-  const dir = String(url.searchParams.get('dir') || '').trim();
-  const name = String(url.searchParams.get('name') || '').trim();
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
 
-  // 키는 서버가 만듭니다. dir 은 앱이 실제로 쓰는 두 가지 형태만 허용합니다
-  // (제출물 s_… / 강의자료 materials/m_…). 그 밖은 전부 거부합니다.
-  if (!/^(?:materials\/m_[A-Za-z0-9]{1,60}|s_[A-Za-z0-9]{1,60})$/.test(dir)) {
-    return json({ message: '잘못된 저장 위치입니다.' }, 400, cors);
-  }
+  const name = String(url.searchParams.get('name') || '').trim();
+  const kind = String(url.searchParams.get('kind') || 'submission');
   if (!name) return json({ message: '파일명이 없습니다.' }, 400, cors);
+
+  // 저장 위치는 서버가 정합니다. 회원은 자기 폴더 밖에 파일을 둘 수 없습니다.
+  let dir;
+  if (kind === 'material') {
+    if (me.role !== 'admin') return json({ message: '관리자만 할 수 있습니다.' }, 403, cors);
+    const mid = String(url.searchParams.get('materialId') || '').trim();
+    if (!/^m_[A-Za-z0-9]{1,60}$/.test(mid)) {
+      return json({ message: '잘못된 자료 번호입니다.' }, 400, cors);
+    }
+    dir = `materials/${mid}`;
+  } else {
+    dir = await memberKey(me.email);
+  }
 
   const ext = (name.toLowerCase().match(/\.([a-z0-9]+)$/) || [])[1] || '';
   if (!allowedExt(env).has(ext)) {
@@ -224,13 +699,13 @@ async function upload(request, env, url, cors) {
 
   await env.BUCKET.put(key, bytes, {
     httpMetadata: { contentType: type },
-    customMetadata: { originalName: encodeURIComponent(name) },
+    customMetadata: { originalName: encodeURIComponent(name), owner: normEmail(me.email) },
   });
 
   return json({ key, size: bytes.length, type }, 200, cors);
 }
 
-/* ------------------------------------------------------------- 파일 제공 -- */
+/* ======================================================== 파일 제공 == */
 
 function keyAllowed(key) {
   if (!key || key.length > 400) return false;
@@ -240,12 +715,6 @@ function keyAllowed(key) {
 
 async function serveFile(env, key, url, cors) {
   if (!keyAllowed(key)) return json({ message: '잘못된 경로입니다.' }, 400, cors);
-
-  // 강의자료 잠금이 켜져 있으면 서명 토큰이 있어야 내려받을 수 있습니다.
-  if (isGated(env) && key.startsWith('uploads/materials/')) {
-    const ok = await verifyToken(url.searchParams.get('t'), env);
-    if (!ok) return json({ message: '강의자료 열람 권한이 필요합니다.' }, 403, cors);
-  }
 
   const obj = await env.BUCKET.get(key);
   if (!obj) return json({ message: '파일을 찾을 수 없습니다.' }, 404, cors);
@@ -263,8 +732,8 @@ async function serveFile(env, key, url, cors) {
   headers.set('Content-Type', type);
   headers.set('Content-Length', String(obj.size));
   headers.set('ETag', obj.httpEtag);
-  // 키에 난수가 들어 있어 같은 키의 내용이 바뀔 일이 없습니다.
-  headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+  // 로그인한 회원에게만 나가므로 공용 캐시에 남지 않게 private 로 둡니다.
+  headers.set('Cache-Control', 'private, max-age=31536000, immutable');
   headers.set('X-Content-Type-Options', 'nosniff');
   // 업로드된 SVG·HTML 이 우리 오리진에서 스크립트를 실행하지 못하게 막습니다.
   headers.set('Content-Security-Policy', "default-src 'none'; sandbox");
@@ -282,53 +751,7 @@ async function deleteFile(env, key, cors) {
   return json({ ok: true }, 200, cors);
 }
 
-/* -------------------------------------------------- 강의자료 다운로드 토큰 -- */
-
-function isGated(env) {
-  return Boolean(env.MATERIALS_PASSWORD && env.TOKEN_SECRET);
-}
-
-async function materialsToken(request, env, cors) {
-  if (!isGated(env)) return json({ token: null, gate: false }, 200, cors);
-
-  const body = await request.json().catch(() => null);
-  const given = String(body?.password ?? '');
-
-  if (!constantTimeEqual(given, String(env.MATERIALS_PASSWORD))) {
-    return json({ message: '비밀번호가 올바르지 않습니다.' }, 403, cors);
-  }
-
-  const expiresAt = Date.now() + TOKEN_TTL_MS;
-  const sig = await hmac(String(expiresAt), env.TOKEN_SECRET);
-  return json({ token: `${expiresAt}.${sig}`, expiresAt, gate: true }, 200, cors);
-}
-
-async function verifyToken(token, env) {
-  if (!token) return false;
-  const [expRaw, sig] = String(token).split('.');
-  const exp = Number(expRaw);
-  if (!Number.isFinite(exp) || exp < Date.now()) return false;
-  const expected = await hmac(expRaw, env.TOKEN_SECRET);
-  return constantTimeEqual(sig || '', expected);
-}
-
-async function hmac(message, secret) {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
-  );
-  const buf = await crypto.subtle.sign('HMAC', key, enc.encode(message));
-  return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-function constantTimeEqual(a, b) {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
-/* ------------------------------------------------------------------ CORS -- */
+/* ============================================================== CORS == */
 
 function originList(env) {
   return String(env.ALLOWED_ORIGINS || '')
@@ -337,7 +760,7 @@ function originList(env) {
 
 /** 같은 오리진 요청은 항상 허용하고, 다른 오리진은 목록에 있을 때만 허용합니다. */
 function originAllowed(origin, url, env) {
-  if (!origin) return true;                 // 같은 오리진 GET 등 Origin 없는 요청
+  if (!origin) return true;
   if (origin === url.origin) return true;
   const list = originList(env);
   return list.length ? list.includes(origin) : false;
@@ -348,8 +771,9 @@ function corsHeaders(origin, url, env) {
   const ok = origin === url.origin || (list.length > 0 && list.includes(origin));
   return {
     'Access-Control-Allow-Origin': ok ? (origin || url.origin) : url.origin,
-    'Access-Control-Allow-Methods': 'GET, PUT, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, PUT, POST, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-File-Type',
+    'Access-Control-Allow-Credentials': 'true',
     'Access-Control-Max-Age': '86400',
     Vary: 'Origin',
   };

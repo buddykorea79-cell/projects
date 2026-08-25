@@ -4,6 +4,7 @@
  * 시연·연수·오프라인 실습용 기본값입니다.
  */
 import { uid } from '../utils.js';
+import { DemoAuth } from './demo-auth.js';
 
 const DB_NAME = 'assignment-hub';
 const DB_VER = 2;
@@ -55,6 +56,8 @@ export class LocalStore {
   constructor() {
     this.kind = 'local';
     this.urlCache = new Map();
+    // 서버가 없으므로 회원 기능은 브라우저 안에서 흉내만 냅니다(시연용).
+    this.auth = new DemoAuth();
   }
 
   /** 이 저장소가 지금 쓰기 가능한지. 로컬은 항상 가능. */
@@ -62,7 +65,10 @@ export class LocalStore {
     return { canWrite: true, canPublicWrite: true, needsToken: false, shared: false };
   }
 
-  async init() { await openDB(); }
+  async init() {
+    await openDB();
+    await this.auth.refresh();
+  }
 
   /* ------------------------------------------------------------ projects */
 
@@ -113,6 +119,14 @@ export class LocalStore {
     const rec = { ...sub, files: [...(sub.files || [])] };
     if (!rec.id) { rec.id = uid('s_'); rec.createdAt = now; }
     rec.updatedAt = now;
+
+    // 제출자는 로그인한 회원으로 고정합니다.
+    // (R2 모드에서는 서버가 같은 일을 하므로 화면 코드가 갈라지지 않습니다.)
+    if (!rec.author) {
+      const me = this.auth?.me();
+      if (!me) throw new Error('로그인이 필요합니다.');
+      rec.author = { institution: me.institution || '', name: me.name, email: me.email };
+    }
 
     for (const file of newFiles) {
       const fid = uid('f_');

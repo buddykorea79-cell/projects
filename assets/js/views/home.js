@@ -3,7 +3,7 @@ import { store, submissionOpen } from '../store/index.js';
 import { CONFIG } from '../config.js';
 import { esc, attr, fmtDate, isPastDue } from '../utils.js';
 import { spinner, emptyState } from '../ui.js';
-import { isAdmin } from '../auth.js';
+import { isAdmin, currentUser } from '../auth.js';
 
 export function projectCard(p) {
   const open = submissionOpen(p);
@@ -36,17 +36,18 @@ export async function homeView(mount) {
     <section class="hero">
       <div class="wrap hero__inner">
         <div class="stack-4">
-          <p class="hero__eyebrow">${esc(CONFIG.orgName)}</p>
+          <p class="hero__eyebrow">${esc(CONFIG.orgName)}${
+            currentUser() ? ` · ${esc(currentUser().name)}님` : ''}</p>
           <h1 class="hero__title">여기에서 과제를 제출하고,<br>강의자료를 받을 수 있습니다.</h1>
           <p class="hero__lead">
-            기관명·성명·이메일만 있으면 됩니다. 제출 후 발급되는 수정코드로
-            언제든 내용을 고치거나 삭제할 수 있어요.
+            로그인하면 제출자 정보가 자동으로 채워집니다.
+            마감 전까지는 언제든 내용을 고치거나 삭제할 수 있어요.
           </p>
           <div class="row">
             <button class="btn btn--primary btn--lg" type="button" data-scroll-projects>
               진행중 프로젝트 보기
             </button>
-            <a class="btn btn--outline btn--lg" href="#/materials">강의자료 다운로드</a>
+            <a class="btn btn--outline btn--lg" href="#/materials">강의자료 받기</a>
           </div>
         </div>
         <div class="hero__art" aria-hidden="true">
@@ -77,18 +78,19 @@ export async function homeView(mount) {
           <div class="steps">
             <div class="step">
               <div class="step__n">1</div>
+              <h3>참석자 정보</h3>
+              <p>기관명·성명·이메일로 한 번 가입하면 다음부터는 로그인만 하면 됩니다.</p>
+            </div>
+            <div class="step">
+              <div class="step__n">2</div>
               <h3>제출할 과제 목록 선택</h3>
               <p>프로젝트에서 제출할 과제 목록을 클릭합니다.</p>
             </div>
             <div class="step">
-              <div class="step__n">2</div>
-              <h3>참석자 정보</h3>
-              <p>기관명 · 성명 · 이메일을 입력합니다.</p>
-            </div>
-            <div class="step">
               <div class="step__n">3</div>
               <h3>과제 내용</h3>
-              <p>제목과 설명을 쓰고 이미지·영상·문서를 첨부합니다.</p>
+              <p>제목과 설명을 쓰고 이미지·영상·문서를 첨부합니다.
+                 마감 전까지 [내 제출물]에서 고칠 수 있습니다.</p>
             </div>
           </div>
         </div>

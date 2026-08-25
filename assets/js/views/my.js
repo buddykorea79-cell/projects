@@ -1,31 +1,23 @@
-/** 내 제출물 — 이메일 + 수정코드로 조회하고, 수정·삭제합니다. */
-import { store, verifyOwner, submissionOpen } from '../store/index.js';
-import { esc, attr, fmtDate, isEmail, normEmail } from '../utils.js';
+/** 내 제출물 — 로그인한 회원의 제출물 목록·상세·수정. */
+import { store, submissionOpen } from '../store/index.js';
+import { esc, attr, fmtDate } from '../utils.js';
 import {
   spinner, emptyState, toastOk, toastErr, confirmModal, FilePicker,
   fieldError, clearErrors, focusFirstError, busy,
 } from '../ui.js';
-import { isAdmin } from '../auth.js';
-import { go, currentQuery } from '../router.js';
-import { readMine, renderAttachments } from './project.js';
+import { isAdmin, currentUser } from '../auth.js';
+import { go } from '../router.js';
+import { renderAttachments } from './project.js';
 
-const UNLOCK_KEY = 'ah.unlock';   // sessionStorage: { email, code }
+const isMine = (sub) => {
+  const me = currentUser();
+  return Boolean(me && sub?.author?.email && sub.author.email === me.email);
+};
 
-export function unlockState() {
-  try { return JSON.parse(sessionStorage.getItem(UNLOCK_KEY) || 'null'); } catch { return null; }
-}
-function setUnlock(v) {
-  try {
-    if (v) sessionStorage.setItem(UNLOCK_KEY, JSON.stringify(v));
-    else sessionStorage.removeItem(UNLOCK_KEY);
-  } catch { /* ignore */ }
-}
-
-/* ------------------------------------------------------------- 조회 화면 -- */
+/* ------------------------------------------------------------- 목록 -- */
 
 export async function myView(mount) {
-  const unlocked = unlockState();
-  const remembered = readMine();
+  const me = currentUser();
 
   mount.innerHTML = `
     <section class="section">
@@ -33,95 +25,21 @@ export async function myView(mount) {
         <div class="page-head">
           <div>
             <h1 class="page-title">내 제출물</h1>
-            <p class="page-sub">제출할 때 받은 이메일과 수정코드로 조회합니다.</p>
+            <p class="page-sub">${esc(me.institution || '')} · ${esc(me.name)} · ${esc(me.email)}</p>
           </div>
-          ${unlocked ? '<button class="btn btn--quiet" data-lock>조회 종료</button>' : ''}
+          <a class="btn btn--quiet" href="#/account">내 계정</a>
         </div>
-
-        ${unlocked ? '' : `
-        <form class="card" id="unlockForm" novalidate style="margin-bottom:var(--space-4)">
-          <div class="field-row field-row--2">
-            <label class="field">
-              <span class="field__label">이메일<span class="field__req">*</span></span>
-              <input class="input" name="email" type="email" inputmode="email" autocomplete="email"
-                     placeholder="you@example.com" value="${attr(remembered[0]?.email || '')}" />
-            </label>
-            <label class="field">
-              <span class="field__label">수정코드<span class="field__req">*</span></span>
-              <input class="input" name="code" autocomplete="off" spellcheck="false"
-                     style="text-transform:uppercase;letter-spacing:.2em;font-family:ui-monospace,monospace"
-                     placeholder="ABC123" maxlength="12" />
-            </label>
-          </div>
-          <div class="row row--end">
-            <button class="btn btn--primary" type="submit">조회하기</button>
-          </div>
-        </form>
-
-        ${remembered.length ? `
-        <div class="notice notice--info" style="margin-bottom:var(--space-4)">
-          이 브라우저에서 제출한 기록이 ${remembered.length}건 있습니다.
-          <button class="btn btn--sm btn--outline" data-quick style="margin-left:8px">코드 자동 입력</button>
-        </div>` : ''}`}
-
-        <div id="myResult">${unlocked ? spinner() : ''}</div>
+        <div id="myResult">${spinner()}</div>
       </div>
     </section>`;
 
-  const form = mount.querySelector('#unlockForm');
-  if (form) {
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      clearErrors(form);
-      let ok = true;
-      if (!isEmail(form.email.value)) { fieldError(form.email, '올바른 이메일을 입력하세요.'); ok = false; }
-      if (!form.code.value.trim()) { fieldError(form.code, '수정코드를 입력하세요.'); ok = false; }
-      if (!ok) { focusFirstError(form); return; }
-
-      const btn = form.querySelector('button[type="submit"]');
-      busy(btn, true, '조회 중…');
-      const email = normEmail(form.email.value);
-      const code = form.code.value.trim().toUpperCase();
-      try {
-        const rows = await store.listSubmissions({ email });
-        const mine = rows.filter((s) => verifyOwner(s, email, code));
-        if (!mine.length) {
-          busy(btn, false);
-          fieldError(form.code, '일치하는 제출물이 없습니다. 이메일과 코드를 확인하세요.');
-          focusFirstError(form);
-          return;
-        }
-        setUnlock({ email, code });
-        myView(mount);
-      } catch (err) {
-        busy(btn, false);
-        toastErr(`조회에 실패했습니다 — ${err.message}`);
-      }
-    });
-
-    const quick = mount.querySelector('[data-quick]');
-    if (quick) {
-      quick.addEventListener('click', () => {
-        form.email.value = remembered[0].email;
-        form.code.value = remembered[0].code;
-        form.requestSubmit();
-      });
-    }
-  }
-
-  const lock = mount.querySelector('[data-lock]');
-  if (lock) lock.addEventListener('click', () => { setUnlock(null); myView(mount); });
-
-  if (unlocked) await renderMyList(mount.querySelector('#myResult'), unlocked);
-}
-
-async function renderMyList(mount, { email, code }) {
+  const holder = mount.querySelector('#myResult');
   try {
-    const rows = (await store.listSubmissions({ email })).filter((s) => verifyOwner(s, email, code));
+    const rows = await store.listSubmissions({ email: me.email });
     if (!rows.length) {
-      mount.innerHTML = emptyState({
-        title: '제출물이 없습니다',
-        body: '아직 제출한 과제가 없거나 코드가 변경되었습니다.',
+      holder.innerHTML = emptyState({
+        title: '아직 제출한 과제가 없습니다',
+        body: '프로젝트를 열어 첫 과제를 제출해 보세요.',
         action: '<a class="btn btn--primary" href="#/">프로젝트 보러 가기</a>',
       });
       return;
@@ -130,16 +48,14 @@ async function renderMyList(mount, { email, code }) {
     const projects = await store.listProjects();
     const byId = new Map(projects.map((p) => [p.id, p]));
 
-    mount.innerHTML = `
-      <div class="notice notice--ok" style="margin-bottom:var(--space-4)">
-        <strong>${esc(email)}</strong> 님의 제출물 ${rows.length}건입니다.
-      </div>
+    holder.innerHTML = `
       <div class="tablewrap">
         <table class="table">
-          <thead><tr><th>프로젝트</th><th>제목</th><th>첨부</th><th>제출일</th><th></th></tr></thead>
+          <thead><tr><th>프로젝트</th><th>제목</th><th>첨부</th><th>최종 수정</th><th></th></tr></thead>
           <tbody>
             ${rows.map((s) => {
               const p = byId.get(s.projectId);
+              const open = submissionOpen(p);
               return `
               <tr>
                 <td>${esc(p?.title || '(삭제된 프로젝트)')}</td>
@@ -147,7 +63,9 @@ async function renderMyList(mount, { email, code }) {
                 <td class="num">${(s.files || []).length}</td>
                 <td>${esc(fmtDate(s.updatedAt || s.createdAt, true))}</td>
                 <td style="white-space:nowrap">
-                  <a class="btn btn--outline btn--sm" href="#/s/${attr(s.id)}/edit">수정</a>
+                  ${open
+                    ? `<a class="btn btn--outline btn--sm" href="#/s/${attr(s.id)}/edit">수정</a>`
+                    : '<span class="badge badge--closed">마감</span>'}
                 </td>
               </tr>`;
             }).join('')}
@@ -155,55 +73,30 @@ async function renderMyList(mount, { email, code }) {
         </table>
       </div>`;
   } catch (e) {
-    mount.innerHTML = `<div class="notice notice--err">불러오지 못했습니다 — ${esc(e.message)}</div>`;
+    holder.innerHTML = `<div class="notice notice--err">불러오지 못했습니다 — ${esc(e.message)}</div>`;
   }
 }
 
-/* ----------------------------------------------------------- 제출물 상세 -- */
-
-/** 이 제출물을 볼 권한이 있는지 판단합니다. */
-async function accessFor(sub, project) {
-  if (isAdmin()) return 'admin';
-  const u = unlockState();
-  if (u && verifyOwner(sub, u.email, u.code)) return 'owner';
-  const q = currentQuery();
-  const qcode = q.get('code');
-  if (qcode && verifyOwner(sub, sub.author.email, qcode)) {
-    setUnlock({ email: sub.author.email, code: qcode.toUpperCase() });
-    return 'owner';
-  }
-  if (project?.visibility === 'public') return 'public';
-  return 'none';
-}
+/* ----------------------------------------------------------- 상세 -- */
 
 export async function submissionView(mount, { id }) {
   mount.innerHTML = `<section class="section"><div class="wrap">${spinner()}</div></section>`;
 
   const sub = await store.getSubmission(id);
   if (!sub) {
+    // 서버가 권한에 맞게 걸러 주므로, 없다는 건 없거나 볼 수 없다는 뜻입니다.
     mount.innerHTML = `<section class="section"><div class="wrap">${emptyState({
-      title: '제출물을 찾을 수 없습니다',
-      body: '삭제되었거나 주소가 잘못되었습니다.',
-      action: '<a class="btn btn--outline" href="#/">홈으로</a>',
+      title: '제출물을 볼 수 없습니다',
+      body: '삭제되었거나, 본인 또는 관리자만 볼 수 있는 제출물입니다.',
+      action: '<a class="btn btn--outline" href="#/my">내 제출물로</a>',
     })}</div></section>`;
     return;
   }
 
   const project = await store.getProject(sub.projectId);
-  const access = await accessFor(sub, project);
-
-  if (access === 'none') {
-    mount.innerHTML = `<section class="section"><div class="wrap wrap--narrow">
-      <div class="notice notice--warn">
-        이 제출물은 비공개입니다. 본인이라면 <a href="#/my">내 제출물</a>에서
-        이메일과 수정코드로 조회하세요.
-      </div>
-    </div></section>`;
-    return;
-  }
-
-  const canEdit = access === 'owner' || access === 'admin';
-  const editable = canEdit && (access === 'admin' || submissionOpen(project));
+  const mine = isMine(sub);
+  const canEdit = mine || isAdmin();
+  const editable = canEdit && (isAdmin() || submissionOpen(project));
 
   mount.innerHTML = `
     <section class="section">
@@ -217,8 +110,8 @@ export async function submissionView(mount, { id }) {
           <div>
             <h1 class="page-title">${esc(sub.title)}</h1>
             <p class="page-sub">
-              ${esc(sub.author.institution || '—')} · ${esc(sub.author.name)}
-              ${canEdit ? ` · ${esc(sub.author.email)}` : ''}
+              ${esc(sub.author?.institution || '—')} · ${esc(sub.author?.name || '—')}
+              ${sub.author?.email ? ` · ${esc(sub.author.email)}` : ''}
             </p>
           </div>
           ${editable ? `
@@ -264,7 +157,7 @@ export async function submissionView(mount, { id }) {
       try {
         await store.deleteSubmission(sub.id);
         toastOk('삭제되었습니다.');
-        go(isAdmin() ? `/admin/submissions/${sub.projectId}` : '/my');
+        go(isAdmin() && !isMine(sub) ? `/admin/submissions/${sub.projectId}` : '/my');
       } catch (e) {
         busy(del, false);
         toastErr(`삭제에 실패했습니다 — ${e.message}`);
@@ -273,32 +166,30 @@ export async function submissionView(mount, { id }) {
   }
 }
 
-/* ----------------------------------------------------------- 제출물 수정 -- */
+/* ----------------------------------------------------------- 수정 -- */
 
 export async function editSubmissionView(mount, { id }) {
   mount.innerHTML = `<section class="section"><div class="wrap">${spinner()}</div></section>`;
 
   const sub = await store.getSubmission(id);
-  if (!sub) { go('/'); return; }
-  const project = await store.getProject(sub.projectId);
-  const access = await accessFor(sub, project);
+  if (!sub) { go('/my'); return; }
 
-  if (access !== 'owner' && access !== 'admin') {
+  const project = await store.getProject(sub.projectId);
+  const mine = isMine(sub);
+
+  if (!mine && !isAdmin()) {
     mount.innerHTML = `<section class="section"><div class="wrap wrap--narrow">
-      <div class="notice notice--warn">
-        수정 권한이 없습니다. <a href="#/my">내 제출물</a>에서 이메일과 수정코드로 인증하세요.
-      </div>
+      <div class="notice notice--warn">본인 제출물만 수정할 수 있습니다.</div>
+      <div style="margin-top:var(--space-4)"><a class="btn btn--outline" href="#/my">내 제출물로</a></div>
     </div></section>`;
     return;
   }
-  if (access === 'owner' && !submissionOpen(project)) {
+  if (!isAdmin() && !submissionOpen(project)) {
     mount.innerHTML = `<section class="section"><div class="wrap wrap--narrow">
       <div class="notice notice--warn">제출이 마감되어 수정할 수 없습니다.</div>
     </div></section>`;
     return;
   }
-
-  const removedFiles = [];
 
   mount.innerHTML = `
     <section class="section">
@@ -307,20 +198,14 @@ export async function editSubmissionView(mount, { id }) {
         <h1 class="page-title" style="margin-bottom:var(--space-4)">제출물 수정</h1>
 
         <form id="editForm" class="card" novalidate>
-          ${project?.requireInstitution ? `
-          <label class="field">
-            <span class="field__label">기관명<span class="field__req">*</span></span>
-            <input class="input" name="institution" value="${attr(sub.author.institution || '')}" />
-          </label>` : ''}
           <div class="field-row field-row--2">
             <label class="field">
-              <span class="field__label">성명<span class="field__req">*</span></span>
-              <input class="input" name="name" value="${attr(sub.author.name)}" />
+              <span class="field__label">기관명</span>
+              <input class="input" name="institution" value="${attr(sub.author?.institution || '')}" />
             </label>
             <label class="field">
-              <span class="field__label">이메일</span>
-              <input class="input" value="${attr(sub.author.email)}" disabled />
-              <span class="field__hint">이메일은 변경할 수 없습니다.</span>
+              <span class="field__label">성명</span>
+              <input class="input" name="name" value="${attr(sub.author?.name || '')}" />
             </label>
           </div>
 
@@ -350,19 +235,14 @@ export async function editSubmissionView(mount, { id }) {
   const form = mount.querySelector('#editForm');
   const pickerMount = mount.querySelector('#picker');
   const picker = pickerMount
-    ? new FilePicker(pickerMount, {
-      existing: [...(sub.files || [])],
-      onRemoveExisting: (f) => removedFiles.push(f),
-    })
+    ? new FilePicker(pickerMount, { existing: [...(sub.files || [])] })
     : null;
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     clearErrors(form);
+
     let ok = true;
-    if (form.institution && !form.institution.value.trim()) {
-      fieldError(form.institution, '기관명을 입력하세요.'); ok = false;
-    }
     if (!form.name.value.trim()) { fieldError(form.name, '성명을 입력하세요.'); ok = false; }
     if (!form.title.value.trim()) { fieldError(form.title, '제목을 입력하세요.'); ok = false; }
     if (!form.body.value.trim()) { fieldError(form.body, '설명을 입력하세요.'); ok = false; }
@@ -371,19 +251,18 @@ export async function editSubmissionView(mount, { id }) {
     const btn = form.querySelector('button[type="submit"]');
     busy(btn, true, '저장 중…');
     try {
-      const next = {
+      // 색인에서 빠진 첨부는 서버가 버킷에서도 함께 정리합니다.
+      await store.saveSubmission({
         ...sub,
         author: {
           ...sub.author,
-          institution: form.institution ? form.institution.value.trim() : sub.author.institution,
+          institution: form.institution.value.trim(),
           name: form.name.value.trim(),
         },
         title: form.title.value.trim(),
         body: form.body.value.trim(),
         files: picker ? picker.existing : sub.files,
-      };
-      await store.saveSubmission(next, picker ? picker.files : []);
-      for (const f of removedFiles) await store.deleteFile(f);
+      }, picker ? picker.files : []);
       toastOk('수정되었습니다.');
       go(`/s/${sub.id}`);
     } catch (err) {

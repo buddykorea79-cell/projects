@@ -1,99 +1,59 @@
 /**
- * 관리자 인증.
+ * 화면에서 쓰는 로그인 상태 helper.
  *
- * ⚠ 정적 사이트라 서버 검증이 없습니다. 이 로그인은 관리 화면을 가리는 잠금이며,
- *   실제 데이터 쓰기 권한은 저장소 계층(GitHub 토큰 또는 프록시)이 통제합니다.
- *   따라서 비밀번호가 새더라도 토큰이 없으면 레포는 변경되지 않습니다.
+ * 실제 인증은 저장소가 담당합니다.
+ *  - R2 모드    : 서버(Worker)가 비밀번호를 확인하고 HttpOnly 쿠키로 세션을 줍니다.
+ *  - 그 밖의 모드: 서버가 없어 브라우저 안에서 흉내만 냅니다(시연용).
+ *
+ * 화면 코드는 이 모듈만 보면 되고, 어느 쪽인지는 신경 쓰지 않습니다.
  */
-import { CONFIG } from './config.js';
-import { sha256, normEmail } from './utils.js';
+import { store } from './store/index.js';
 
-const SESSION_KEY = 'ah.admin';
-const MATERIALS_KEY = 'ah.materials';
+/** 로그인한 회원. 없으면 null. */
+export function currentUser() {
+  return store?.auth?.me() || null;
+}
 
-/** 콘솔에서 새 비밀번호 해시를 만들 때 쓰는 헬퍼. window 에도 노출됩니다. */
-export async function hashAdmin(email, password) {
-  const h = await sha256(`${normEmail(email)}:${password}:${CONFIG.passwordSalt}`);
-  console.log(`email: ${normEmail(email)}\nhash : ${h}`);
-  return h;
+export function isSignedIn() { return Boolean(currentUser()); }
+
+export function isAdmin() { return currentUser()?.role === 'admin'; }
+
+/** 이 저장소에서 회원 기능을 쓸 수 있는지. */
+export function authSupported() { return Boolean(store?.auth?.supported); }
+
+/**
+ * 서버 없이 브라우저에서만 흉내내는 인증인지.
+ * true 면 화면에 "시연용" 이라고 알려 줍니다 — 진짜 보호가 아니기 때문입니다.
+ */
+export function isSimulated() { return Boolean(store?.auth?.simulated); }
+
+/** 로그인 상태가 바뀌면 헤더 등 화면 곳곳이 함께 갱신되도록 알립니다. */
+export function announceAuthChange() {
+  window.dispatchEvent(new CustomEvent('ah:auth'));
+}
+
+export async function signup(payload) {
+  const me = await store.auth.signup(payload);
+  announceAuthChange();
+  return me;
 }
 
 export async function login(email, password) {
-  const e = normEmail(email);
-  const admin = CONFIG.admins.find((a) => normEmail(a.email) === e);
-  const given = await sha256(`${e}:${password}:${CONFIG.passwordSalt}`);
-
-  // 사용자 존재 여부가 응답 속도로 새지 않도록 항상 비교를 수행합니다.
-  const expected = admin?.hash || '0'.repeat(64);
-  if (!admin || !timingSafeEqual(given, expected)) {
-    throw new Error('이메일 또는 비밀번호가 올바르지 않습니다.');
-  }
-
-  const session = {
-    email: e,
-    name: admin.name || '관리자',
-    expiresAt: Date.now() + CONFIG.adminSessionHours * 3600 * 1000,
-  };
-  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch { /* ignore */ }
-  return session;
+  const me = await store.auth.login(email, password);
+  announceAuthChange();
+  return me;
 }
 
-export function logout() {
-  try { sessionStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
+export async function logout() {
+  await store.auth.logout();
+  announceAuthChange();
 }
 
-export function session() {
-  try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    const s = JSON.parse(raw);
-    if (!s?.expiresAt || s.expiresAt < Date.now()) { logout(); return null; }
-    return s;
-  } catch { return null; }
+export function changePassword(current, next) {
+  return store.auth.changePassword(current, next);
 }
 
-export function isAdmin() { return Boolean(session()); }
-
-/* ------------------------------------------------- 강의자료 공용 비밀번호 -- */
-
-/** 콘솔에서 새 강의자료 비밀번호 해시를 만들 때 쓰는 헬퍼. */
-export async function hashMaterials(password) {
-  const h = await sha256(`materials:${password}:${CONFIG.passwordSalt}`);
-  console.log(`materialsHash: ${h}`);
-  return h;
-}
-
-/**
- * 강의자료 열람 비밀번호를 확인하고 통과하면 세션에 기록합니다.
- * 수강생 전체가 공유하는 암호라 개인 인증이 아니라 외부인 차단용입니다.
- */
-export async function unlockMaterials(password) {
-  const given = await sha256(`materials:${password}:${CONFIG.passwordSalt}`);
-  if (!timingSafeEqual(given, CONFIG.materialsHash || '0'.repeat(64))) {
-    throw new Error('비밀번호가 올바르지 않습니다.');
-  }
-  const until = Date.now() + (CONFIG.materialsSessionHours || 12) * 3600 * 1000;
-  try { sessionStorage.setItem(MATERIALS_KEY, String(until)); } catch { /* ignore */ }
-  return true;
-}
-
-export function lockMaterials() {
-  try { sessionStorage.removeItem(MATERIALS_KEY); } catch { /* ignore */ }
-}
-
-/** 관리자는 비밀번호 없이 항상 열람할 수 있습니다. */
-export function materialsUnlocked() {
-  if (isAdmin()) return true;
-  try {
-    const until = Number(sessionStorage.getItem(MATERIALS_KEY) || 0);
-    if (!until || until < Date.now()) { lockMaterials(); return false; }
-    return true;
-  } catch { return false; }
-}
-
-function timingSafeEqual(a, b) {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
+/** 세션이 서버에서 끊겼는지 다시 확인합니다(다른 기기에서 정지 처리 등). */
+export function refreshSession() {
+  return store?.auth?.refresh?.() ?? Promise.resolve(null);
 }

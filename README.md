@@ -1,8 +1,9 @@
 # AI 리더스 아카데미 지원센터
 
 교육 과정에서 **과제를 받고, 목록으로 보고, 제출자가 직접 수정·삭제하게** 하고
-**강의자료를 배포**하는 정적 웹사이트입니다. 빌드 도구 없이 순수 HTML·CSS·ES 모듈로 되어 있고,
-**GitHub Pages 에 그대로 올리면 동작**합니다.
+**강의자료를 배포**하는 회원제 웹사이트입니다. 화면은 빌드 도구 없이 순수 HTML·CSS·ES
+모듈로 되어 있고, 회원·제출물·파일은 Cloudflare Worker + R2 가 맡습니다.
+데이터베이스는 쓰지 않습니다 — 회원 명부도 R2 안의 JSON 한 파일입니다.
 
 디자인은 첨부해 주신 스타벅스 디자인 시스템 문서를 따랐습니다 —
 따뜻한 크림 캔버스, 4단계 그린 체계, 50px 풀-필 버튼, 겹겹이 쌓은 옅은 그림자,
@@ -12,29 +13,35 @@
 
 ## 무엇이 되나요
 
-**교육생 (로그인 없음)**
+**교육생 (회원)**
+- 기관명·성명·이메일·비밀번호로 **한 번 가입** — 승인 절차 없이 바로 이용
 - 프로젝트 목록에서 과제 선택 — 한 행에 2개씩 배치
-- 2단계 제출 — ① 기관명·성명·이메일 ② 제목·설명·첨부파일
+- 제출은 제목·설명·첨부파일만 — 참석자 정보는 계정에서 자동으로 붙습니다
 - 이미지·동영상·문서 드래그&드롭 업로드 (형식·크기·개수 자동 검증)
-- 제출 완료 시 **수정코드** 발급 → 확인증 텍스트 파일로 저장 가능
-- `내 제출물` 에서 **이메일 + 수정코드**로 인증하고 수정·삭제
-- 코드 하나로 같은 이메일의 모든 제출물이 열립니다
+- `내 제출물` 에서 자기 제출물을 언제든 확인·수정·삭제 (마감 전까지)
+- 남의 제출물은 목록에도 상세에도 나오지 않습니다
 
-**강의자료 다운로드 (공용 비밀번호)**
-- 상단 메뉴 `강의자료` → 공용 비밀번호 입력 → 자료 목록
-- 한 번 입력하면 12시간 유지, 관리자는 비밀번호 없이 열람
-- 현재 비밀번호는 **`AI2026`** 입니다
+**강의자료**
+- 상단 메뉴 `강의자료` → 로그인한 회원이면 바로 목록
+- 한 행에 2칸, 설명에 주소를 적으면 `바로가기` 버튼이 새 창으로 열립니다
+- 파일 주소를 그대로 복사해 가도 로그인하지 않은 브라우저에서는 열리지 않습니다
 
-**관리자 (하드코딩 계정)**
+**관리자**
 - 프로젝트 개설·편집·삭제 (마감일시, 접수 상태, 공개 범위, 기관명 필수 여부, 첨부 허용 여부)
 - 강의자료 등록·편집·삭제 (PDF·PPT·ZIP, 자료당 10개까지, 개당 50MB)
 - 전체 제출물 표 — 검색·정렬, 첨부 미리보기, 강제 삭제
-- **CSV 내려받기** (엑셀에서 한글 안 깨지도록 BOM 포함)
+- **회원 관리** — 검색, 관리자 승격·해제, 이용 정지·해제, 비밀번호 초기화, CSV 내려받기
 - 전체 백업 JSON 내보내기 / 복원
-- 저장소 모드 전환, GitHub 토큰 등록
+- 저장소 모드 전환
 
-현재 관리자 계정은 `aireader@mois.go.kr` / `dlrhd26` 입니다.
-바꾸는 방법은 [비밀번호 바꾸기](#비밀번호-바꾸기)에 있습니다.
+### 관리자 계정 만들기
+
+관리자 비밀번호는 어디에도 하드코딩돼 있지 않습니다.
+**`aireader@mois.go.kr` 로 회원가입하면 그 계정이 관리자가 됩니다.** 비밀번호는 그때 정합니다.
+
+배포 후 가장 먼저 이 계정으로 가입하세요. 다른 사람이 먼저 가입해 버리는 것을 막으려면
+Worker 의 `ADMIN_EMAILS` 환경변수에 원하는 주소를 넣어두면 됩니다 (쉼표로 여러 개).
+이미 가입한 회원을 관리자로 올리는 것은 `관리자 → 회원 관리` 에서 가능합니다.
 
 ---
 
@@ -92,13 +99,23 @@ uploads/materials/<자료ID>/…   강의자료 원본
 
 | 경로 | 하는 일 |
 |---|---|
-| `GET /api/health` | 상태 · 잠금 여부 · 업로드 한도 |
-| `GET /api/data/:name` | 색인 읽기 (없으면 `[]` 로 만들어 줍니다) |
-| `PUT /api/data/:name` | etag 조건부 색인 쓰기 |
-| `POST /api/upload` | 파일 업로드 (키는 서버가 생성) |
-| `GET /api/file/<key>` | 파일 스트리밍 |
-| `DELETE /api/file/<key>` | 파일 삭제 |
-| `POST /api/materials/token` | 강의자료 다운로드 서명 토큰 (잠금 켠 경우) |
+| `GET /api/health` | 상태 · 로그인 여부 · 업로드 한도 |
+| `POST /api/auth/signup` · `login` · `logout` | 가입 · 로그인 · 로그아웃 |
+| `GET /api/auth/me` | 현재 세션의 회원 정보 |
+| `POST /api/auth/password` | 비밀번호 변경 |
+| `GET`·`PATCH /api/auth/members` | 회원 목록 · 권한/상태 변경 (관리자) |
+| `POST /api/auth/members/reset` | 임시 비밀번호 발급 (관리자) |
+| `GET /api/data/:name` | 프로젝트·강의자료 색인 읽기 (회원) |
+| `PUT /api/data/:name` | etag 조건부 색인 쓰기 (관리자) |
+| `GET`·`POST /api/submissions` | 내 제출물 목록 · 제출 (제출자 정보는 서버가 채웁니다) |
+| `PATCH`·`DELETE /api/submissions/:id` | 본인 또는 관리자만 |
+| `POST /api/upload` | 파일 업로드 (저장 위치는 서버가 결정) |
+| `GET /api/file/<key>` | 파일 스트리밍 (회원) |
+| `DELETE /api/file/<key>` | 파일 삭제 (관리자) |
+
+회원 명부(`data/members.json`)는 `/api/data/*` 로 절대 내려오지 않고,
+비밀번호는 PBKDF2-SHA256 해시로만 저장됩니다. 세션은 HMAC 으로 서명한
+**HttpOnly 쿠키**라 자바스크립트로 읽거나 위조할 수 없습니다.
 
 업로드된 파일은 항상 `X-Content-Type-Options: nosniff` 와
 `Content-Security-Policy: default-src 'none'; sandbox` 를 달고 나갑니다.
@@ -107,32 +124,26 @@ uploads/materials/<자료ID>/…   강의자료 원본
 
 ---
 
-## 비밀번호 바꾸기
+## 계정 · 비밀번호
 
-두 비밀번호 모두 원문이 아니라 SHA-256 해시로만 `config.js` 에 들어갑니다.
-사이트 아무 화면에서나 개발자도구 콘솔을 열고 실행하세요.
+| 상황 | 방법 |
+|---|---|
+| 관리자 계정 만들기 | `aireader@mois.go.kr` 로 **회원가입** (또는 `ADMIN_EMAILS` 지정) |
+| 관리자 추가·해제 | `관리자 → 회원 관리 → 관리자로 / 관리자 해제` |
+| 내 비밀번호 변경 | 헤더의 이름 클릭 → `내 계정` → 비밀번호 변경 |
+| 교육생이 비밀번호를 잊음 | `관리자 → 회원 관리 → 비밀번호 초기화` → 화면에 뜨는 임시 비밀번호를 본인에게 전달 |
+| 부정 사용 차단 | `관리자 → 회원 관리 → 이용 정지` (열려 있던 세션도 즉시 끊깁니다) |
 
-**관리자 계정**
+**솔직한 한계**
 
-```js
-await hashAdmin('my@email.com', '새-비밀번호')
-```
-
-출력된 해시를 `assets/js/config.js` 의 `admins` 에 붙여넣습니다.
-
-**강의자료 공용 비밀번호** (수강생 전체가 함께 쓰는 암호)
-
-```js
-await hashMaterials('새-비밀번호')
-```
-
-출력된 해시를 `assets/js/config.js` 의 `materialsHash` 에 붙여넣습니다.
-
-> **정직하게 말씀드리면**: 정적 사이트에는 인증을 검증할 서버가 없습니다.
-> 이 로그인은 관리 화면을 가리는 잠금이지 서버측 인증이 아니고, 해시는 공개됩니다.
-> 길고 추측 불가능한 비밀번호를 쓰세요. **실제 데이터 변경 권한은 저장소 계층
-> (토큰·프록시)이 통제하므로**, 비밀번호가 새더라도 레포가 바로 훼손되지는 않습니다.
-> 진짜 서버측 인증이 필요하면 [docs/SETUP.md](docs/SETUP.md) 의 "한계와 대안"을 보세요.
+- **메일을 보내지 않습니다.** 이메일 인증도, 비밀번호 찾기 메일도 없습니다.
+  분실 시에는 관리자가 임시 비밀번호를 발급해 직접 전달해야 합니다.
+  (메일이 필요하면 Worker 에 MailChannels·Resend 등을 붙이면 됩니다.)
+- **가입은 누구나 즉시** 가능합니다. 아무나 못 들어오게 하려면 회원 관리에서
+  정지시키거나, `ADMIN_EMAILS` 처럼 가입 허용 도메인을 서버에 추가해야 합니다.
+- **브라우저 저장 · GitHub 모드의 회원 기능은 시연용**입니다. 검증이 브라우저에서
+  일어나므로 우회할 수 있습니다. 실제 운영은 반드시 R2 모드로 하세요.
+  (화면에도 "시연용"이라고 표시됩니다.)
 
 ---
 
@@ -143,15 +154,15 @@ await hashMaterials('새-비밀번호')
 | 항목 | 설명 |
 |---|---|
 | `siteName`, `orgName` | 사이트·기관 이름 |
-| `admins`, `passwordSalt` | 관리자 계정 (해시) |
-| `adminSessionHours` | 로그인 유지 시간 |
-| `materialsHash` | 강의자료 열람 비밀번호 (해시) |
-| `materialsSessionHours` | 강의자료 열람 유지 시간 |
+| `admins` | 관리자가 될 이메일 (비밀번호는 들어가지 않습니다) |
 | `materials.*` | 강의자료 업로드 정책 (개수·용량·확장자) |
-| `storage` | `'local'` 또는 `'github'` |
+| `storage` | `'r2'`(기본) · `'github'` · `'local'` |
+| `r2.apiBase` | 저장소 API 주소 (기본 `/api`) |
 | `github.*` | 레포 정보, 데이터 경로, 프록시 주소 |
 | `upload.maxFileMB` / `maxFiles` / `allowedExt` | 첨부 정책 |
-| `editCodeLength` | 수정코드 자릿수 |
+
+서버(Worker) 쪽 환경변수는 [docs/SETUP.md](docs/SETUP.md) 에 정리돼 있습니다 —
+`ADMIN_EMAILS`, `TOKEN_SECRET`, `PBKDF2_ITERATIONS`, `ALLOWED_ORIGINS`.
 
 ---
 
@@ -164,21 +175,27 @@ assets/js/
   config.js                 ← 운영 설정은 여기만 고치면 됩니다
   app.js                    진입점 · 라우트 등록 · 전역 크롬
   router.js                 해시 라우터
-  auth.js                   관리자 인증 · 강의자료 잠금
-  utils.js                  포맷·검증·해시·DOM 헬퍼
+  auth.js                   회원 상태 · 로그인/가입/로그아웃 얇은 껍데기
+  utils.js                  포맷·검증·링크화·DOM 헬퍼
   ui.js                     토스트·모달·라이트박스·파일선택기
   store/
     index.js                저장소 선택 + 도메인 규칙
-    r2.js                   Cloudflare R2 어댑터  ← 기본
+    r2.js                   Cloudflare R2 어댑터 + 서버 세션  ← 기본
     github.js               GitHub 레포 어댑터
     local.js                IndexedDB 어댑터
+    demo-auth.js            서버 없는 모드용 회원 흉내 (시연용)
   views/
-    home.js  project.js  my.js  materials.js  admin.js  guide.js
+    home.js  project.js  my.js  materials.js  guide.js
+    account.js              로그인 · 회원가입 · 내 계정
+    admin.js                대시보드 · 프로젝트 · 강의자료 · 제출물 · 회원 관리
+shared/auth.js              비밀번호 해시 · 세션 서명 · 회원 명부 (서버 측)
 shared/r2api.js             R2 저장소 API 핸들러 (서버 측)
+shared/worker-entry.js      Workers 진입점 — /api 는 API, 나머지는 정적 자산
+wrangler.jsonc              Worker 이름 · R2 바인딩 · 정적 자산 설정
 functions/api/[[path]].js   Cloudflare Pages Function — /api/* 진입점
 data/, uploads/             GitHub 모드에서만 쓰는 폴더
 worker/                     GitHub 모드용 쓰기 프록시 (선택)
-tests/                      회귀 테스트 4묶음
+tests/                      회귀 테스트 6묶음
 docs/SETUP.md               단계별 배포 가이드
 ```
 
@@ -214,4 +231,5 @@ python3 -m http.server 8000
 - 인쇄 시 네비게이션·버튼 숨김
 - 320px~1600px 전 구간에서 가로 스크롤 없음 (테스트로 검증)
 - 업로드 파일은 sandbox CSP + nosniff 로 제공 — 우리 도메인에서 스크립트 실행 불가
+- 세션 쿠키는 HttpOnly · SameSite=Lax · Secure — 스크립트가 읽을 수 없음
 - Chrome·Edge·Safari·Firefox 최신 버전 기준

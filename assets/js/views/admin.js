@@ -1,7 +1,7 @@
-/** 관리자 — 로그인, 대시보드, 프로젝트 개설/수정, 제출물 관리. */
+/** 관리자 — 대시보드, 프로젝트·강의자료·제출물·회원 관리. */
 import { store, currentMode, setMode } from '../store/index.js';
 import { CONFIG, STORAGE_LABEL } from '../config.js';
-import { login, logout, session, isAdmin } from '../auth.js';
+import { currentUser, isAdmin, isSimulated } from '../auth.js';
 import {
   esc, attr, fmtDate, fmtBytes, toLocalInput, fromLocalInput, csvCell,
   downloadBlob, isPastDue, debounce, firstUrl,
@@ -12,74 +12,10 @@ import {
 } from '../ui.js';
 import { go } from '../router.js';
 
-/** 관리자 전용 화면 앞에서 호출합니다. 로그인 안 됐으면 로그인 화면을 그립니다. */
-function guard(mount) {
-  if (isAdmin()) return true;
-  loginView(mount);
-  return false;
-}
-
-/* ------------------------------------------------------------- 로그인 -- */
-
-export function loginView(mount) {
-  mount.innerHTML = `
-    <section class="section">
-      <div class="wrap wrap--narrow" style="max-width:460px">
-        <div style="text-align:center;margin-bottom:var(--space-5)">
-          <svg width="56" height="56" viewBox="0 0 24 24" fill="none" style="margin:0 auto var(--space-3)">
-            <rect x="4" y="10" width="16" height="11" rx="2.5" fill="#006241"/>
-            <path d="M8 10V7.5a4 4 0 118 0V10" stroke="#006241" stroke-width="2" fill="none"/>
-            <circle cx="12" cy="15.5" r="1.8" fill="#fff"/>
-          </svg>
-          <h1 class="page-title">관리자 로그인</h1>
-          <p class="page-sub">프로젝트 개설과 제출물 관리를 위한 화면입니다.</p>
-        </div>
-
-        <form class="card" id="loginForm" novalidate>
-          <label class="field">
-            <span class="field__label">이메일</span>
-            <input class="input" name="email" type="email" autocomplete="username"
-                   placeholder="admin@example.com" />
-          </label>
-          <label class="field">
-            <span class="field__label">비밀번호</span>
-            <input class="input" name="password" type="password" autocomplete="current-password" />
-          </label>
-          <button class="btn btn--primary btn--block btn--lg" type="submit">로그인</button>
-        </form>
-
-        <p style="text-align:center;margin-top:var(--space-4);font-size:1.3rem;color:var(--text-black-soft)">
-          계정은 <code>assets/js/config.js</code> 에 하드코딩되어 있습니다.<br>
-          <a href="#/guide#admin">비밀번호 바꾸는 방법</a>
-        </p>
-      </div>
-    </section>`;
-
-  const form = mount.querySelector('#loginForm');
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    clearErrors(form);
-    const btn = form.querySelector('button[type="submit"]');
-    busy(btn, true, '확인 중…');
-    try {
-      await login(form.email.value, form.password.value);
-      toastOk('로그인되었습니다.');
-      window.dispatchEvent(new CustomEvent('ah:auth'));
-      go('/admin');
-    } catch (err) {
-      busy(btn, false);
-      fieldError(form.password, err.message);
-      focusFirstError(form);
-    }
-  });
-  form.email.focus();
-}
-
 /* ---------------------------------------------------------- 대시보드 -- */
 
 export async function adminView(mount) {
-  if (!guard(mount)) return;
-  const s = session();
+  const me = currentUser();
 
   mount.innerHTML = `
     <section class="section">
@@ -87,11 +23,11 @@ export async function adminView(mount) {
         <div class="page-head">
           <div>
             <h1 class="page-title">관리자 대시보드</h1>
-            <p class="page-sub">${esc(s.name)} · ${esc(s.email)}</p>
+            <p class="page-sub">${esc(me.name)} · ${esc(me.email)}</p>
           </div>
           <div class="row">
             <a class="btn btn--primary" href="#/admin/project/new">＋ 프로젝트 개설</a>
-            <button class="btn btn--quiet" data-logout>로그아웃</button>
+            <a class="btn btn--outline" href="#/admin/members">회원 관리</a>
           </div>
         </div>
 
@@ -106,6 +42,14 @@ export async function adminView(mount) {
             </div>
           </div>
           <div id="adminProjects">${spinner()}</div>
+        </div>
+
+        <div class="card" style="margin-bottom:var(--space-5)">
+          <div class="page-head" style="margin-bottom:var(--space-3)">
+            <h2 class="page-title" style="font-size:2rem">회원</h2>
+            <a class="btn btn--outline btn--sm" href="#/admin/members">회원 관리</a>
+          </div>
+          <div id="adminMembers">${spinner()}</div>
         </div>
 
         <div class="card" style="margin-bottom:var(--space-5)">
@@ -125,13 +69,6 @@ export async function adminView(mount) {
         </div>
       </div>
     </section>`;
-
-  mount.querySelector('[data-logout]').addEventListener('click', () => {
-    logout();
-    window.dispatchEvent(new CustomEvent('ah:auth'));
-    toastOk('로그아웃되었습니다.');
-    go('/');
-  });
 
   renderStoragePanel(mount.querySelector('#storagePanel'));
 
@@ -166,8 +103,9 @@ export async function adminView(mount) {
   });
 
   try {
-    const [projects, submissions, materials] = await Promise.all([
+    const [projects, submissions, materials, members] = await Promise.all([
       store.listProjects(), store.listSubmissions(), store.listMaterials(),
+      store.auth.listMembers().catch(() => []),
     ]);
     const openCount = projects.filter((p) => p.status === 'open' && !isPastDue(p.dueAt)).length;
     const fileCount = submissions.reduce((n, s) => n + (s.files || []).length, 0);
@@ -179,7 +117,8 @@ export async function adminView(mount) {
       ${stat(submissions.length, '총 제출물')}
       ${stat(people, '제출 인원')}
       ${stat(fileCount, '첨부 파일')}
-      ${stat(materials.length, '강의자료')}`;
+      ${stat(materials.length, '강의자료')}
+      ${stat(members.length, '회원')}`;
 
     const counts = new Map();
     submissions.forEach((s) => counts.set(s.projectId, (counts.get(s.projectId) || 0) + 1));
@@ -216,6 +155,21 @@ export async function adminView(mount) {
           </table>
         </div>`;
     }
+
+    const memberHolder = mount.querySelector('#adminMembers');
+    const active = members.filter((m) => m.status !== 'blocked');
+    const admins = members.filter((m) => m.role === 'admin');
+    memberHolder.innerHTML = members.length
+      ? `<div class="kv">
+           <div class="kv__row"><div class="kv__k">전체</div><div class="kv__v">${members.length}명</div></div>
+           <div class="kv__row"><div class="kv__k">이용중</div><div class="kv__v">${active.length}명</div></div>
+           <div class="kv__row"><div class="kv__k">관리자</div><div class="kv__v">${
+             admins.map((m) => esc(m.name)).join(', ') || '—'}</div></div>
+           <div class="kv__row"><div class="kv__k">최근 가입</div><div class="kv__v">${
+             esc(fmtDate([...members].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0]?.createdAt))
+           }</div></div>
+         </div>`
+      : emptyState({ title: '아직 회원이 없습니다', body: '교육생이 가입하면 이곳에 표시됩니다.' });
 
     const mHolder = mount.querySelector('#adminMaterials');
     if (!materials.length) {
@@ -257,7 +211,6 @@ export async function adminView(mount) {
 /* --------------------------------------------------- 강의자료 등록/편집 -- */
 
 export async function materialFormView(mount, { id }) {
-  if (!guard(mount)) return;
   const isNew = !id || id === 'new';
   const m = isNew ? null : await store.getMaterial(id);
   if (!isNew && !m) { toastErr('강의자료를 찾을 수 없습니다.'); go('/admin'); return; }
@@ -401,10 +354,8 @@ function renderStoragePanel(mount) {
         <div class="kv__v"><code>${esc(store.base)}</code></div></div>
       <div class="kv__row"><div class="kv__k">업로드 한도</div>
         <div class="kv__v">${store.maxUploadMB ? `${esc(store.maxUploadMB)}MB / 파일` : '—'}</div></div>
-      <div class="kv__row"><div class="kv__k">강의자료 잠금</div>
-        <div class="kv__v">${store.materialsGate
-          ? '켜짐 — 서명 토큰이 있어야 파일을 내려받을 수 있습니다'
-          : '꺼짐 — 파일 주소를 아는 사람은 누구나 내려받을 수 있습니다'}</div></div>` : ''}
+      <div class="kv__row"><div class="kv__k">회원 인증</div>
+        <div class="kv__v">서버에서 확인 — 로그인한 회원만 파일을 받을 수 있습니다</div></div>` : ''}
 
       ${mode === 'github' ? `
       <div class="kv__row"><div class="kv__k">레포</div>
@@ -483,7 +434,6 @@ function renderStoragePanel(mount) {
 /* --------------------------------------------------- 프로젝트 개설/편집 -- */
 
 export async function projectFormView(mount, { id }) {
-  if (!guard(mount)) return;
   const isNew = !id || id === 'new';
   const p = isNew ? null : await store.getProject(id);
   if (!isNew && !p) { toastErr('프로젝트를 찾을 수 없습니다.'); go('/admin'); return; }
@@ -610,7 +560,6 @@ export async function projectFormView(mount, { id }) {
 /* ------------------------------------------------------- 제출물 관리 -- */
 
 export async function adminSubmissionsView(mount, { projectId }) {
-  if (!guard(mount)) return;
 
   mount.innerHTML = `<section class="section"><div class="wrap">${spinner()}</div></section>`;
   const project = await store.getProject(projectId);
@@ -755,4 +704,179 @@ export async function adminSubmissionsView(mount, { projectId }) {
     downloadBlob(blob, `제출물_${project.title.slice(0, 20)}_${new Date().toISOString().slice(0, 10)}.csv`);
     toastOk('CSV 를 내려받았습니다.');
   });
+}
+
+
+/* ---------------------------------------------------------- 회원 관리 -- */
+
+export async function membersView(mount) {
+  mount.innerHTML = `
+    <section class="section">
+      <div class="wrap">
+        <p class="crumb"><a href="#/admin">관리자</a><span>/</span>회원</p>
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">회원 관리</h1>
+            <p class="page-sub">가입한 교육생을 확인하고 권한·이용 상태를 조정합니다.</p>
+          </div>
+          <button class="btn btn--outline" data-csv>CSV 내려받기</button>
+        </div>
+
+        ${isSimulated() ? `
+          <div class="notice notice--warn" style="margin-bottom:var(--space-3)">
+            <strong>시연용 계정입니다.</strong> 지금 저장소가 서버 없는 모드라
+            회원 정보가 이 브라우저에만 있습니다. 실제 운영은 R2 모드에서 하세요.
+          </div>` : ''}
+
+        <div class="toolbar">
+          <input class="input" id="q" type="search" placeholder="기관 · 성명 · 이메일 검색" />
+          <select class="select" id="filter">
+            <option value="all">전체</option>
+            <option value="active">이용중만</option>
+            <option value="blocked">정지만</option>
+            <option value="admin">관리자만</option>
+          </select>
+        </div>
+
+        <div id="memberRows">${spinner()}</div>
+      </div>
+    </section>`;
+
+  const rowsEl = mount.querySelector('#memberRows');
+  const qEl = mount.querySelector('#q');
+  const filterEl = mount.querySelector('#filter');
+  const me = currentUser();
+  let all = [];
+
+  const draw = () => {
+    const q = qEl.value.trim().toLowerCase();
+    let rows = all.filter((m) => {
+      if (filterEl.value === 'active' && m.status === 'blocked') return false;
+      if (filterEl.value === 'blocked' && m.status !== 'blocked') return false;
+      if (filterEl.value === 'admin' && m.role !== 'admin') return false;
+      if (!q) return true;
+      return [m.institution, m.name, m.email].some((v) => String(v || '').toLowerCase().includes(q));
+    }).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+    if (!rows.length) {
+      rowsEl.innerHTML = emptyState({
+        title: all.length ? '검색 결과가 없습니다' : '아직 회원이 없습니다',
+        body: all.length ? '다른 검색어로 시도해 보세요.' : '교육생이 가입하면 이곳에 표시됩니다.',
+      });
+      return;
+    }
+
+    rowsEl.innerHTML = `
+      <div class="tablewrap">
+        <table class="table">
+          <thead><tr><th>기관명</th><th>성명</th><th>이메일</th><th>권한</th><th>상태</th>
+                     <th>가입일</th><th>최근 로그인</th><th></th></tr></thead>
+          <tbody>
+            ${rows.map((m) => {
+              const self = m.email === me.email;
+              return `
+              <tr>
+                <td>${esc(m.institution || '—')}</td>
+                <td>${esc(m.name)}</td>
+                <td><a href="mailto:${attr(m.email)}">${esc(m.email)}</a></td>
+                <td>${m.role === 'admin' ? '<span class="badge badge--gold">관리자</span>' : '회원'}</td>
+                <td>${m.status === 'blocked'
+                  ? '<span class="badge badge--due">정지</span>'
+                  : '<span class="badge badge--open">이용중</span>'}</td>
+                <td>${esc(fmtDate(m.createdAt))}</td>
+                <td>${esc(m.lastLoginAt ? fmtDate(m.lastLoginAt, true) : '—')}</td>
+                <td style="white-space:nowrap">
+                  ${self ? '<span style="color:var(--text-black-mute);font-size:1.3rem">본인</span>' : `
+                    <button class="btn btn--quiet btn--sm" data-reset="${attr(m.email)}">비밀번호 초기화</button>
+                    <button class="btn btn--quiet btn--sm" data-role="${attr(m.email)}"
+                            data-next="${m.role === 'admin' ? 'member' : 'admin'}">
+                      ${m.role === 'admin' ? '관리자 해제' : '관리자로'}
+                    </button>
+                    <button class="btn btn--quiet btn--sm" data-status="${attr(m.email)}"
+                            data-next="${m.status === 'blocked' ? 'active' : 'blocked'}"
+                            style="color:${m.status === 'blocked' ? 'var(--moss, var(--sb-green))' : 'var(--red)'}">
+                      ${m.status === 'blocked' ? '정지 해제' : '이용 정지'}
+                    </button>`}
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`;
+
+    rowsEl.querySelectorAll('[data-role], [data-status]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const email = btn.dataset.role || btn.dataset.status;
+        const change = btn.dataset.role
+          ? { role: btn.dataset.next }
+          : { status: btn.dataset.next };
+        const label = btn.dataset.role
+          ? (change.role === 'admin' ? '관리자로 올릴까요?' : '관리자 권한을 뺄까요?')
+          : (change.status === 'blocked' ? '이용을 정지할까요?' : '정지를 풀까요?');
+
+        const ok = await confirmModal({
+          title: label,
+          body: `${email}\n정지하면 로그인과 기존 세션이 모두 막힙니다.`,
+          confirmLabel: '적용', danger: change.status === 'blocked',
+        });
+        if (!ok) return;
+        try {
+          await store.auth.patchMember(email, change);
+          toastOk('적용되었습니다.');
+          await load();
+        } catch (e) { toastErr(e.message); }
+      });
+    });
+
+    rowsEl.querySelectorAll('[data-reset]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const email = btn.dataset.reset;
+        const ok = await confirmModal({
+          title: '비밀번호를 초기화할까요?',
+          body: `${email} 의 비밀번호가 임시 비밀번호로 바뀝니다.\n메일 발송 기능이 없으니 화면에 뜨는 값을 본인에게 직접 전달해 주세요.`,
+          confirmLabel: '초기화', danger: true,
+        });
+        if (!ok) return;
+        try {
+          const temp = await store.auth.resetPassword(email);
+          await confirmModal({
+            title: '임시 비밀번호',
+            body: `${email}\n\n${temp}\n\n이 값을 본인에게 전달하세요. 창을 닫으면 다시 볼 수 없습니다.`,
+            confirmLabel: '확인했습니다', cancelLabel: '닫기',
+          });
+          await load();
+        } catch (e) { toastErr(e.message); }
+      });
+    });
+  };
+
+  const load = async () => {
+    try {
+      all = await store.auth.listMembers();
+      draw();
+    } catch (e) {
+      rowsEl.innerHTML = `<div class="notice notice--err">회원 목록을 불러오지 못했습니다 — ${esc(e.message)}</div>`;
+    }
+  };
+
+  qEl.addEventListener('input', debounce(draw, 200));
+  filterEl.addEventListener('change', draw);
+
+  mount.querySelector('[data-csv]').addEventListener('click', () => {
+    const header = ['번호', '기관명', '성명', '이메일', '권한', '상태', '가입일', '최근 로그인'];
+    const lines = [header.map(csvCell).join(',')];
+    all.forEach((m, i) => {
+      lines.push([
+        i + 1, m.institution || '', m.name, m.email,
+        m.role === 'admin' ? '관리자' : '회원',
+        m.status === 'blocked' ? '정지' : '이용중',
+        fmtDate(m.createdAt), m.lastLoginAt ? fmtDate(m.lastLoginAt, true) : '',
+      ].map(csvCell).join(','));
+    });
+    downloadBlob(new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }),
+      `회원목록_${new Date().toISOString().slice(0, 10)}.csv`);
+    toastOk('CSV 를 내려받았습니다.');
+  });
+
+  await load();
 }

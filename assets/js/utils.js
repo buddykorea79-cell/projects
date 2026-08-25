@@ -108,19 +108,6 @@ export function uid(prefix = '') {
   return `${prefix}${t}${r}`;
 }
 
-/** 사람이 받아적기 좋은 수정코드 (혼동 문자 0/O/1/I/L 제외). */
-export function makeCode(len = 6) {
-  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-  const bytes = new Uint32Array(len);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('');
-}
-
-export async function sha256(text) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
 /** 파일명을 저장소에 안전한 형태로. 한글은 유지합니다. */
 export function safeName(name) {
   return String(name || 'file')

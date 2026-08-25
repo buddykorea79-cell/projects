@@ -11,6 +11,7 @@
  */
 import { CONFIG } from '../config.js';
 import { uid, safeName, fileToBase64, utf8ToBase64 } from '../utils.js';
+import { DemoAuth } from './demo-auth.js';
 
 const TOKEN_KEY = 'ah.gh.token';
 const API = 'https://api.github.com';
@@ -23,6 +24,8 @@ export class GitHubStore {
     this.kind = 'github';
     this.cfg = cfg;
     this.shaCache = new Map();
+    // GitHub 모드에도 서버가 없어 회원 기능은 흉내입니다(시연용).
+    this.auth = new DemoAuth();
   }
 
   /* ---------------------------------------------------------- 토큰 관리 */
@@ -49,7 +52,7 @@ export class GitHubStore {
     };
   }
 
-  async init() { /* 지연 로딩 — 별도 준비 없음 */ }
+  async init() { await this.auth.refresh(); }
 
   /* ------------------------------------------------------------ 저수준 */
 
@@ -268,6 +271,14 @@ export class GitHubStore {
     const isNew = !rec.id;
     if (isNew) { rec.id = uid('s_'); rec.createdAt = now; }
     rec.updatedAt = now;
+
+    // 제출자는 로그인한 회원으로 고정합니다.
+    // (R2 모드에서는 서버가 같은 일을 하므로 화면 코드가 갈라지지 않습니다.)
+    if (!rec.author) {
+      const me = this.auth?.me();
+      if (!me) throw new Error('로그인이 필요합니다.');
+      rec.author = { institution: me.institution || '', name: me.name, email: me.email };
+    }
 
     await this.attachFiles(rec, newFiles, rec.id);
 

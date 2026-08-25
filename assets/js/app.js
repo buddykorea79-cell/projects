@@ -1,35 +1,36 @@
-/** 앱 진입점 — 저장소 초기화, 라우팅, 전역 크롬(헤더/푸터/Frap). */
+/** 앱 진입점 — 저장소 초기화, 로그인 가드, 라우팅, 전역 크롬(헤더/푸터/Frap). */
 import { CONFIG, STORAGE_LABEL } from './config.js';
 import { initStore, currentMode, submissionOpen, store } from './store/index.js';
-import { session, logout, hashAdmin, hashMaterials } from './auth.js';
-import { $, esc } from './utils.js';
-import { toastErr, emptyState } from './ui.js';
+import { currentUser, isAdmin, isSignedIn, logout } from './auth.js';
+import { $, esc, attr } from './utils.js';
+import { toastErr, toastOk, emptyState } from './ui.js';
 import * as R from './router.js';
 
 import { homeView } from './views/home.js';
-import { projectView, submitView, receiptView } from './views/project.js';
+import { projectView, submitView } from './views/project.js';
 import { myView, submissionView, editSubmissionView } from './views/my.js';
 import { guideView } from './views/guide.js';
 import { materialsView } from './views/materials.js';
+import { loginView, signupView, accountView } from './views/account.js';
 import {
-  loginView, adminView, projectFormView, adminSubmissionsView, materialFormView,
+  adminView, projectFormView, adminSubmissionsView, materialFormView, membersView,
 } from './views/admin.js';
 
-/* 콘솔에서 비밀번호 해시를 만들 수 있게 노출합니다 (문서화된 헬퍼). */
-window.hashAdmin = hashAdmin;
-window.hashMaterials = hashMaterials;
-
 const main = $('#main');
+
+/** 로그인 없이 볼 수 있는 화면. 나머지는 전부 회원 전용입니다. */
+const PUBLIC_PATHS = new Set(['/login', '/signup', '/guide']);
 
 /* ------------------------------------------------------------- 크롬 -- */
 
 function renderAuthButtons() {
-  const admin = session();
-  const html = admin
-    ? `<a class="btn btn--darkline btn--sm" href="#/admin">관리자</a>
+  const me = currentUser();
+  const html = me
+    ? `<a class="btn btn--darkline btn--sm" href="#/account">${esc(me.name)}님</a>
+       ${me.role === 'admin' ? '<a class="btn btn--darkline btn--sm" href="#/admin">관리자</a>' : ''}
        <button class="btn btn--dark btn--sm" data-logout>로그아웃</button>`
-    : `<a class="btn btn--darkline btn--sm" href="#/admin">관리자 로그인</a>
-       <a class="btn btn--dark btn--sm" href="#/">과제 제출</a>`;
+    : `<a class="btn btn--darkline btn--sm" href="#/login">로그인</a>
+       <a class="btn btn--dark btn--sm" href="#/signup">회원가입</a>`;
 
   ['#gnavActions', '#gnavDrawerActions'].forEach((sel) => {
     const el = $(sel);
@@ -37,11 +38,21 @@ function renderAuthButtons() {
   });
 
   document.querySelectorAll('[data-logout]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      logout();
-      renderAuthButtons();
-      R.go('/');
+    btn.addEventListener('click', async () => {
+      await logout();
+      toastOk('로그아웃되었습니다.');
+      R.go('/login');
     });
+  });
+}
+
+/** 로그인 여부에 따라 메뉴를 감춥니다. */
+function renderNavLinks() {
+  const signed = isSignedIn();
+  document.querySelectorAll('.gnav__links a, .gnav__drawer a').forEach((a) => {
+    const href = a.getAttribute('href') || '';
+    const memberOnly = ['#/', '#/materials', '#/my'].includes(href);
+    a.hidden = memberOnly && !signed;
   });
 }
 
@@ -75,17 +86,17 @@ function setupDrawer() {
   });
 }
 
-/** Frap 버튼 — 접수중인 프로젝트가 하나라도 있을 때만 띄웁니다. */
+/** Frap 버튼 — 로그인했고 접수중인 프로젝트가 있을 때만. */
 async function updateFrap(path) {
   const frap = $('#frap');
-  if (path.startsWith('/admin') || path.startsWith('/materials') || path.includes('/submit')) {
-    frap.hidden = true; return;
+  if (!isSignedIn() || path.startsWith('/admin') || path.startsWith('/materials')
+      || path.includes('/submit') || PUBLIC_PATHS.has(path)) {
+    frap.hidden = true;
+    return;
   }
   try {
-    const projects = await store.listProjects();
-    const open = projects.filter(submissionOpen);
+    const open = (await store.listProjects()).filter(submissionOpen);
     if (!open.length) { frap.hidden = true; return; }
-
     const match = path.match(/^\/p\/([^/]+)/);
     const target = (match && open.find((p) => p.id === match[1])) || open[0];
     frap.hidden = false;
@@ -98,12 +109,43 @@ async function updateFrap(path) {
 
 /* ----------------------------------------------------------- 라우팅 -- */
 
-/** 각 화면 핸들러를 공통 에러 처리로 감쌉니다. */
-const view = (fn) => async (params, query) => {
+function signInWall(path) {
+  main.innerHTML = `<section class="section"><div class="wrap wrap--narrow">
+    ${emptyState({
+    title: '로그인이 필요합니다',
+    body: '과제 제출과 강의자료는 회원만 이용할 수 있습니다.',
+    action: `<div class="row" style="justify-content:center">
+        <a class="btn btn--primary" href="#/login?next=${attr(encodeURIComponent(path))}">로그인</a>
+        <a class="btn btn--outline" href="#/signup">회원가입</a>
+      </div>`,
+  })}
+  </div></section>`;
+}
+
+/** 각 화면 핸들러를 로그인 가드 + 공통 에러 처리로 감쌉니다. */
+const view = (fn, { admin = false } = {}) => async (params, query) => {
+  const path = R.currentPath();
+
+  if (!PUBLIC_PATHS.has(path) && !isSignedIn()) {
+    // 서버에 아직 물어본 적이 없다면(새로고침 직후 등) 한 번 확인하고 판단합니다.
+    if (store?.auth && !store.auth.synced) await store.auth.refresh();
+    renderAuthButtons();
+    renderNavLinks();
+    if (!isSignedIn()) { signInWall(path); return; }
+  }
+  if (admin && !isAdmin()) {
+    main.innerHTML = `<section class="section"><div class="wrap wrap--narrow">
+      <div class="notice notice--warn">관리자만 볼 수 있는 화면입니다.</div>
+      <div style="margin-top:var(--space-4)"><a class="btn btn--outline" href="#/">홈으로</a></div>
+    </div></section>`;
+    return;
+  }
+
   try {
     await fn(main, params, query);
   } catch (e) {
     console.error(e);
+    if (e?.status === 401) { signInWall(path); return; }
     main.innerHTML = `<section class="section"><div class="wrap wrap--narrow">
       <div class="notice notice--err">
         <strong>화면을 불러오지 못했습니다.</strong><br>${esc(e.message)}
@@ -115,23 +157,26 @@ const view = (fn) => async (params, query) => {
 };
 
 function registerRoutes() {
-  R.route('/',                        view((m) => homeView(m)));
-  R.route('/guide',                   view((m) => guideView(m)));
-  R.route('/materials',               view((m) => materialsView(m)));
-  R.route('/my',                      view((m) => myView(m)));
+  R.route('/', view((m) => homeView(m)));
+  R.route('/guide', view((m) => guideView(m)));
+  R.route('/materials', view((m) => materialsView(m)));
+  R.route('/my', view((m) => myView(m)));
 
-  R.route('/p/:id',                   view((m, p) => projectView(m, p)));
-  R.route('/p/:id/submit',            view((m, p) => submitView(m, p)));
-  R.route('/done/:id',                view((m, p) => receiptView(m, p)));
+  R.route('/login', view((m) => loginView(m)));
+  R.route('/signup', view((m) => signupView(m)));
+  R.route('/account', view((m) => accountView(m)));
 
-  R.route('/s/:id',                   view((m, p) => submissionView(m, p)));
-  R.route('/s/:id/edit',              view((m, p) => editSubmissionView(m, p)));
+  R.route('/p/:id', view((m, p) => projectView(m, p)));
+  R.route('/p/:id/submit', view((m, p) => submitView(m, p)));
 
-  R.route('/admin',                   view((m) => adminView(m)));
-  R.route('/admin/login',             view((m) => loginView(m)));
-  R.route('/admin/project/:id',       view((m, p) => projectFormView(m, p)));
-  R.route('/admin/material/:id',      view((m, p) => materialFormView(m, p)));
-  R.route('/admin/submissions/:projectId', view((m, p) => adminSubmissionsView(m, p)));
+  R.route('/s/:id', view((m, p) => submissionView(m, p)));
+  R.route('/s/:id/edit', view((m, p) => editSubmissionView(m, p)));
+
+  R.route('/admin', view((m) => adminView(m), { admin: true }));
+  R.route('/admin/members', view((m) => membersView(m), { admin: true }));
+  R.route('/admin/project/:id', view((m, p) => projectFormView(m, p), { admin: true }));
+  R.route('/admin/material/:id', view((m, p) => materialFormView(m, p), { admin: true }));
+  R.route('/admin/submissions/:projectId', view((m, p) => adminSubmissionsView(m, p), { admin: true }));
 
   R.setNotFound(view((m) => {
     m.innerHTML = `<section class="section"><div class="wrap">${emptyState({
@@ -149,6 +194,7 @@ function registerRoutes() {
   R.afterEach((path) => {
     markActiveNav(path);
     renderAuthButtons();
+    renderNavLinks();
     updateFrap(path);
     main.focus({ preventScroll: true });
   });
@@ -163,6 +209,7 @@ async function boot() {
 
   setupDrawer();
   renderAuthButtons();
+  renderNavLinks();
   registerRoutes();
 
   try {
@@ -176,7 +223,13 @@ async function boot() {
     return;
   }
 
-  window.addEventListener('ah:auth', renderAuthButtons);
+  window.addEventListener('ah:auth', () => {
+    renderAuthButtons();
+    renderNavLinks();
+    // 보는 도중 세션이 끊겼다면(만료·정지) 오류 대신 로그인 안내를 보여줍니다.
+    const path = R.currentPath();
+    if (!isSignedIn() && !PUBLIC_PATHS.has(path)) signInWall(path);
+  });
   R.start();
 }
 

@@ -1,9 +1,19 @@
+/**
+ * 데모(브라우저 저장) 모드 UI 흐름 검사.
+ *
+ * 회원제로 바뀐 뒤의 화면 흐름을 훑습니다 — 가입 → 제출 → 조회/수정 →
+ * 관리자(자동 승격) → 강의자료 → 회원 관리 → 라우팅·반응형.
+ * 서버 인증의 진짜 동작은 auth.test.mjs / r2-browser.test.mjs 가 봅니다.
+ */
 import { chromium } from 'playwright';
 import { existsSync } from 'fs';
 
 const BASE = 'http://localhost:8899';
 const errors = [];
 const log = (...a) => console.log(...a);
+
+const ADMIN = { email: 'aireader@mois.go.kr', password: 'dlrhd26!!', name: '관리자', inst: '행정안전부' };
+const USER = { email: 'hong@example.com', password: 'hong-pass-2026', name: '홍길동', inst: '한국디자인진흥원' };
 
 // 이 환경에는 Chromium 이 미리 깔려 있습니다. 다른 곳에서는 CHROME_PATH 로 지정하거나
 // 이 옵션을 지우고 `npx playwright install chromium` 을 쓰세요.
@@ -25,11 +35,172 @@ async function step(name, fn) {
   catch (e) { log(`  FAIL  ${name} — ${e.message}`); errors.push(`${name}: ${e.message}`); }
 }
 
-log('\n== 1. 홈 ==');
+/** 폼에 값을 채우고 제출합니다. */
+async function submitForm(sel, values) {
+  for (const [name, value] of Object.entries(values)) {
+    if (typeof value === 'boolean') await page.setChecked(`${sel} [name="${name}"]`, value);
+    else await page.fill(`${sel} [name="${name}"]`, value);
+  }
+  await page.locator(`${sel} button[type="submit"]`).click();
+}
+
+async function signup({ email, password, name, inst }) {
+  await page.goto(`${BASE}#/signup`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#signupForm', { timeout: 5000 });
+  await submitForm('#signupForm', {
+    institution: inst, name, email, password, confirm: password, agree: true,
+  });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
+}
+
+/** confirmModal 의 확인 버튼을 누릅니다. */
+async function confirmOk() {
+  await page.waitForSelector('.modal [data-ok]', { timeout: 5000 });
+  await page.locator('.modal [data-ok]').click();
+  await page.waitForSelector('.modal', { state: 'detached', timeout: 5000 });
+}
+
+async function logout() {
+  await page.locator('#gnavActions [data-logout]').click();
+  await page.waitForSelector('#gnavActions a[href="#/signup"]', { timeout: 5000 });
+}
+
+/* ============================================================ 1. 비회원 == */
+
+log('\n== 1. 로그인 전 ==');
 await page.goto(BASE, { waitUntil: 'networkidle' });
-await step('히어로 제목 렌더', async () => {
-  await page.waitForSelector('.hero__title', { timeout: 5000 });
+await step('비회원에게는 로그인 안내가 보임', async () => {
+  await page.waitForSelector('.empty h3', { timeout: 6000 });
+  const t = await page.locator('.empty h3').innerText();
+  if (!t.includes('로그인이 필요합니다')) throw new Error(t);
 });
+await step('헤더에 로그인 · 회원가입 버튼', async () => {
+  if (!(await page.locator('#gnavActions a[href="#/login"]').count())) throw new Error('로그인 버튼 없음');
+  if (!(await page.locator('#gnavActions a[href="#/signup"]').count())) throw new Error('회원가입 버튼 없음');
+});
+await step('회원 전용 메뉴는 감춰짐', async () => {
+  const materials = page.locator('.gnav__links a[data-nav="materials"]');
+  if (!(await materials.isHidden())) throw new Error('강의자료 메뉴가 보임');
+  if (!(await page.locator('.gnav__links a[data-nav="guide"]').isVisible())) {
+    throw new Error('이용안내는 보여야 함');
+  }
+});
+await step('주소로 직접 들어가도 강의자료가 막힘', async () => {
+  await page.goto(`${BASE}#/materials`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.empty h3', { timeout: 5000 });
+  if (await page.locator('.material').count()) throw new Error('자료가 노출됨');
+});
+await step('이용안내는 로그인 없이 열람', async () => {
+  await page.goto(`${BASE}#/guide`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.expander', { timeout: 5000 });
+});
+await step('가입 화면에 시연용 안내가 표시', async () => {
+  await page.goto(`${BASE}#/signup`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#signupForm', { timeout: 5000 });
+  const notice = await page.locator('.notice--warn').first().innerText();
+  if (!notice.includes('시연용')) throw new Error(notice);
+});
+
+/* ============================================================= 2. 가입 == */
+
+log('\n== 2. 회원가입 ==');
+await step('빈 값이면 항목별 오류', async () => {
+  await page.locator('#signupForm button[type="submit"]').click();
+  await page.waitForSelector('.field__err', { timeout: 3000 });
+  const n = await page.locator('.field__err').count();
+  if (n < 4) throw new Error(`오류 표시 ${n}건`);
+});
+await step('짧은 비밀번호 거부', async () => {
+  await submitForm('#signupForm', {
+    institution: USER.inst, name: USER.name, email: USER.email,
+    password: 'short', confirm: 'short', agree: true,
+  });
+  await page.waitForTimeout(400);
+  const err = await page.locator('[name="password"] ~ .field__err, .field__err').allInnerTexts();
+  if (!err.some((t) => t.includes('8자'))) throw new Error(err.join(' / '));
+});
+await step('비밀번호 확인이 다르면 거부', async () => {
+  await submitForm('#signupForm', {
+    password: USER.password, confirm: `${USER.password}x`, agree: true,
+  });
+  await page.waitForTimeout(400);
+  const err = await page.locator('.field__err').allInnerTexts();
+  if (!err.some((t) => t.includes('서로 다릅니다'))) throw new Error(err.join(' / '));
+});
+await step('동의하지 않으면 거부', async () => {
+  await submitForm('#signupForm', { confirm: USER.password, agree: false });
+  await page.waitForTimeout(400);
+  const err = await page.locator('.field__err').allInnerTexts();
+  if (!err.some((t) => t.includes('동의'))) throw new Error(err.join(' / '));
+});
+await step('가입하면 바로 홈으로', async () => {
+  await submitForm('#signupForm', { agree: true });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
+  const who = await page.locator('#gnavActions a[href="#/account"]').innerText();
+  if (!who.includes(USER.name)) throw new Error(who);
+});
+await step('같은 이메일로 다시 가입하면 거부', async () => {
+  await logout();
+  await page.goto(`${BASE}#/signup`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#signupForm', { timeout: 5000 });
+  await submitForm('#signupForm', {
+    institution: USER.inst, name: USER.name, email: USER.email,
+    password: USER.password, confirm: USER.password, agree: true,
+  });
+  await page.waitForSelector('.field__err', { timeout: 4000 });
+  const err = await page.locator('.field__err').first().innerText();
+  if (!err.includes('이미 가입')) throw new Error(err);
+});
+
+/* ============================================================= 3. 로그인 == */
+
+log('\n== 3. 로그인 ==');
+await step('틀린 비밀번호는 같은 문구로 거부', async () => {
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: USER.email, password: 'wrong-password' });
+  await page.waitForSelector('.field__err', { timeout: 4000 });
+  const err = await page.locator('.field__err').first().innerText();
+  if (!err.includes('이메일 또는 비밀번호')) throw new Error(err);
+});
+await step('없는 계정도 같은 문구 (계정 존재가 새지 않음)', async () => {
+  await submitForm('#loginForm', { email: 'nobody@example.com', password: 'whatever12' });
+  await page.waitForTimeout(600);
+  const err = await page.locator('.field__err').first().innerText();
+  if (!err.includes('이메일 또는 비밀번호')) throw new Error(err);
+});
+await step('로그인 성공', async () => {
+  await submitForm('#loginForm', { email: USER.email, password: USER.password });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
+});
+await step('로그인하면 회원 메뉴가 나타남', async () => {
+  if (!(await page.locator('.gnav__links a[data-nav="materials"]').isVisible())) {
+    throw new Error('강의자료 메뉴가 안 보임');
+  }
+  if (!(await page.locator('.gnav__links a[data-nav="my"]').isVisible())) {
+    throw new Error('내 제출물 메뉴가 안 보임');
+  }
+});
+await step('로그인 뒤 next 경로로 돌아감', async () => {
+  await logout();
+  await page.goto(`${BASE}#/login?next=/materials`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: USER.email, password: USER.password });
+  await page.waitForURL(/#\/materials/, { timeout: 8000 });
+});
+await step('외부 주소는 next 로 안 먹힘', async () => {
+  await logout();
+  await page.goto(`${BASE}#/login?next=${encodeURIComponent('https://evil.example.com')}`,
+    { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: USER.email, password: USER.password });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
+  if (!page.url().startsWith(BASE)) throw new Error(page.url());
+});
+
+/* ============================================================== 4. 홈 == */
+
+log('\n== 4. 홈 ==');
 await step('시드 프로젝트 2건 표시', async () => {
   await page.waitForSelector('.tile', { timeout: 5000 });
   const n = await page.locator('.tile').count();
@@ -37,14 +208,15 @@ await step('시드 프로젝트 2건 표시', async () => {
 });
 await step('히어로 문구가 새 문구로 표시', async () => {
   const t = await page.locator('.hero__title').innerText();
-  if (!t.includes('여기에서 과제를 제출하고') || !t.includes('강의자료를 받을 수 있습니다'))
+  if (!t.includes('여기에서 과제를 제출하고') || !t.includes('강의자료를 받을 수 있습니다')) {
     throw new Error(t);
+  }
 });
 await step('안내 제목이 "과제 제출 방법"', async () => {
   const h = await page.locator('.band h2').first().innerText();
   if (h.trim() !== '과제 제출 방법') throw new Error(h);
   const steps = await page.locator('.step h3').allInnerTexts();
-  const want = ['제출할 과제 목록 선택', '참석자 정보', '과제 내용'];
+  const want = ['참석자 정보', '제출할 과제 목록 선택', '과제 내용'];
   if (JSON.stringify(steps) !== JSON.stringify(want)) throw new Error(steps.join(' / '));
 });
 await step('프로젝트 그리드가 한 행에 2개', async () => {
@@ -60,33 +232,30 @@ await step('"진행중 프로젝트 보기"가 목록으로 스크롤 (404 아�
   if (await page.locator('.empty h3').count()) throw new Error('404 화면이 떴음');
   if (page.url().endsWith('#projects')) throw new Error('해시가 오염됨');
 });
-await step('헤더에 강의자료 메뉴 존재', async () => {
-  const href = await page.locator('.gnav__links a[data-nav="materials"]').getAttribute('href');
-  if (href !== '#/materials') throw new Error(href);
-});
 
-log('\n== 2. 프로젝트 상세 ==');
-await step('첫 프로젝트 열기', async () => {
+/* ============================================================ 5. 제출 == */
+
+log('\n== 5. 제출 플로우 ==');
+let projectTitle = '';
+await step('프로젝트 상세 → 제출 화면', async () => {
+  projectTitle = (await page.locator('.tile__title').first().innerText()).trim();
   await page.locator('.tile').first().click();
   await page.waitForSelector('h1', { timeout: 5000 });
-});
-
-log('\n== 3. 제출 플로우 ==');
-await step('제출 화면 진입', async () => {
   await page.getByRole('link', { name: '과제 제출하기' }).click();
   await page.waitForSelector('#submitForm', { timeout: 5000 });
 });
-await step('1단계 검증 — 빈 값이면 막힘', async () => {
-  await page.locator('[data-next]').click();
-  await page.waitForSelector('.field__err', { timeout: 3000 });
-  if (await page.locator('[data-panel="2"]').isVisible()) throw new Error('2단계로 넘어가 버림');
+await step('제출자 정보를 다시 묻지 않음', async () => {
+  if (await page.locator('#submitForm [name="email"]').count()) throw new Error('이메일 입력칸이 남아 있음');
+  if (await page.locator('[data-next]').count()) throw new Error('단계 버튼이 남아 있음');
+  const who = await page.locator('.card--flat').first().innerText();
+  if (!who.includes(USER.name) || !who.includes(USER.email) || !who.includes(USER.inst)) {
+    throw new Error(who);
+  }
 });
-await step('1단계 통과', async () => {
-  await page.fill('[name="institution"]', '한국디자인진흥원');
-  await page.fill('[name="name"]', '홍길동');
-  await page.fill('[name="email"]', 'hong@example.com');
-  await page.locator('[data-next]').click();
-  await page.waitForSelector('[data-panel="2"]:not([hidden])', { timeout: 3000 });
+await step('빈 값이면 막힘', async () => {
+  await page.locator('#submitForm button[type="submit"]').click();
+  await page.waitForSelector('.field__err', { timeout: 3000 });
+  if (/#\/s\//.test(page.url())) throw new Error('빈 값으로 제출됨');
 });
 await step('파일 첨부 (이미지)', async () => {
   await page.setInputFiles('[data-input]', {
@@ -105,43 +274,42 @@ await step('거부: 허용되지 않는 확장자', async () => {
   const n = await page.locator('.fileitem').count();
   if (n !== 1) throw new Error(`fileitem count = ${n}, 확장자 거부 실패`);
 });
-await step('2단계 검증 — 동의 없으면 막힘', async () => {
-  await page.fill('[name="title"]', '스타벅스 디자인 시스템 분석');
-  await page.fill('[name="body"]', '색상 4단계 그린 체계와 50px 필 버튼을 정리했습니다.');
-  await page.locator('button[type="submit"]').click();
+await step('동의 없으면 막힘', async () => {
+  await page.fill('#submitForm [name="title"]', '스타벅스 디자인 시스템 분석');
+  await page.fill('#submitForm [name="body"]', '색상 4단계 그린 체계와 50px 필 버튼을 정리했습니다.');
+  await page.locator('#submitForm button[type="submit"]').click();
   await page.waitForTimeout(400);
-  if (page.url().includes('/done/')) throw new Error('동의 없이 제출됨');
+  if (/#\/s\//.test(page.url())) throw new Error('동의 없이 제출됨');
 });
-let editCode = '';
-await step('제출 성공 + 수정코드 발급', async () => {
-  await page.check('[name="agree"]');
-  await page.locator('button[type="submit"]').click();
-  await page.waitForURL(/\/done\//, { timeout: 8000 });
-  await page.waitForSelector('.code-ceremony__code', { timeout: 5000 });
-  editCode = (await page.locator('.code-ceremony__code').innerText()).trim();
-  if (!/^[A-Z0-9]{6}$/.test(editCode)) throw new Error(`code = "${editCode}"`);
-  log(`        발급된 코드: ${editCode}`);
+await step('제출 성공 → 상세로 이동', async () => {
+  await page.check('#submitForm [name="agree"]');
+  await page.locator('#submitForm button[type="submit"]').click();
+  await page.waitForURL(/#\/s\//, { timeout: 8000 });
+  await page.waitForSelector('.page-title', { timeout: 5000 });
+  const t = await page.locator('.page-title').first().innerText();
+  if (!t.includes('스타벅스')) throw new Error(t);
+});
+await step('제출자가 로그인한 회원으로 기록됨', async () => {
+  const text = await page.locator('.wrap').first().innerText();
+  if (!text.includes(USER.name) || !text.includes(USER.inst)) throw new Error(text.slice(0, 200));
 });
 
-log('\n== 4. 내 제출물 조회 / 수정 / 삭제 ==');
-await step('틀린 코드는 거부', async () => {
+/* ==================================================== 6. 내 제출물 == */
+
+log('\n== 6. 내 제출물 / 수정 ==');
+await step('코드 입력 없이 바로 목록이 보임', async () => {
   await page.goto(`${BASE}#/my`, { waitUntil: 'networkidle' });
-  await page.fill('#unlockForm [name="email"]', 'hong@example.com');
-  await page.fill('#unlockForm [name="code"]', 'ZZZZZZ');
-  await page.locator('#unlockForm button[type="submit"]').click();
-  await page.waitForSelector('.field__err', { timeout: 4000 });
-});
-await step('올바른 코드로 조회', async () => {
-  await page.fill('#unlockForm [name="code"]', editCode);
-  await page.locator('#unlockForm button[type="submit"]').click();
-  await page.waitForSelector('.table tbody tr', { timeout: 5000 });
+  await page.waitForSelector('.table tbody tr', { timeout: 6000 });
+  if (await page.locator('#unlockForm').count()) throw new Error('수정코드 폼이 남아 있음');
+  const n = await page.locator('.table tbody tr').count();
+  if (n !== 1) throw new Error(`행 ${n}개`);
 });
 await step('제출물 수정', async () => {
   await page.locator('.table tbody tr a[href*="/s/"]').first().click();
   await page.waitForSelector('.page-title', { timeout: 5000 });
   await page.getByRole('link', { name: '수정' }).first().click();
   await page.waitForSelector('#editForm', { timeout: 5000 });
-  await page.fill('[name="title"]', '수정된 제목입니다');
+  await page.fill('#editForm [name="title"]', '수정된 제목입니다');
   await page.locator('#editForm button[type="submit"]').click();
   await page.waitForURL((u) => /#\/s\//.test(u.href) && !u.href.includes('/edit'), { timeout: 8000 });
   await page.waitForFunction(
@@ -151,24 +319,38 @@ await step('제출물 수정', async () => {
 await step('첨부 이미지가 렌더됨', async () => {
   await page.waitForSelector('.media-card img', { timeout: 5000 });
 });
-
-log('\n== 5. 관리자 ==');
-await step('잘못된 비밀번호 거부', async () => {
-  await page.goto(`${BASE}#/admin`, { waitUntil: 'networkidle' });
-  await page.fill('#loginForm [name="email"]', 'aireader@mois.go.kr');
-  await page.fill('#loginForm [name="password"]', 'wrong');
-  await page.locator('#loginForm button[type="submit"]').click();
-  await page.waitForSelector('.field__err', { timeout: 4000 });
+await step('다른 회원의 제출물은 목록에 안 보임', async () => {
+  const other = { email: 'kim@example.com', password: 'kim-pass-2026', name: '김철수', inst: '한국정보화진흥원' };
+  await logout();
+  await signup(other);
+  await page.goto(`${BASE}#/my`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.empty h3', { timeout: 6000 });
+  const t = await page.locator('.empty h3').innerText();
+  if (!t.includes('아직 제출한 과제가 없습니다')) throw new Error(t);
 });
-await step('올바른 자격증명으로 로그인', async () => {
-  await page.fill('#loginForm [name="password"]', 'dlrhd26');
-  await page.locator('#loginForm button[type="submit"]').click();
-  await page.waitForSelector('.stat', { timeout: 6000 });
+await step('일반 회원은 관리자 화면을 못 봄', async () => {
+  await page.goto(`${BASE}#/admin`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.notice--warn', { timeout: 5000 });
+  const t = await page.locator('.notice--warn').first().innerText();
+  if (!t.includes('관리자만')) throw new Error(t);
+  if (await page.locator('.stat').count()) throw new Error('대시보드가 노출됨');
+});
+
+/* ========================================================== 7. 관리자 == */
+
+log('\n== 7. 관리자 ==');
+await step('설정된 이메일로 가입하면 자동으로 관리자', async () => {
+  await logout();
+  await signup(ADMIN);
+  await page.waitForSelector('#gnavActions a[href="#/admin"]', { timeout: 5000 });
 });
 await step('대시보드 통계', async () => {
+  await page.goto(`${BASE}#/admin`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.stat', { timeout: 6000 });
   const stats = await page.locator('.stat__v').allInnerTexts();
   log(`        통계: ${stats.join(' / ')}`);
   if (stats[2] !== '1') throw new Error(`총 제출물 = ${stats[2]}`);
+  if (stats[6] !== '3') throw new Error(`회원 = ${stats[6]}`);
 });
 await step('프로젝트 개설', async () => {
   await page.goto(`${BASE}#/admin/project/new`, { waitUntil: 'networkidle' });
@@ -181,12 +363,100 @@ await step('프로젝트 개설', async () => {
 await step('제출물 관리 화면 + 검색', async () => {
   await page.goto(`${BASE}#/admin`, { waitUntil: 'networkidle' });
   await page.waitForSelector('#adminProjects .table', { timeout: 6000 });
-  const link = page.locator('a[href*="/admin/submissions/"]').first();
-  await link.click();
+  await page.locator('a[href*="/admin/submissions/"]').first().click();
   await page.waitForSelector('.toolbar', { timeout: 5000 });
 });
+await step('관리자는 남의 제출물도 열람', async () => {
+  await page.goto(`${BASE}#/admin`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#adminProjects .table', { timeout: 6000 });
+  await page.locator('#adminProjects tbody tr', { hasText: projectTitle })
+    .locator('a[href*="/admin/submissions/"]').first().click();
+  // 대시보드에도 .table 이 있으므로, 이 화면에만 있는 #rows 가 그려질 때까지 기다립니다.
+  await page.waitForURL(/#\/admin\/submissions\//, { timeout: 6000 });
+  await page.waitForSelector('#rows .table tbody tr, #rows .empty', { timeout: 6000 });
+  const rows = await page.locator('#rows .table tbody tr').count();
+  if (!rows) throw new Error(`"${projectTitle}" 제출물이 안 보임`);
+  const text = await page.locator('#rows .table tbody').innerText();
+  if (!text.includes(USER.name) || !text.includes(USER.email)) throw new Error(text.slice(0, 200));
+});
 
-log('\n== 6. 강의자료 ==');
+/* ====================================================== 8. 회원 관리 == */
+
+log('\n== 8. 회원 관리 ==');
+await step('회원 목록에 3명', async () => {
+  await page.goto(`${BASE}#/admin/members`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.table tbody tr', { timeout: 6000 });
+  const n = await page.locator('.table tbody tr').count();
+  if (n !== 3) throw new Error(`회원 ${n}명`);
+});
+await step('비밀번호 해시는 화면 어디에도 없음', async () => {
+  const html = await page.content();
+  if (/pbkdf2\$/.test(html)) throw new Error('해시가 노출됨');
+});
+await step('검색으로 걸러짐', async () => {
+  await page.fill('#q', '홍길동');
+  await page.waitForTimeout(400);
+  const n = await page.locator('.table tbody tr').count();
+  if (n !== 1) throw new Error(`검색 결과 ${n}건`);
+  await page.fill('#q', '');
+  await page.waitForTimeout(400);
+});
+await step('본인 계정에는 조작 버튼이 없음', async () => {
+  const row = page.locator('.table tbody tr', { hasText: ADMIN.email });
+  const t = await row.innerText();
+  if (!t.includes('본인')) throw new Error(t);
+  if (await row.locator('[data-status]').count()) throw new Error('본인 정지 버튼이 있음');
+});
+await step('회원을 관리자로 승격했다가 되돌림', async () => {
+  await page.locator('.table tbody tr', { hasText: USER.email }).locator('[data-role]').click();
+  await confirmOk();
+  await page.waitForTimeout(500);
+  const row = () => page.locator('.table tbody tr', { hasText: USER.email });
+  if (!(await row().locator('.badge--gold').count())) throw new Error(await row().innerText());
+
+  await row().locator('[data-role]').click();
+  await confirmOk();
+  await page.waitForTimeout(500);
+  if (await row().locator('.badge--gold').count()) throw new Error(await row().innerText());
+});
+await step('비밀번호 초기화로 임시 비밀번호 발급', async () => {
+  await page.locator('.table tbody tr', { hasText: 'kim@example.com' }).locator('[data-reset]').click();
+  await confirmOk();                       // "초기화할까요?"
+  await page.waitForSelector('.modal', { timeout: 5000 });
+  const text = await page.locator('.modal').innerText();
+  if (!text.includes('임시 비밀번호')) throw new Error(text.slice(0, 120));
+  if (!text.includes('kim@example.com')) throw new Error(text.slice(0, 120));
+  const m = text.match(/[A-Za-z2-9]{12}/);
+  if (!m) throw new Error(text.slice(0, 200));
+  log(`        임시 비밀번호: ${m[0]}`);
+  await confirmOk();
+});
+await step('이용 정지하면 로그인이 막힘', async () => {
+  await page.goto(`${BASE}#/admin/members`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.table tbody tr', { timeout: 6000 });
+  await page.locator('.table tbody tr', { hasText: 'kim@example.com' })
+    .locator('[data-status]').click();
+  await confirmOk();
+  await page.waitForTimeout(500);
+  const after = await page.locator('.table tbody tr', { hasText: 'kim@example.com' }).innerText();
+  if (!after.includes('정지')) throw new Error(after);
+
+  await logout();
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: 'kim@example.com', password: 'kim-pass-2026' });
+  await page.waitForSelector('.field__err', { timeout: 5000 });
+  const err = await page.locator('.field__err').first().innerText();
+  if (!err.includes('정지')) throw new Error(err);
+});
+
+/* ====================================================== 9. 강의자료 == */
+
+log('\n== 9. 강의자료 ==');
+await step('관리자로 다시 로그인', async () => {
+  await submitForm('#loginForm', { email: ADMIN.email, password: ADMIN.password });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
+});
 await step('관리자가 PDF 자료 등록', async () => {
   await page.goto(`${BASE}#/admin/material/new`, { waitUntil: 'networkidle' });
   await page.waitForSelector('#matForm', { timeout: 5000 });
@@ -259,27 +529,21 @@ await step('설명의 HTML 은 주입되지 않고 글자로 표시', async () =
   const injected = await page.locator('.material__desc img').count();
   if (injected) throw new Error('HTML 이 주입됨');
   const text = await page.locator('.material__desc').first().innerText();
-  if (!text.includes('<img')) throw new Error('원문이 글자로 안 보임: ' + text);
+  if (!text.includes('<img')) throw new Error(`원문이 글자로 안 보임: ${text}`);
 });
-await step('관리자는 비밀번호 없이 열람', async () => {
+await step('비밀번호 잠금 화면이 사라짐', async () => {
   await page.goto(`${BASE}#/materials`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('.fileitem', { timeout: 5000 });
-  if (await page.locator('#gateForm').count()) throw new Error('관리자에게 잠금이 걸림');
+  await page.waitForSelector('.fileitem', { timeout: 6000 });
+  if (await page.locator('#gateForm').count()) throw new Error('잠금 폼이 남아 있음');
 });
-await step('로그아웃하면 비밀번호 잠금이 걸림', async () => {
-  await page.evaluate(() => sessionStorage.clear());
-  await page.reload({ waitUntil: 'networkidle' });
-  await page.waitForSelector('#gateForm', { timeout: 5000 });
-});
-await step('틀린 비밀번호는 거부', async () => {
-  await page.fill('#gateForm [name="password"]', 'wrong');
-  await page.locator('#gateForm button[type="submit"]').click();
-  await page.waitForSelector('.field__err', { timeout: 4000 });
-});
-await step('AI2026 으로 잠금 해제 + 다운로드 링크 노출', async () => {
-  await page.fill('#gateForm [name="password"]', 'AI2026');
-  await page.locator('#gateForm button[type="submit"]').click();
-  await page.waitForSelector('.fileitem', { timeout: 5000 });
+await step('일반 회원도 내려받기 링크를 봄', async () => {
+  await logout();
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: USER.email, password: USER.password });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
+  await page.goto(`${BASE}#/materials`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.fileitem', { timeout: 6000 });
   const name = await page.locator('.fileitem__name').first().innerText();
   if (!name.includes('1강_AI리더십개론.pdf')) throw new Error(name);
   const dl = page.locator('.fileitem a.btn--primary').first();
@@ -287,15 +551,67 @@ await step('AI2026 으로 잠금 해제 + 다운로드 링크 노출', async () 
   const href = await dl.getAttribute('href');
   if (!href || !href.startsWith('blob:')) throw new Error(`href = ${href}`);
 });
-await step('잠금 해제 후 새로고침해도 유지', async () => {
-  await page.reload({ waitUntil: 'networkidle' });
-  await page.waitForSelector('.fileitem', { timeout: 5000 });
+await step('일반 회원에게 자료 등록 버튼이 없음', async () => {
+  if (await page.locator('a[href="#/admin/material/new"]').count()) {
+    throw new Error('등록 버튼이 노출됨');
+  }
 });
 
-log('\n== 7. 라우팅 / 반응형 ==');
-await step('404 처리', async () => {
+/* ======================================================= 10. 내 계정 == */
+
+log('\n== 10. 내 계정 ==');
+await step('내 정보가 표시됨', async () => {
+  await page.goto(`${BASE}#/account`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.kv', { timeout: 5000 });
+  const t = await page.locator('.kv').first().innerText();
+  if (!t.includes(USER.email) || !t.includes(USER.inst)) throw new Error(t);
+});
+await step('현재 비밀번호가 틀리면 변경 거부', async () => {
+  await submitForm('#pwForm', { current: 'wrong-password', next: 'new-pass-2026', confirm: 'new-pass-2026' });
+  await page.waitForSelector('.field__err', { timeout: 4000 });
+});
+await step('비밀번호 변경 후 새 비밀번호로 로그인', async () => {
+  await submitForm('#pwForm', {
+    current: USER.password, next: 'new-pass-2026', confirm: 'new-pass-2026',
+  });
+  await page.waitForSelector('.toast--ok', { timeout: 5000 });
+
+  await logout();
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: USER.email, password: USER.password });
+  await page.waitForSelector('.field__err', { timeout: 5000 });
+
+  await submitForm('#loginForm', { email: USER.email, password: 'new-pass-2026' });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
+});
+await step('로그아웃하면 로그인 화면으로', async () => {
+  await logout();
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+});
+await step('로그아웃 뒤 새로고침해도 로그인 상태가 안 살아남', async () => {
+  await page.goto(`${BASE}#/my`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.empty h3', { timeout: 5000 });
+  const t = await page.locator('.empty h3').innerText();
+  if (!t.includes('로그인이 필요합니다')) throw new Error(t);
+});
+
+/* =================================================== 11. 라우팅/반응형 == */
+
+log('\n== 11. 라우팅 / 반응형 ==');
+await step('로그인 후 404 처리', async () => {
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: 'new-user@example.com', password: 'x' });
+  await page.waitForTimeout(300);
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await submitForm('#loginForm', { email: USER.email, password: 'new-pass-2026' });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
+
   await page.goto(`${BASE}#/does-not-exist`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.empty h3', { timeout: 4000 });
+  const t = await page.locator('.empty h3').innerText();
+  if (t.includes('로그인이 필요합니다')) throw new Error('로그인 벽이 404 를 가림');
 });
 await step('이용안내 아코디언', async () => {
   await page.goto(`${BASE}#/guide`, { waitUntil: 'networkidle' });
@@ -313,9 +629,11 @@ await step('모바일 뷰포트 — 가로 스크롤 없음', async () => {
     document.documentElement.scrollWidth - document.documentElement.clientWidth);
   if (overflow > 1) throw new Error(`가로 오버플로 ${overflow}px`);
 });
-await step('모바일 드로어', async () => {
+await step('모바일 드로어에도 계정 버튼', async () => {
   await page.locator('#gnavBurger').click();
   await page.waitForSelector('#gnavDrawer:not([hidden])', { timeout: 3000 });
+  const t = await page.locator('#gnavDrawerActions').innerText();
+  if (!t.includes('로그아웃')) throw new Error(t);
 });
 
 await browser.close();

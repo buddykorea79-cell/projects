@@ -6,7 +6,7 @@ import { CONFIG } from '../config.js';
 import { LocalStore } from './local.js';
 import { GitHubStore } from './github.js';
 import { R2Store } from './r2.js';
-import { makeCode, normEmail, isPastDue } from '../utils.js';
+import { isPastDue } from '../utils.js';
 
 const MODE_KEY = 'ah.storageMode';
 const MODES = ['local', 'github', 'r2'];
@@ -76,42 +76,6 @@ async function seedIfEmpty() {
 }
 
 /* ----------------------------------------------------- 도메인 헬퍼 -- */
-
-/**
- * 같은 이메일로 이미 제출한 적이 있으면 그 수정코드를 재사용합니다.
- * 덕분에 한 사람이 여러 프로젝트에 제출해도 외울 코드는 하나뿐입니다.
- */
-export async function issueCode(email) {
-  const mine = await store.listSubmissions({ email: normEmail(email) });
-  const existing = mine.find((s) => s.editCode);
-  return existing ? existing.editCode : makeCode(CONFIG.editCodeLength);
-}
-
-/** 신규 제출 레코드를 만듭니다. 수정코드가 함께 발급됩니다. */
-export async function newSubmission({ projectId, author, title, body }) {
-  const email = normEmail(author.email);
-  return {
-    projectId,
-    author: {
-      institution: (author.institution || '').trim(),
-      name: (author.name || '').trim(),
-      email,
-    },
-    title: (title || '').trim(),
-    body: (body || '').trim(),
-    files: [],
-    editCode: await issueCode(email),
-    status: 'submitted',
-  };
-}
-
-/** 이메일 + 수정코드가 맞는지. 대소문자/공백은 관대하게 봅니다. */
-export function verifyOwner(sub, email, code) {
-  if (!sub) return false;
-  const e = normEmail(email);
-  const c = String(code || '').trim().toUpperCase();
-  return sub.author?.email === e && String(sub.editCode || '').toUpperCase() === c;
-}
 
 /** 지금 이 프로젝트가 제출을 받을 수 있는 상태인지. */
 export function submissionOpen(project) {

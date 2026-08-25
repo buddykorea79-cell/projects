@@ -1,39 +1,23 @@
-/** 강의자료 다운로드 — 공용 비밀번호로 잠금을 풀고 파일을 내려받습니다. */
+/** 강의자료 — 회원이면 목록을 보고 파일을 받을 수 있습니다. */
 import { store } from '../store/index.js';
-import { CONFIG } from '../config.js';
 import { esc, attr, fmtDate, fmtBytes, extOf, downloadLink, linkify, firstUrl } from '../utils.js';
-import {
-  spinner, emptyState, toastOk, toastErr, fieldError, clearErrors, focusFirstError, busy,
-} from '../ui.js';
-import { isAdmin, materialsUnlocked, unlockMaterials, lockMaterials } from '../auth.js';
-
-/**
- * 열람 가능 여부.
- * 서버(R2)가 다운로드를 잠그고 있으면 관리자라도 비밀번호로 서명 토큰을 받아야
- * 파일이 내려옵니다. 그래서 그때는 관리자 우회를 적용하지 않습니다.
- */
-function canView() {
-  if (store.materialsGate) return store.hasMaterialsAccess();
-  return materialsUnlocked();
-}
+import { spinner, emptyState } from '../ui.js';
+import { isAdmin } from '../auth.js';
 
 export async function materialsView(mount) {
-  if (!canView()) { gateView(mount); return; }
-
   mount.innerHTML = `
     <section class="band" style="padding-block:var(--space-6)">
       <div class="wrap">
         <p class="crumb" style="color:var(--text-white-soft)">
           <a href="#/" style="color:#fff">홈</a><span>/</span>강의자료
         </p>
-        <h1 style="font-size:3.2rem;color:#fff;font-weight:600">강의자료 다운로드</h1>
+        <h1 style="font-size:3.2rem;color:#fff;font-weight:600">강의자료</h1>
         <p style="color:var(--text-white-soft);margin-top:var(--space-2);font-size:1.6rem">
-          수업에서 사용한 자료를 내려받을 수 있습니다.
+          수업에서 사용한 자료를 받을 수 있습니다.
         </p>
         <div class="row" style="margin-top:var(--space-4)">
           <a class="btn btn--onDark" href="#/">과제 제출하러 가기</a>
           ${isAdmin() ? '<a class="btn btn--ghostDark" href="#/admin/material/new">＋ 자료 등록</a>' : ''}
-          <button class="btn btn--ghostDark" data-lock>열람 종료</button>
         </div>
       </div>
     </section>
@@ -44,72 +28,7 @@ export async function materialsView(mount) {
       </div>
     </section>`;
 
-  const lock = mount.querySelector('[data-lock]');
-  if (lock) {
-    lock.addEventListener('click', () => {
-      lockMaterials();
-      store.clearMaterialsAccess?.();
-      toastOk('열람을 종료했습니다.');
-      materialsView(mount);
-    });
-  }
-
   await renderList(mount.querySelector('#materialList'));
-}
-
-/* ----------------------------------------------------------------- 잠금 -- */
-
-function gateView(mount) {
-  mount.innerHTML = `
-    <section class="section">
-      <div class="wrap wrap--narrow" style="max-width:460px">
-        <div style="text-align:center;margin-bottom:var(--space-5)">
-          <svg width="56" height="56" viewBox="0 0 24 24" fill="none" style="margin:0 auto var(--space-3)">
-            <rect x="3" y="4" width="18" height="16" rx="2.5" fill="#006241"/>
-            <path d="M8 9h8M8 12.5h8M8 16h5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
-          </svg>
-          <h1 class="page-title">강의자료 다운로드</h1>
-          <p class="page-sub">수강생에게 안내된 비밀번호를 입력하세요.</p>
-        </div>
-
-        <form class="card" id="gateForm" novalidate>
-          <label class="field">
-            <span class="field__label">비밀번호</span>
-            <input class="input" name="password" type="password" autocomplete="current-password"
-                   placeholder="수업에서 안내한 비밀번호" />
-            <span class="field__hint">한 번 입력하면 ${CONFIG.materialsSessionHours}시간 동안 유지됩니다.</span>
-          </label>
-          <button class="btn btn--primary btn--block btn--lg" type="submit">자료 보기</button>
-        </form>
-
-        <p style="text-align:center;margin-top:var(--space-4);font-size:1.3rem;color:var(--text-black-soft)">
-          비밀번호를 모르시면 담당 강사에게 문의하세요.${store.materialsGate
-            ? ''
-            : '<br>관리자는 <a href="#/admin">로그인</a> 후 비밀번호 없이 열람할 수 있습니다.'}
-        </p>
-      </div>
-    </section>`;
-
-  const form = mount.querySelector('#gateForm');
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    clearErrors(form);
-    const btn = form.querySelector('button[type="submit"]');
-    busy(btn, true, '확인 중…');
-    try {
-      const password = form.password.value;
-      // 화면 잠금(클라이언트 해시)과 다운로드 서명 토큰(서버)을 함께 확인합니다.
-      await unlockMaterials(password);
-      if (store.materialsGate) await store.authorizeMaterials(password);
-      toastOk('열람 권한이 확인되었습니다.');
-      materialsView(mount);
-    } catch (err) {
-      busy(btn, false);
-      fieldError(form.password, err.message);
-      focusFirstError(form);
-    }
-  });
-  form.password.focus();
 }
 
 /* ----------------------------------------------------------------- 목록 -- */
