@@ -3,11 +3,9 @@
   //  Cloudflare Worker 설정
   // ══════════════════════════════════════════════════════════════════════
   //
-  //  ⚠ 아래 "name" 을 대시보드에 있는 내 Worker 이름과 똑같이 맞추세요.
-  //    다르면 배포할 때 같은 이름의 Worker 가 새로 만들어집니다.
-  //
-  //    확인 방법: Cloudflare 대시보드 → Workers & Pages → 내 사이트 클릭
-  //               → 위쪽에 크게 적힌 이름이 그것입니다.
+  //  "name" 은 Cloudflare 에 있는 Worker 이름과 같아야 합니다.
+  //  현재 Worker: projects  (projects.buddykorea79.workers.dev)
+  //  이름을 바꾸면 배포할 때 다른 Worker 가 새로 만들어지니 주의하세요.
   //
   //  이 파일은 Git 연동 Worker 의 "설정 원본" 입니다. 대시보드에서 바인딩을
   //  추가해도 저장되지 않고 붙여넣을 스니펫만 보여주는 이유가 이것입니다.
@@ -16,7 +14,7 @@
   //  Pages 프로젝트라면 이 파일은 무시됩니다 — Pages 는 pages_build_output_dir
   //  키가 있을 때만 이 파일을 배포 설정으로 씁니다. 일부러 넣지 않았습니다.
   //
-  "name": "ai-leaders-academy",
+  "name": "projects",
 
   // /api 요청을 처리할 코드. 나머지 요청은 아래 assets 가 처리합니다.
   "main": "shared/worker-entry.js",
