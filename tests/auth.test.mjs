@@ -426,6 +426,106 @@ await t('관리자 강의자료 업로드는 materials 폴더로', async () => {
   if (!r.data.key.startsWith('uploads/materials/m_abc123/')) throw new Error(r.data.key);
 });
 
+console.log('\n== 세션 무효화 ==');
+
+await t('비밀번호를 바꾸면 다른 기기의 세션이 끊김', async () => {
+  const phone = client();
+  const laptop = client();
+  await signup(phone, 'twodev@example.com');
+  await laptop('/auth/login', { method: 'POST', body: { email: 'twodev@example.com', password: 'hunter2!hunter2' } });
+  eq((await laptop('/auth/me')).status, 200, '사전 조건: 두 기기 모두 로그인');
+
+  const ch = await phone('/auth/password', { method: 'POST', body: { current: 'hunter2!hunter2', next: 'newpassword9' } });
+  eq(ch.status, 200, '변경 성공');
+
+  eq((await laptop('/auth/me')).status, 401, '다른 기기 세션이 남음');
+  eq((await phone('/auth/me')).status, 200, '바꾼 기기는 계속 로그인 유지');
+});
+
+await t('관리자가 초기화하면 그 계정의 세션이 모두 끊김', async () => {
+  const victim = client();
+  await signup(victim, 'stolen@example.com');
+  eq((await victim('/auth/me')).status, 200, '사전 조건');
+
+  await admin('/auth/members/reset', { method: 'POST', body: { email: 'stolen@example.com' } });
+  eq((await victim('/auth/me')).status, 401, '세션이 남아 있음');
+});
+
+await t('정지를 풀어도 정지 전 세션은 되살아나지 않음', async () => {
+  const c = client();
+  await signup(c, 'blocked2@example.com');
+  await admin('/auth/members', { method: 'PATCH', body: { email: 'blocked2@example.com', status: 'blocked' } });
+  eq((await c('/auth/me')).status, 401, '정지 중');
+
+  await admin('/auth/members', { method: 'PATCH', body: { email: 'blocked2@example.com', status: 'active' } });
+  eq((await c('/auth/me')).status, 401, '예전 토큰이 되살아남');
+});
+
+console.log('\n== 백업 복원 ==');
+
+await t('관리자만 제출물 색인을 복원할 수 있음', async () => {
+  const r = await alice('/submissions', { method: 'PUT', body: { data: [] } });
+  eq(r.status, 403, '일반 회원');
+  eq((await client()('/submissions', { method: 'PUT', body: { data: [] } })).status, 401, '비회원');
+});
+
+await t('복원하면 제출물이 되살아나고 서버가 형태를 다듬음', async () => {
+  const backup = [{
+    id: 's_restored', projectId: 'p_x', title: '복원된 제출물', body: '내용',
+    files: [{ id: 'f_1', name: 'a.png', key: 'uploads/m_zz/a.png' }, { nope: true }],
+    author: { institution: '기관', name: '복원', email: 'RESTORE@Example.COM' },
+    createdAt: '2026-01-01T00:00:00.000Z',
+    role: 'admin',                      // 알 수 없는 필드는 버려야 합니다
+  }, 'garbage', null];
+
+  const r = await admin('/submissions', { method: 'PUT', body: { data: backup } });
+  eq(r.status, 200, 'status');
+  eq(r.data.count, 1, '쓸 수 있는 항목만');
+
+  const rows = (await admin('/submissions')).data.data;
+  const one = rows.find((x) => x.id === 's_restored');
+  if (!one) throw new Error('복원되지 않음');
+  eq(one.title, '복원된 제출물', '제목');
+  eq(one.author.email, 'restore@example.com', '이메일 정규화');
+  eq(one.files.length, 1, '망가진 파일 항목은 버림');
+  eq(one.role, undefined, '알 수 없는 필드가 남음');
+});
+
+console.log('\n== 첫 가입 경쟁 ==');
+
+await t('명부가 없을 때 동시 가입이 겹쳐도 계정이 사라지지 않음', async () => {
+  const emails = ['race1@example.com', 'race2@example.com', 'race3@example.com'];
+
+  // 그냥 Promise.all 로는 읽기와 쓰기가 알아서 어긋나 주지 않습니다.
+  // 세 요청이 "아직 명부가 없다"를 똑같이 읽도록 첫 읽기에 관문을 겁니다 —
+  // 조건부 쓰기가 없으면 마지막 쓰기가 앞선 두 계정을 덮어씁니다.
+  const fresh = new MockBucket();
+  const rawGet = fresh.get.bind(fresh);
+  let waiting = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  fresh.get = async (key) => {
+    if (key === 'data/members.json' && waiting < emails.length) {
+      waiting += 1;
+      if (waiting === emails.length) release();
+      await gate;
+    }
+    return rawGet(key);
+  };
+
+  const saved = env;
+  env = { BUCKET: fresh, PBKDF2_ITERATIONS: 1000 };
+  try {
+    const results = await Promise.all(emails.map((e) => signup(client(), e)));
+    for (const r of results) eq(r.status, 200, '가입 응답');
+
+    const stored = JSON.parse(new TextDecoder().decode(fresh.objects.get('data/members.json').bytes));
+    eq(stored.length, 3, `명부에 남은 계정 수 (${stored.map((m) => m.email).join(',')})`);
+  } finally {
+    env = saved;
+  }
+});
+
 console.log('\n== health ==');
 
 await t('health 가 회원제 여부와 로그인 상태를 알려줌', async () => {

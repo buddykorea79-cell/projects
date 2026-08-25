@@ -42,8 +42,9 @@ export async function homeView(mount) {
             currentUser() ? ` · ${esc(currentUser().name)}님` : ''}</p>
           <h1 class="hero__title">여기에서 과제를 제출하고,<br>강의자료를 받을 수 있습니다.</h1>
           <p class="hero__lead">
-            로그인하면 제출자 정보가 자동으로 채워집니다.
-            과제 제출과 강의자료는 로그인이 필요합니다.
+            ${signed
+    ? '제출자 정보는 계정에서 자동으로 채워집니다. 제목과 설명을 쓰고 파일을 첨부하면 끝입니다.'
+    : '과제 제출과 강의자료는 로그인이 필요합니다.'}
           </p>
           <div class="row">
             ${signed ? `

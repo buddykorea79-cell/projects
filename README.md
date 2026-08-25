@@ -109,6 +109,7 @@ uploads/materials/<자료ID>/…   강의자료 원본
 | `PUT /api/data/:name` | etag 조건부 색인 쓰기 (관리자) |
 | `GET`·`POST /api/submissions` | 내 제출물 목록 · 제출 (제출자 정보는 서버가 채웁니다) |
 | `PATCH`·`DELETE /api/submissions/:id` | 본인 또는 관리자만 |
+| `PUT /api/submissions` | 백업 복원 — 제출물 색인 통째로 교체 (관리자) |
 | `POST /api/upload` | 파일 업로드 (저장 위치는 서버가 결정) |
 | `GET /api/file/<key>` | 파일 스트리밍 (회원) |
 | `DELETE /api/file/<key>` | 파일 삭제 (관리자) |
@@ -116,6 +117,11 @@ uploads/materials/<자료ID>/…   강의자료 원본
 회원 명부(`data/members.json`)는 `/api/data/*` 로 절대 내려오지 않고,
 비밀번호는 PBKDF2-SHA256 해시로만 저장됩니다. 세션은 HMAC 으로 서명한
 **HttpOnly 쿠키**라 자바스크립트로 읽거나 위조할 수 없습니다.
+
+> **API 는 사이트와 같은 도메인이어야 합니다.** 세션 쿠키가 `SameSite=Lax` 라서,
+> 등록 도메인이 다른 곳(사이트는 `pages.dev`, API 는 `workers.dev` 같은 조합)으로는
+> 쿠키가 전달되지 않아 로그인 직후부터 401 이 납니다. 기본값 `/api` 를 그대로 쓰세요.
+> 어긋나면 브라우저 콘솔과 관리자 → 저장소 패널에 경고가 뜹니다.
 
 업로드된 파일은 항상 `X-Content-Type-Options: nosniff` 와
 `Content-Security-Policy: default-src 'none'; sandbox` 를 달고 나갑니다.
@@ -133,6 +139,10 @@ uploads/materials/<자료ID>/…   강의자료 원본
 | 내 비밀번호 변경 | 헤더의 이름 클릭 → `내 계정` → 비밀번호 변경 |
 | 교육생이 비밀번호를 잊음 | `관리자 → 회원 관리 → 비밀번호 초기화` → 화면에 뜨는 임시 비밀번호를 본인에게 전달 |
 | 부정 사용 차단 | `관리자 → 회원 관리 → 이용 정지` (열려 있던 세션도 즉시 끊깁니다) |
+
+비밀번호를 바꾸거나 관리자가 초기화하면 **그 계정의 다른 세션이 전부 끊깁니다.**
+계정을 도난당했을 때 상대 기기가 남은 12시간을 그대로 쓰지 못하게 하기 위한 것입니다.
+(정지했다가 다시 푼 계정도 마찬가지로 예전 세션은 되살아나지 않습니다.)
 
 **솔직한 한계**
 

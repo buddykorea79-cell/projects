@@ -23,6 +23,21 @@ export class R2Store {
     this.maxUploadMB = null;
     this.ready = false;
     this.auth = new R2Auth(this);
+    /**
+     * 세션 쿠키는 SameSite=Lax 라서 다른 "사이트"(등록 도메인이 다른 곳)로 보내는
+     * 요청에는 실리지 않습니다. API 를 별도 도메인의 Worker 로 띄우면 로그인은
+     * 되는데 그 다음 요청이 401 이 나므로, 여기서 미리 알려 줍니다.
+     * (같은 도메인의 하위 도메인은 same-site 라 괜찮습니다.)
+     */
+    this.crossSite = isCrossSite(this.base);
+    if (this.crossSite) {
+      console.warn(
+        '[저장소] API 주소가 다른 사이트입니다: ' + this.base + '\n'
+        + '세션 쿠키가 전달되지 않아 로그인이 유지되지 않습니다. '
+        + 'config.js 의 r2.apiBase 를 같은 도메인(기본값 "/api")으로 두거나, '
+        + 'API 를 같은 도메인의 하위 경로/하위 도메인에 두세요.',
+      );
+    }
   }
 
   capabilities() {
@@ -279,7 +294,14 @@ export class R2Store {
     for (const name of ['projects', 'materials']) {
       if (Array.isArray(dump[name])) await this.mutateIndex(name, () => dump[name]);
     }
-    // 제출물은 서버가 소유하므로 통째로 덮어쓰지 않습니다.
+    // 제출물 색인은 평소 서버만 고칩니다. 복원은 관리자 전용 경로로 따로 요청합니다.
+    if (Array.isArray(dump.submissions)) {
+      await this.json('/submissions', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: dump.submissions }),
+      });
+    }
   }
 }
 
@@ -354,6 +376,17 @@ class R2Auth {
     const { tempPassword } = await this.store.post('/auth/members/reset', { email });
     return tempPassword;
   }
+}
+
+/** 주소가 지금 사이트와 다른 사이트인지. 하위 도메인(같은 등록 도메인)은 아닙니다. */
+function isCrossSite(base) {
+  if (!/^https?:\/\//i.test(base)) return false;          // 상대 경로 = 같은 오리진
+  try {
+    const target = new URL(base);
+    if (target.origin === window.location.origin) return false;
+    const site = (host) => host.split('.').slice(-2).join('.');
+    return site(target.hostname) !== site(window.location.hostname);
+  } catch { return false; }
 }
 
 function upsert(list, rec) {

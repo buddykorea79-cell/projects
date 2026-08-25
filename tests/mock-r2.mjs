@@ -3,7 +3,7 @@
  *
  * 진짜 Cloudflare 없이 `shared/r2api.js` 를 그대로 돌리기 위한 것입니다.
  * 버킷은 메모리에 두고, R2 바인딩이 제공하는 만큼만 흉내냅니다
- * (get / put / delete + onlyIf.etagMatches 조건부 쓰기).
+ * (get / put / delete + 조건부 쓰기 — R2Conditional 과 조건부 헤더 양쪽).
  */
 import { createHash } from 'crypto';
 import { createServer } from 'http';
@@ -41,16 +41,19 @@ export class MockBucket {
     };
   }
 
-  /** onlyIf.etagMatches 가 어긋나면 R2 처럼 null 을 돌려줍니다. */
+  /** 조건이 어긋나면 R2 처럼 null 을 돌려줍니다. */
   async put(key, value, opts = {}) {
     const existing = this.objects.get(key);
-    const cond = opts.onlyIf;
+    const cond = normalizeCondition(opts.onlyIf);
 
     if (cond?.etagMatches !== undefined) {
-      if (!existing || existing.etag !== cond.etagMatches) return null;
+      if (cond.etagMatches === '*') { if (!existing) return null; }
+      else if (!existing || existing.etag !== cond.etagMatches) return null;
     }
     if (cond?.etagDoesNotMatch !== undefined) {
-      if (existing && existing.etag === cond.etagDoesNotMatch) return null;
+      // '*' 는 RFC 7232 의 "대상이 없을 때만" 입니다 — 첫 생성 경쟁을 막습니다.
+      if (cond.etagDoesNotMatch === '*') { if (existing) return null; }
+      else if (existing && existing.etag === cond.etagDoesNotMatch) return null;
     }
 
     const bytes = this.#toBytes(value);
@@ -70,6 +73,19 @@ export class MockBucket {
   keys(prefix = '') {
     return [...this.objects.keys()].filter((k) => k.startsWith(prefix)).sort();
   }
+}
+
+/** Headers 로 준 조건부 헤더도 R2Conditional 과 같은 모양으로 맞춥니다. */
+function normalizeCondition(onlyIf) {
+  if (!onlyIf) return null;
+  if (typeof onlyIf.get !== 'function') return onlyIf;      // 이미 R2Conditional
+  const strip = (v) => (v === null ? undefined : String(v).replace(/^W\//, '').replace(/"/g, ''));
+  const out = {};
+  const match = strip(onlyIf.get('If-Match'));
+  const none = strip(onlyIf.get('If-None-Match'));
+  if (match !== undefined) out.etagMatches = match;
+  if (none !== undefined) out.etagDoesNotMatch = none;
+  return out;
 }
 
 /* ------------------------------------------------------- 정적 + API 서버 -- */

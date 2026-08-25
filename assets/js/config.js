@@ -52,9 +52,13 @@ export const CONFIG = {
 
   r2: {
     /**
-     * 저장소 API 주소. Cloudflare Pages 에 functions/ 가 함께 배포되므로
-     * 기본값 '/api' 그대로 두면 됩니다. (같은 도메인 → CORS 설정 불필요)
-     * 별도 Worker 로 띄웠다면 그 주소를 넣으세요. 예: 'https://xxx.workers.dev'
+     * 저장소 API 주소. Pages/Worker 에 함께 배포되므로 기본값 '/api' 그대로 두면 됩니다.
+     *
+     * **같은 사이트여야 로그인이 유지됩니다.** 세션 쿠키가 SameSite=Lax 라서
+     * 등록 도메인이 다른 곳(예: 사이트는 pages.dev, API 는 workers.dev)으로 보내는
+     * 요청에는 쿠키가 실리지 않습니다. 그러면 로그인은 되는데 그 다음 요청이
+     * 401 이 납니다. 같은 도메인의 하위 경로(권장)나 하위 도메인을 쓰세요.
+     * (어긋나면 브라우저 콘솔과 관리자 → 저장소 패널에 경고가 뜹니다.)
      */
     apiBase: '/api',
   },

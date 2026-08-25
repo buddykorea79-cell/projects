@@ -213,11 +213,10 @@ export async function updateMembers(env, mutate) {
     const next = mutate(structuredClone(list));
     if (next === null) return { ok: false, list };
 
-    const opts = {
+    const put = await env.BUCKET.put(MEMBERS_KEY, JSON.stringify(next, null, 2), {
       httpMetadata: { contentType: 'application/json; charset=utf-8' },
-      ...(etag ? { onlyIf: { etagMatches: etag } } : {}),
-    };
-    const put = await env.BUCKET.put(MEMBERS_KEY, JSON.stringify(next, null, 2), opts);
+      onlyIf: conditionFor(etag),
+    });
     if (put) return { ok: true, list: next };
 
     await new Promise((r) => setTimeout(r, 80 * (attempt + 1) + Math.random() * 120));
@@ -225,9 +224,31 @@ export async function updateMembers(env, mutate) {
   throw new Error('회원 정보를 저장하지 못했습니다. 잠시 후 다시 시도하세요.');
 }
 
+/**
+ * 조건부 쓰기 조건.
+ *
+ * 명부가 아직 없을 때(etag 가 null) 조건 없이 쓰면, 첫 가입이 동시에 몰릴 경우
+ * 모두 성공해 버리고 마지막 요청이 앞선 계정을 지웁니다. `If-None-Match: *` 로
+ * "없을 때만 만든다"를 걸어야 뒤늦은 요청이 실패하고 재시도 루프로 돌아옵니다.
+ */
+export function conditionFor(etag) {
+  return etag ? { etagMatches: etag } : new Headers({ 'If-None-Match': '*' });
+}
+
 export function findMember(list, email) {
   const e = normEmail(email);
   return list.find((m) => normEmail(m.email) === e) || null;
+}
+
+/**
+ * 세션 세대. 비밀번호 변경·초기화·이용 정지 때 올려서, 그 전에 발급된 토큰을
+ * 만료 시각과 무관하게 무효로 만듭니다. (토큰 안에 같은 값이 들어갑니다.)
+ */
+export const epochOf = (member) => Number(member?.sessionEpoch || 0);
+
+export function bumpEpoch(member) {
+  member.sessionEpoch = Date.now();
+  return member;
 }
 
 /** 브라우저로 내보내도 되는 필드만 남깁니다. 해시는 절대 포함하지 않습니다. */

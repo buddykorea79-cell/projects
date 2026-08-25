@@ -355,7 +355,13 @@ function renderStoragePanel(mount) {
       <div class="kv__row"><div class="kv__k">업로드 한도</div>
         <div class="kv__v">${store.maxUploadMB ? `${esc(store.maxUploadMB)}MB / 파일` : '—'}</div></div>
       <div class="kv__row"><div class="kv__k">회원 인증</div>
-        <div class="kv__v">서버에서 확인 — 로그인한 회원만 파일을 받을 수 있습니다</div></div>` : ''}
+        <div class="kv__v">서버에서 확인 — 로그인한 회원만 파일을 받을 수 있습니다</div></div>
+      ${store.crossSite ? `
+      <div class="kv__row"><div class="kv__k">주의</div>
+        <div class="kv__v" style="color:var(--red)">
+          API 가 다른 사이트에 있습니다. 세션 쿠키가 전달되지 않아 로그인이 유지되지 않습니다 —
+          <code>config.js</code> 의 <code>r2.apiBase</code> 를 같은 도메인으로 두세요.
+        </div></div>` : ''}` : ''}
 
       ${mode === 'github' ? `
       <div class="kv__row"><div class="kv__k">레포</div>

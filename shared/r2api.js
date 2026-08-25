@@ -40,7 +40,7 @@ import {
   hashPassword, verifyPassword, tempPassword,
   signSession, readSession, cookieValue, sessionCookie, clearCookie,
   readMembers, updateMembers, findMember, publicMember,
-  lockState, registerFailure, clearFailures,
+  lockState, registerFailure, clearFailures, epochOf, bumpEpoch,
   validateSignup, normEmail, MIN_PASSWORD,
 } from './auth.js';
 
@@ -120,7 +120,7 @@ async function route(request, env, url, path, cors) {
     if (!me) return json({ message: '로그인이 필요합니다.' }, 401, cors);
     return json({ me: publicMember(me) }, 200, cors);
   }
-  if (path === '/auth/password' && method === 'POST') return changePassword(request, env, cors);
+  if (path === '/auth/password' && method === 'POST') return changePassword(request, env, url, cors);
 
   if (path === '/auth/members') {
     const admin = await requireAdmin(request, env);
@@ -164,6 +164,11 @@ async function route(request, env, url, path, cors) {
   if (path === '/submissions') {
     if (method === 'GET') return listSubmissions(request, env, cors);
     if (method === 'POST') return createSubmission(request, env, cors);
+    if (method === 'PUT') {
+      const admin = await requireAdmin(request, env);
+      if (admin.error) return json({ message: admin.error }, admin.status, cors);
+      return restoreSubmissions(request, env, cors);
+    }
     return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
   }
   const subMatch = path.match(/^\/submissions\/([A-Za-z0-9_-]{1,64})$/);
@@ -219,6 +224,8 @@ export async function currentMember(request, env) {
   const member = findMember(list, payload.sub);
   if (!member) return null;
   if ((member.status || 'active') !== 'active') return null;
+  // 비밀번호가 바뀌었거나 관리자가 정지시킨 뒤 발급 전이라면, 남은 토큰은 못 씁니다.
+  if (Number(payload.ep || 0) !== epochOf(member)) return null;
   return withRole(member, env);
 }
 
@@ -329,12 +336,13 @@ function issueToken(member, env) {
   return signSession({
     sub: normEmail(member.email),
     role: member.role || 'member',
+    ep: epochOf(member),
     iat: Date.now(),
     exp: Date.now() + SESSION_TTL_MS,
   }, env);
 }
 
-async function changePassword(request, env, cors) {
+async function changePassword(request, env, url, cors) {
   const got = await requireMember(request, env);
   if (got.error) return json({ message: got.error }, got.status, cors);
 
@@ -350,16 +358,22 @@ async function changePassword(request, env, cors) {
   }
 
   const hash = await hashPassword(next, env);
+  let updated = null;
   await updateMembers(env, (l) => {
     const m = findMember(l, got.member.email);
     if (m) {
       m.passwordHash = hash;
       m.mustChangePassword = false;
       m.updatedAt = new Date().toISOString();
+      bumpEpoch(m);           // 다른 기기에 남아 있던 세션을 끊습니다
+      updated = m;
     }
     return l;
   });
-  return json({ ok: true }, 200, cors);
+
+  // 세대를 올렸으니 지금 쓰고 있는 브라우저에는 새 쿠키를 내려 줍니다.
+  const token = await issueToken(withRole(updated || got.member, env), env);
+  return json({ ok: true }, 200, { ...cors, 'Set-Cookie': sessionCookie(token, url) });
 }
 
 async function patchMember(request, env, admin, cors) {
@@ -375,7 +389,11 @@ async function patchMember(request, env, admin, cors) {
     const m = findMember(l, email);
     if (!m) return null;
     if (body.role === 'admin' || body.role === 'member') m.role = body.role;
-    if (body.status === 'active' || body.status === 'blocked') m.status = body.status;
+    if (body.status === 'active' || body.status === 'blocked') {
+      // 정지를 풀었을 때 예전 토큰이 되살아나지 않도록 세대를 올립니다.
+      if (m.status !== body.status) bumpEpoch(m);
+      m.status = body.status;
+    }
     m.updatedAt = new Date().toISOString();
     updated = m;
     return l;
@@ -400,6 +418,7 @@ async function resetMemberPassword(request, env, cors) {
     m.failedAttempts = 0;
     m.lockedUntil = 0;
     m.updatedAt = new Date().toISOString();
+    bumpEpoch(m);             // 비밀번호를 잃어버린 그 기기의 세션도 함께 끊습니다
     return l;
   });
   if (!result.ok) return json({ message: '해당 회원을 찾을 수 없습니다.' }, 404, cors);
@@ -487,6 +506,40 @@ function viewSubmission(sub, viewer) {
   const mine = normEmail(sub.author?.email) === normEmail(viewer.email);
   if (viewer.role === 'admin' || mine) return sub;
   return { ...sub, author: { ...sub.author, email: undefined } };
+}
+
+/**
+ * 백업 복원 — 제출물 색인을 통째로 바꿉니다. 관리자만 할 수 있습니다.
+ *
+ * 평소 제출물은 서버가 소유해서 클라이언트가 색인을 통째로 쓰지 못하게 막지만,
+ * 복원까지 막으면 백업에 든 제출물이 조용히 사라집니다. 그래서 이 경로만
+ * 따로 열되, 저장 전에 서버가 형태를 다듬습니다.
+ */
+async function restoreSubmissions(request, env, cors) {
+  const body = await request.json().catch(() => null);
+  if (!body || !Array.isArray(body.data)) {
+    return json({ message: '잘못된 요청 형식입니다.' }, 400, cors);
+  }
+
+  const clean = body.data
+    .filter((s) => s && typeof s === 'object' && typeof s.id === 'string')
+    .map((s) => ({
+      id: String(s.id).slice(0, 64),
+      projectId: String(s.projectId || '').slice(0, 64),
+      title: String(s.title || '').slice(0, 200),
+      body: String(s.body || '').slice(0, 8000),
+      files: Array.isArray(s.files) ? s.files.filter((f) => f && typeof f.key === 'string') : [],
+      author: {
+        institution: String(s.author?.institution || '').slice(0, 120),
+        name: String(s.author?.name || '').slice(0, 60),
+        email: normEmail(s.author?.email),
+      },
+      createdAt: s.createdAt || new Date().toISOString(),
+      updatedAt: s.updatedAt || s.createdAt || new Date().toISOString(),
+    }));
+
+  await mutateIndex(env, 'submissions', () => clean);
+  return json({ ok: true, count: clean.length }, 200, cors);
 }
 
 async function listSubmissions(request, env, cors) {
