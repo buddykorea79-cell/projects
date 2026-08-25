@@ -191,7 +191,7 @@ docs/SETUP.md               단계별 배포 가이드
 **① 실제 R2 로 (권장)** — Cloudflare 계정에 붙여 그대로 돌립니다.
 
 ```bash
-npx wrangler pages dev . --r2 BUCKET
+npx wrangler pages dev . --r2=BUCKET
 ```
 
 **② R2 없이 화면만** — 정적 서버를 띄운 뒤 브라우저 콘솔에서 모드를 바꿉니다.

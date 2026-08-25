@@ -394,6 +394,53 @@ console.log('\n== 강의자료 다운로드 잠금 (선택 기능) ==');
   });
 }
 
+console.log('\n== Workers 진입점 (정적 자산 배포용) ==');
+
+{
+  const { default: workerEntry } = await import('../shared/worker-entry.js');
+  const assetHits = [];
+  const wEnv = {
+    BUCKET: bucket,
+    ASSETS: { fetch: async (req) => { assetHits.push(new URL(req.url).pathname); return new Response('asset', { status: 200 }); } },
+  };
+  const call = (path, init = {}) => workerEntry.fetch(
+    new Request(`${ORIGIN}${path}`, { headers: { Origin: ORIGIN }, ...init }), wEnv);
+
+  await t('/api 는 저장소 핸들러로 감', async () => {
+    const res = await call('/api/health');
+    eq(res.status, 200, 'status');
+    eq((await res.json()).mode, 'r2', 'mode');
+    eq(assetHits.length, 0, '정적 자산으로 새지 않음');
+  });
+
+  await t('그 밖의 경로는 정적 자산으로 감', async () => {
+    eq((await call('/')).status, 200, '루트');
+    eq((await call('/assets/js/app.js')).status, 200, '스크립트');
+    eq(assetHits.length, 2, '자산 요청 수');
+  });
+
+  await t('/apixyz 처럼 비슷한 경로는 API 로 오인하지 않음', async () => {
+    await call('/apixyz');
+    if (!assetHits.includes('/apixyz')) throw new Error('API 로 잘못 라우팅됨');
+  });
+
+  await t('ASSETS 바인딩이 없으면 원인을 알려줌', async () => {
+    const res = await workerEntry.fetch(
+      new Request(`${ORIGIN}/`, { headers: { Origin: ORIGIN } }), { BUCKET: bucket });
+    eq(res.status, 500, 'status');
+    if (!(await res.text()).includes('assets')) throw new Error('안내 문구 없음');
+  });
+
+  await t('Workers 경로로도 파일이 실제로 내려옴', async () => {
+    const rec = await store.uploadFile(
+      new File([new Uint8Array([37, 80, 68, 70])], 'w.pdf', { type: 'application/pdf' }), 's_wtest');
+    const res = await call(`/api/file/${encodeURI(rec.key)}`);
+    eq(res.status, 200, 'status');
+    eq(res.headers.get('Content-Type'), 'application/pdf', 'type');
+    await store.deleteFile(rec);
+  });
+}
+
 console.log('\n================ 결과 ================');
 console.log(`버킷 객체 ${bucket.objects.size}개`);
 if (fails.length) { console.log(`실패 ${fails.length}건: ${fails.join(', ')}`); process.exit(1); }
