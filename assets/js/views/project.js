@@ -2,7 +2,7 @@
 import { store, submissionOpen, closedReason, newSubmission } from '../store/index.js';
 import { CONFIG } from '../config.js';
 import {
-  esc, attr, fmtDate, fmtBytes, isEmail, normEmail, kindOf, downloadBlob,
+  esc, attr, fmtDate, fmtBytes, isEmail, normEmail, kindOf, downloadBlob, downloadLink,
 } from '../utils.js';
 import {
   spinner, emptyState, toastOk, toastErr, FilePicker, fieldError, clearErrors,
@@ -461,8 +461,10 @@ export async function renderAttachments(mount, files) {
           <div class="fileitem__name" style="font-size:1.3rem">${esc(f.name)}</div>
           <div class="fileitem__meta">${esc(fmtBytes(f.size))}</div>
         </div>
-        ${url ? `<a class="btn btn--quiet btn--sm" href="${attr(url)}"
-                   ${f.storage === 'github' ? 'target="_blank" rel="noopener"' : `download="${attr(f.name)}"`}>받기</a>` : ''}
+        ${(() => {
+          const dl = downloadLink(url, f);
+          return dl ? `<a class="btn btn--quiet btn--sm" href="${attr(dl.href)}" ${dl.attrs}>받기</a>` : '';
+        })()}
       </div>`;
 
     if (url && (kind === 'image' || kind === 'video')) {

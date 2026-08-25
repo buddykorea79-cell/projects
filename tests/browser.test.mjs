@@ -10,6 +10,11 @@ const log = (...a) => console.log(...a);
 const executablePath = process.env.CHROME_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 const browser = await chromium.launch(existsSync(executablePath) ? { executablePath } : {});
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+// 이 묶음은 UI 흐름 검증용이라 브라우저 저장 모드로 고정합니다.
+// (R2 경로는 r2.test.mjs 와 r2-browser.test.mjs 가 담당합니다.)
+await ctx.addInitScript(() => {
+  try { localStorage.setItem('ah.storageMode', 'local'); } catch { /* ignore */ }
+});
 const page = await ctx.newPage();
 
 page.on('console', (m) => { if (m.type() === 'error' && !/fonts\.(googleapis|gstatic)/.test(m.location()?.url || '')) errors.push(`console: ${m.text()} @ ${m.location()?.url}`); });

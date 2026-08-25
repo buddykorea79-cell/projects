@@ -1,4 +1,16 @@
-# 쓰기 프록시 (선택 사항)
+# worker/ — 선택 사항인 서버 조각들
+
+현재 권장 구성(**Cloudflare Pages + R2**)에서는 이 폴더가 필요 없습니다.
+`functions/api/[[path]].js` 가 사이트와 같은 도메인에서 저장소 API 를 서비스합니다.
+
+| 파일 | 언제 필요한가 |
+|---|---|
+| `worker.js` + `wrangler.toml` | 저장소를 **GitHub 모드**로 쓰면서 교육생 제출까지 받을 때 |
+| `r2-worker.js` + `wrangler.r2.toml` | 사이트는 Cloudflare 밖(예: GitHub Pages)에 두고 **파일만 R2** 에 넣을 때 |
+
+---
+
+## worker.js — GitHub 쓰기 프록시
 
 교육생이 GitHub 토큰 없이 과제를 제출할 수 있게 해주는 조각입니다.
 토큰은 이 워커의 시크릿으로만 존재하고 브라우저에는 절대 내려가지 않습니다.
@@ -57,3 +69,24 @@ wrangler deploy
 
 문제가 생겨도 피해는 이 레포의 `data/`·`uploads/` 에 한정되고,
 git 히스토리가 있으니 언제든 되돌릴 수 있습니다.
+
+---
+
+## r2-worker.js — R2 저장소 API (독립 Worker)
+
+`shared/r2api.js` 를 Pages 없이 단독으로 띄웁니다. Pages 를 쓴다면 필요 없습니다.
+
+```bash
+# wrangler.r2.toml 의 bucket_name 과 ALLOWED_ORIGINS 를 먼저 수정
+wrangler deploy --config wrangler.r2.toml
+```
+
+그 다음 `assets/js/config.js` 에서:
+
+```js
+storage: 'r2',
+r2: { apiBase: 'https://assignment-hub-r2.<계정>.workers.dev' },
+```
+
+사이트가 다른 도메인이므로 `ALLOWED_ORIGINS` 에 사이트 주소를 꼭 넣어야 합니다.
+비워두면 같은 오리진만 허용되어 브라우저가 CORS 로 막힙니다.

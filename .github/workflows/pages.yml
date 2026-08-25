@@ -1,15 +1,10 @@
 name: Deploy to GitHub Pages
 
+# 현재 이 사이트는 Cloudflare Pages 로 배포합니다.
+# 이 워크플로는 GitHub Pages 로 되돌릴 때를 위해 남겨둔 것이라
+# 자동 실행하지 않습니다 (Actions 탭에서 수동으로 실행).
+# GitHub Pages 가 켜져 있지 않은 상태로 자동 실행되면 매 푸시마다 실패로 뜹니다.
 on:
-  push:
-    branches: [main]
-    # 제출이 들어올 때마다 data/·uploads/ 가 커밋됩니다.
-    # 그때는 사이트 코드가 그대로이므로 재배포할 필요가 없습니다.
-    paths-ignore:
-      - 'data/**'
-      - 'uploads/**'
-      - 'docs/**'
-      - '**/*.md'
   workflow_dispatch:
 
 permissions:

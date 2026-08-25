@@ -1,146 +1,151 @@
 # 배포 가이드
 
-세 가지 구성 중 상황에 맞는 것을 고르세요. 위에서 아래로 갈수록 설정이 늘고
-대신 실제로 쓸 수 있는 범위가 넓어집니다.
+현재 권장 구성은 **Cloudflare Pages + R2** 입니다. 아래 A 만 따라 하시면 됩니다.
+B·C 는 GitHub Pages 로 운영할 때의 대안이라 참고용으로 남겨둡니다.
 
 ---
 
-## 구성 A — 화면만 확인 (설정 0단계)
+## A. Cloudflare Pages + R2 (권장)
 
-1. 이 브랜치를 `main` 에 머지
-2. **Settings → Pages → Source → GitHub Actions**
-3. 배포 완료 후 접속
+브라우저는 R2 를 직접 만지지 않습니다. 사이트와 같은 도메인의 `/api` 만 호출하고,
+버킷 권한은 Cloudflare 바인딩으로만 존재합니다. 그래서 교육생에게 나눠줄 토큰도,
+CORS 설정도 없습니다.
 
-`config.js` 의 `storage` 가 `'local'` 이므로 데이터는 접속한 브라우저에만 저장됩니다.
-시연·검수·화면 확인용입니다. **실제 제출은 받을 수 없습니다.**
+### 1. R2 버킷 만들기
 
----
-
-## 구성 B — 관리자 혼자 쓰기 (토큰만)
-
-관리자가 프로젝트를 개설하고 제출물을 관리할 수 있지만,
-**교육생은 제출할 수 없습니다** (쓰기에 토큰이 필요하므로). 보통은 구성 C 로 갑니다.
-
-### 1. 토큰 발급
-
-GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**
+Cloudflare 대시보드 → **R2** → **Create bucket**
 
 | 항목 | 값 |
 |---|---|
-| Repository access | **Only select repositories** → 이 레포 |
-| Permissions → Repository permissions → **Contents** | **Read and write** |
-| Expiration | 과정 종료일 이후로 |
+| Bucket name | `assignment-hub` (원하는 이름 아무거나) |
+| Location | Automatic (또는 APAC) |
 
-다른 권한은 주지 마세요. `Contents` 하나면 충분합니다.
+> **Public access 는 켜지 마세요.** 파일은 우리 `/api` 를 통해서만 나갑니다.
+> 공개로 열면 보안 헤더와 강의자료 잠금이 우회됩니다.
 
-### 2. config.js 수정
+R2 는 저장 10GB/월까지 무료이고, 이 용도에서 제일 중요한 점은
+**나가는 트래픽(egress) 요금이 0** 이라는 것입니다.
 
-```js
-storage: 'github',
+### 2. Pages 프로젝트에 버킷 바인딩
 
-github: {
-  owner: 'buddykorea79-cell',
-  repo: 'projects',
-  branch: 'main',
-  dataDir: 'data',
-  uploadDir: 'uploads',
-  proxyUrl: '',          // 구성 B 는 비워둡니다
-},
+Pages 프로젝트 → **Settings** → **Bindings**(구버전은 *Functions* 탭)
+→ **R2 bucket bindings** → **Add binding**
+
+| 항목 | 값 |
+|---|---|
+| Variable name | **`BUCKET`** ← 이 이름 그대로여야 합니다 |
+| R2 bucket | 1단계에서 만든 버킷 |
+
+**Production 과 Preview 양쪽 모두** 추가하세요. Preview 에 없으면 미리보기 배포에서만
+API 가 500 을 냅니다.
+
+### 3. 배포
+
+이 브랜치를 `main` 에 머지하면 Pages 가 자동으로 다시 빌드합니다.
+`functions/api/[[path]].js` 가 함께 올라가면서 `/api` 가 살아납니다.
+
+> 빌드 설정은 그대로 두세요. 빌드 명령 없음 / 출력 디렉터리 `/` 인 정적 사이트입니다.
+
+### 4. 확인
+
+```bash
+curl https://<사이트주소>/api/health
+# {"ok":true,"mode":"r2","materialsGate":false,"maxUploadMB":100}
 ```
 
-### 3. 토큰 등록
+이게 나오면 끝입니다. 사이트에서 과제를 한 건 제출해 보고, R2 대시보드의
+**Objects** 에 `data/submissions.json` 과 `uploads/…` 가 생겼는지 확인하세요.
 
-배포된 사이트 → **관리자 로그인** → 대시보드 하단 **저장소** 패널 → 토큰 입력 → 저장.
+`{"message":"R2 버킷 바인딩(BUCKET)이 설정되지 않았습니다."}` 가 나오면 2단계의
+Variable name 이 정확히 `BUCKET` 인지, 저장 후 **재배포**했는지 확인하세요.
+바인딩 추가만으로는 반영되지 않고 한 번 더 배포해야 합니다.
 
-토큰은 그 브라우저의 `localStorage` 에만 저장되고 레포에는 절대 커밋되지 않습니다.
-공용 PC 에서는 사용 후 **토큰 삭제**를 눌러주세요.
+### 5. (선택) 환경변수로 다듬기
+
+Pages → Settings → **Environment variables** 에서 조정할 수 있습니다. 전부 선택 사항입니다.
+
+| 이름 | 기본값 | 설명 |
+|---|---|---|
+| `MAX_UPLOAD_MB` | `100` | 파일 1개당 한도. Workers 요청 본문 한도가 100MB 라 그 이상은 못 올립니다 |
+| `ALLOWED_EXT` | 내장 목록 | 쉼표 구분 확장자. 예: `pdf,png,jpg,mp4` |
+| `ALLOWED_ORIGINS` | 없음 | 다른 도메인에서도 API 를 쓸 때만. 비워두면 같은 오리진만 허용 |
+
+### 6. (선택·권장) 강의자료 다운로드 잠그기
+
+기본 상태에서 강의자료 잠금은 **화면만** 가립니다. 파일 주소를 아는 사람은
+비밀번호 없이 받을 수 있습니다. 아래 두 값을 넣으면 **서버가 실제로 막습니다** —
+서명된 토큰이 없으면 `/api/file/uploads/materials/…` 가 403 을 돌려줍니다.
+
+Pages → Settings → Environment variables → **Encrypt** 체크해서 추가:
+
+| 이름 | 값 |
+|---|---|
+| `MATERIALS_PASSWORD` | `AI2026` (`config.js` 의 강의자료 비밀번호와 **같은 값**) |
+| `TOKEN_SECRET` | 아무 긴 난수 문자열 |
+
+`TOKEN_SECRET` 은 이런 식으로 만드세요.
+
+```bash
+openssl rand -hex 32
+```
+
+두 값을 넣고 재배포하면 앱이 `/api/health` 로 잠금 상태를 자동 감지해서,
+강의자료 화면에서 받은 비밀번호로 6시간짜리 다운로드 토큰을 받아 링크에 붙입니다.
+
+> 잠금을 켜면 **관리자도 비밀번호를 입력해야** 강의자료를 내려받을 수 있습니다.
+> 파일을 내보내는 주체가 서버이고, 서버는 관리자 로그인을 알 방법이 없기 때문입니다.
+> 자료 등록·편집은 잠금과 무관하게 관리자 화면에서 그대로 됩니다.
+>
+> `config.js` 의 `materialsHash` 와 `MATERIALS_PASSWORD` 가 다르면 화면은 열리는데
+> 다운로드만 403 이 납니다. 두 값은 항상 같은 비밀번호를 가리켜야 합니다.
+
+### 7. 로컬에서 돌려보기
+
+```bash
+npx wrangler pages dev . --r2 BUCKET
+```
+
+`--r2 BUCKET` 이 로컬 디스크에 가짜 버킷을 만들어 줍니다. Cloudflare 계정 없이
+화면만 볼 때는 브라우저 콘솔에서
+`localStorage.setItem('ah.storageMode','local'); location.reload()` 를 실행하세요.
 
 ---
 
-## 구성 C — 교육생이 직접 제출 (권장)
+## B. GitHub Pages + GitHub 저장소 (대안)
 
-토큰을 대신 쥐고 있어줄 작은 함수 하나를 띄웁니다. Cloudflare Workers 무료 티어면 충분합니다
-(하루 10만 요청).
+Cloudflare 를 쓰지 않을 때의 구성입니다. `config.js` 에서 `storage: 'github'` 로 바꾸고,
+`github.owner` / `repo` / `branch` 를 채우세요.
 
-### 1. 사전 준비
+**토큰만 쓰는 경우** — 관리자만 쓰기가 가능합니다. 교육생은 제출할 수 없습니다.
 
-- Cloudflare 계정 (무료)
-- Node.js 18+
-- 구성 B 의 **1단계**대로 발급한 fine-grained 토큰
+1. GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens**
+2. Repository access: **Only select repositories** → 이 레포
+3. Permissions → Repository permissions → **Contents: Read and write** (다른 권한 불필요)
+4. 사이트 → 관리자 로그인 → 대시보드 하단 **저장소** 패널에 토큰 등록
 
-### 2. 워커 배포
+토큰은 그 브라우저의 `localStorage` 에만 저장되고 레포에는 커밋되지 않습니다.
+공용 PC 라면 쓰고 나서 **토큰 삭제**를 누르세요.
+
+**프록시를 쓰는 경우** — 교육생도 제출할 수 있습니다.
 
 ```bash
 cd worker
 npm install -g wrangler
 wrangler login
-```
-
-`wrangler.toml` 을 자기 레포에 맞게 고칩니다.
-
-```toml
-[vars]
-REPO_OWNER  = "buddykorea79-cell"
-REPO_NAME   = "projects"
-REPO_BRANCH = "main"
-ALLOWED_ORIGINS = "https://buddykorea79-cell.github.io"
-```
-
-> `ALLOWED_ORIGINS` 는 **사이트 주소만** 적습니다. 경로(`/projects/`)는 빼고
-> 스킴+호스트까지만. 여러 개면 쉼표로 구분합니다.
-
-토큰을 시크릿으로 넣고 배포합니다. 토큰은 이 단계에서만 존재하고 코드에는 남지 않습니다.
-
-```bash
-wrangler secret put GITHUB_TOKEN     # 붙여넣기
+# wrangler.toml 의 REPO_OWNER / REPO_NAME / ALLOWED_ORIGINS 수정
+wrangler secret put GITHUB_TOKEN
 wrangler deploy
 ```
 
-출력된 주소(`https://assignment-hub-proxy.<계정>.workers.dev`)를 복사합니다.
+출력된 주소를 `config.js` 의 `github.proxyUrl` 에 넣습니다.
+자세한 내용은 [`worker/README.md`](../worker/README.md) 에 있습니다.
 
-### 3. 사이트 연결
+---
 
-`assets/js/config.js`:
+## C. 브라우저 저장 (시연용)
 
-```js
-storage: 'github',
-
-github: {
-  owner: 'buddykorea79-cell',
-  repo: 'projects',
-  branch: 'main',
-  dataDir: 'data',
-  uploadDir: 'uploads',
-  proxyUrl: 'https://assignment-hub-proxy.<계정>.workers.dev',   // ← 여기
-},
-```
-
-커밋·푸시하면 Pages 가 재배포되고, 이제 교육생은 토큰 없이 제출할 수 있습니다.
-
-### 4. 동작 확인
-
-```bash
-curl https://assignment-hub-proxy.<계정>.workers.dev/health
-# {"ok":true,"repo":"buddykorea79-cell/projects"}
-```
-
-사이트에서 실제로 한 건 제출해 보고, 레포의 `data/submissions.json` 과
-`uploads/` 에 커밋이 올라왔는지 확인하세요.
-
-### 5. (권장) 봇 방지 켜기
-
-프록시는 인증 없이 열려 있습니다. 주소가 알려지면 장난성 제출이 들어올 수 있습니다.
-Cloudflare Turnstile 은 무료이고, 시크릿만 넣으면 워커가 자동으로 검증합니다.
-
-```bash
-wrangler secret put TURNSTILE_SECRET
-```
-
-넣는 순간부터 워커가 모든 요청에 Turnstile 토큰을 요구합니다.
-사이트 쪽 위젯은 아직 붙여두지 않았으니, 켜기 전에 알려주시면 제출 폼에 추가해 드리겠습니다.
-
-방어막이 하나 더 필요하면 Cloudflare 대시보드에서
-**Security → WAF → Rate limiting rules** 로 IP당 분당 요청 수를 제한할 수 있습니다.
+설정이 전혀 필요 없고 즉시 동작하지만, 데이터가 접속한 브라우저에만 남습니다.
+화면 검수용입니다. 실제 제출은 받을 수 없습니다.
 
 ---
 
@@ -148,19 +153,19 @@ wrangler secret put TURNSTILE_SECRET
 
 **과정 시작 전**
 - 관리자 비밀번호와 강의자료 공용 비밀번호를 바꾸세요 (README 참고)
+- 강의자료 잠금(6번)을 켜고, `MATERIALS_PASSWORD` 를 `config.js` 값과 맞추세요
 - 강의자료를 미리 등록하고, 수강생에게 공용 비밀번호를 안내하세요
 - 프로젝트를 미리 개설하고 마감일시를 넣어두세요
-- 첨부 정책(`upload.maxFileMB`, `allowedExt`)을 과제 성격에 맞게 조정하세요
 
 **과정 중**
-- 제출물이 늘면 `data/submissions.json` 이 커집니다. 수백 건까지는 문제없지만
-  1,000건을 넘길 것 같으면 프로젝트별로 레포를 나누는 편이 낫습니다
 - 마감하려면 프로젝트 편집에서 **접수 상태 → 마감**. 마감 후에는 교육생이
   수정·삭제할 수 없고 관리자만 가능합니다
+- 제출물이 늘면 `data/submissions.json` 이 커집니다. 수백 건까지는 문제없습니다
 
 **과정 종료 후**
 - 관리자 대시보드에서 **CSV 내려받기** + **전체 백업 내려받기**
-- 첨부 원본은 `uploads/` 폴더를 통째로 `git clone` 하거나 ZIP 으로 내려받으세요
+- 첨부 원본은 R2 대시보드에서 직접 내려받거나
+  `npx wrangler r2 object get` / `rclone` 으로 일괄 받으세요
 - 개인정보를 지우려면 프로젝트를 삭제하면 제출물과 첨부가 함께 지워집니다
 
 ---
@@ -171,16 +176,11 @@ wrangler secret put TURNSTILE_SECRET
 
 | 한계 | 왜 | 대안 |
 |---|---|---|
-| 관리자 인증이 서버측이 아님 | 정적 사이트에 검증할 서버가 없음 | Cloudflare Access(무료, Google 로그인 연동) 를 `#/admin` 앞에 걸면 진짜 인증이 됩니다 |
-| 강의자료 비밀번호가 파일 접근을 막지는 못함 | 잠금은 화면만 가리고, 파일 자체는 raw URL 로 공개됨 | 자료를 외부에 완전히 숨겨야 하면 private 레포 + 프록시 경유 다운로드가 필요합니다 — 요청 주시면 붙여드립니다 |
-| 이메일 자동 발송 없음 | 정적 사이트는 메일을 보낼 수 없음 | 워커에 Resend·SendGrid API 호출을 추가하면 제출 확인 메일을 보낼 수 있습니다 |
-| 첨부 100MB 이상 | GitHub Contents API 제한 | 큰 영상은 YouTube·Vimeo 링크를 본문에 적게 하세요 |
-| 실시간 동시 편집 | 파일 기반 저장 | 이 용도에는 과합니다. 필요하면 Supabase 무료 티어로 |
-| 레포가 공개면 제출물도 공개 | raw URL 은 인증이 없음 | 민감한 과제라면 레포를 **private** 으로 두고 구성 C 를 쓰세요. 단 이때는 첨부 미리보기에 프록시 경유가 추가로 필요합니다 — 알려주시면 붙여드리겠습니다 |
-
-> **레포를 private 으로 할 때 주의**: GitHub Pages 의 private 레포 호스팅은
-> 유료 플랜(Pro/Team/Enterprise) 기능입니다. 무료 계정이라면 사이트 코드는 공개 레포에,
-> 데이터는 별도 private 레포에 두고 워커가 그 사이를 잇는 구성이 됩니다.
+| 관리자 인증이 서버측이 아님 | 정적 사이트에 검증할 서버가 없음 | Cloudflare Access(무료, Google 로그인 연동)를 `/#/admin` 앞에 걸면 진짜 인증이 됩니다 |
+| 과제 첨부는 주소를 알면 받을 수 있음 | 키가 길고 무작위라 추측은 어렵지만 인증은 없음 | 강의자료처럼 토큰 방식으로 막을 수 있습니다 — 필요하면 붙여드립니다 |
+| 파일 100MB 초과 | Workers 요청 본문 한도 | 큰 영상은 YouTube·Vimeo 링크를 본문에 적게 하세요. 정말 필요하면 R2 멀티파트 업로드로 확장 가능 |
+| 이메일 자동 발송 없음 | 정적 사이트는 메일을 보낼 수 없음 | Pages Function 에 Resend·SendGrid 호출을 추가하면 제출 확인 메일을 보낼 수 있습니다 |
+| 실시간 동시 편집 | 파일 기반 색인 | 이 용도에는 과합니다. 필요하면 D1(무료 SQLite)로 |
 
 ---
 
@@ -188,9 +188,11 @@ wrangler secret put TURNSTILE_SECRET
 
 | 증상 | 확인할 것 |
 |---|---|
-| 목록이 계속 비어 있음 | `data/*.json` 이 올바른 JSON 배열인지, `github.owner/repo/branch` 가 맞는지 |
-| 제출 시 "쓰기 권한이 없습니다" | 구성 B면 토큰 등록 여부, 구성 C면 `proxyUrl` 오타 |
-| 401 / 403 | 토큰 만료, 또는 `Contents: Read and write` 미부여 |
-| CORS 오류 | 워커의 `ALLOWED_ORIGINS` 가 사이트 주소와 정확히 같은지 (경로 없이) |
-| 제출은 됐는데 목록에 늦게 뜸 | raw URL 이 CDN 캐시를 탑니다. 최대 5분 정도 걸릴 수 있습니다 |
-| Pages 가 배포 안 됨 | Settings → Pages → Source 가 **GitHub Actions** 인지 |
+| `/api/health` 가 404 | `functions/` 가 배포에 포함됐는지. 빌드 출력 디렉터리가 `/` 인지 |
+| `BUCKET 이 설정되지 않았습니다` | 바인딩 이름이 정확히 `BUCKET` 인지, 추가 후 **재배포**했는지 |
+| 목록이 비어 있음 | R2 Objects 에 `data/*.json` 이 있는지. 처음이면 자동 생성됩니다 |
+| 업로드 시 413 | `MAX_UPLOAD_MB` 와 `config.js` 의 `upload.maxFileMB` 를 함께 확인 |
+| 업로드 시 415 | `config.js` 의 `allowedExt` 와 `ALLOWED_EXT` 환경변수가 어긋남 |
+| 강의자료만 403 | `MATERIALS_PASSWORD` 와 `config.js` 의 `materialsHash` 가 다른 비밀번호를 가리킴 |
+| Preview 에서만 실패 | Preview 환경에도 바인딩·환경변수를 따로 추가해야 합니다 |
+| 저장 시 409 가 계속 | 동시 저장이 겹친 것. 5회 재시도 후에도 실패하면 잠시 뒤 다시 시도하세요 |

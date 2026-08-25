@@ -386,6 +386,17 @@ function renderStoragePanel(mount) {
         <div class="kv__v">${caps.canWrite ? '예' : '아니오 — 토큰 또는 프록시 필요'}</div></div>
       <div class="kv__row"><div class="kv__k">교육생 제출</div>
         <div class="kv__v">${caps.canPublicWrite ? '토큰 없이 가능' : '토큰 보유자만 가능'}</div></div>
+
+      ${mode === 'r2' ? `
+      <div class="kv__row"><div class="kv__k">API</div>
+        <div class="kv__v"><code>${esc(store.base)}</code></div></div>
+      <div class="kv__row"><div class="kv__k">업로드 한도</div>
+        <div class="kv__v">${store.maxUploadMB ? `${esc(store.maxUploadMB)}MB / 파일` : '—'}</div></div>
+      <div class="kv__row"><div class="kv__k">강의자료 잠금</div>
+        <div class="kv__v">${store.materialsGate
+          ? '켜짐 — 서명 토큰이 있어야 파일을 내려받을 수 있습니다'
+          : '꺼짐 — 파일 주소를 아는 사람은 누구나 내려받을 수 있습니다'}</div></div>` : ''}
+
       ${mode === 'github' ? `
       <div class="kv__row"><div class="kv__k">레포</div>
         <div class="kv__v"><code>${esc(CONFIG.github.owner)}/${esc(CONFIG.github.repo)}@${esc(CONFIG.github.branch)}</code></div></div>
@@ -393,10 +404,16 @@ function renderStoragePanel(mount) {
         <div class="kv__v">${CONFIG.github.proxyUrl ? `<code>${esc(CONFIG.github.proxyUrl)}</code>` : '설정 안 됨'}</div></div>` : ''}
     </div>
 
-    <div class="row" style="margin-bottom:var(--space-3)">
-      <button class="btn btn--outline btn--sm" data-switch="${mode === 'local' ? 'github' : 'local'}">
-        ${mode === 'local' ? 'GitHub 저장소로 전환' : '브라우저 저장으로 전환'}
-      </button>
+    <div class="row" style="margin-bottom:var(--space-3);align-items:flex-end">
+      <label class="field" style="margin:0;flex:1 1 220px">
+        <span class="field__label">저장소 모드 전환</span>
+        <select class="select" id="modeSelect">
+          ${['r2', 'github', 'local'].map((m) => `
+            <option value="${attr(m)}" ${m === mode ? 'selected' : ''}>${esc(STORAGE_LABEL[m])}</option>
+          `).join('')}
+        </select>
+      </label>
+      <button class="btn btn--outline" data-switch>전환</button>
     </div>
 
     ${mode === 'github' && !CONFIG.github.proxyUrl ? `
@@ -416,13 +433,15 @@ function renderStoragePanel(mount) {
     </form>` : ''}
 
     <div class="notice notice--info" style="margin-top:var(--space-3)">
-      <strong>브라우저 저장</strong>은 이 기기에만 데이터가 남습니다. 여러 사람에게 제출을 받으려면
-      <strong>GitHub 저장소</strong> 모드로 전환하세요. 자세한 설정은
-      <a href="#/guide#storage">이용안내 → 저장소</a>를 참고하세요.
+      ${mode === 'r2'
+        ? '파일과 색인이 모두 <strong>Cloudflare R2</strong> 에 저장됩니다. 브라우저는 같은 도메인의 <code>/api</code> 만 호출하고, 버킷 권한은 서버 바인딩으로만 존재합니다.'
+        : '<strong>브라우저 저장</strong>은 이 기기에만 데이터가 남습니다. 여러 사람에게 제출을 받으려면 <strong>Cloudflare R2</strong> 모드를 쓰세요.'}
+      자세한 설정은 <a href="#/guide#storage">이용안내 → 저장소</a>를 참고하세요.
     </div>`;
 
   mount.querySelector('[data-switch]').addEventListener('click', async () => {
-    const next = mount.querySelector('[data-switch]').dataset.switch;
+    const next = mount.querySelector('#modeSelect').value;
+    if (next === mode) { toastOk('이미 그 모드입니다.'); return; }
     const ok = await confirmModal({
       title: `${STORAGE_LABEL[next]} 로 전환할까요?`,
       body: '데이터는 자동으로 옮겨지지 않습니다. 필요하면 먼저 백업을 내려받으세요. 페이지가 새로고침됩니다.',

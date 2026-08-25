@@ -5,17 +5,19 @@
 import { CONFIG } from '../config.js';
 import { LocalStore } from './local.js';
 import { GitHubStore } from './github.js';
+import { R2Store } from './r2.js';
 import { makeCode, normEmail, isPastDue } from '../utils.js';
 
 const MODE_KEY = 'ah.storageMode';
+const MODES = ['local', 'github', 'r2'];
 
 /** config 값보다 브라우저 설정을 우선합니다 (관리자가 화면에서 전환 가능). */
 export function currentMode() {
   try {
     const override = localStorage.getItem(MODE_KEY);
-    if (override === 'local' || override === 'github') return override;
+    if (MODES.includes(override)) return override;
   } catch { /* private mode */ }
-  return CONFIG.storage === 'github' ? 'github' : 'local';
+  return MODES.includes(CONFIG.storage) ? CONFIG.storage : 'local';
 }
 
 export function setMode(mode) {
@@ -24,8 +26,14 @@ export function setMode(mode) {
 
 export let store = null;
 
+const FACTORY = {
+  local: () => new LocalStore(),
+  github: () => new GitHubStore(),
+  r2: () => new R2Store(),
+};
+
 export async function initStore() {
-  store = currentMode() === 'github' ? new GitHubStore() : new LocalStore();
+  store = (FACTORY[currentMode()] || FACTORY.local)();
   await store.init();
   if (store.kind === 'local') await seedIfEmpty();
   return store;

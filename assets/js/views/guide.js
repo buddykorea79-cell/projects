@@ -80,6 +80,8 @@ export function guideView(mount) {
             수강생이 함께 쓰는 공용 암호입니다. 콘솔에서
             <code>await hashMaterials('새-비밀번호')</code> 를 실행해 나온 해시를
             <code>config.js</code> 의 <code>materialsHash</code> 에 넣으세요.
+            서버 쪽 다운로드 잠금(<code>MATERIALS_PASSWORD</code>)을 켜 두었다면
+            <strong>같은 비밀번호</strong>로 맞춰야 합니다.
           </p>
 
           <h3 style="font-size:1.6rem;margin-bottom:8px;margin-top:var(--space-4)">관리자 계정</h3>
@@ -105,24 +107,26 @@ export function guideView(mount) {
             현재 모드: <strong>${esc(STORAGE_LABEL[mode])}</strong>
           </p>
 
-          <h3 style="font-size:1.6rem;margin-bottom:8px">① 브라우저 저장 (기본값)</h3>
+          <h3 style="font-size:1.6rem;margin-bottom:8px">① Cloudflare R2 <span class="badge badge--gold" style="font-size:1.1rem">권장</span></h3>
           <p style="color:var(--text-black-soft);line-height:1.8;margin-bottom:var(--space-4)">
-            설정이 전혀 필요 없고 즉시 동작합니다. 대신 데이터가 <strong>그 브라우저에만</strong> 남습니다.
-            혼자 시연하거나 화면을 확인할 때 쓰세요. 실제 제출을 받을 수는 없습니다.
+            파일과 색인이 모두 R2 버킷에 저장됩니다. 브라우저는 R2 를 직접 만지지 않고
+            같은 도메인의 <code>/api</code> 만 호출하며, 버킷 권한은 서버 바인딩으로만 존재합니다.
+            그래서 교육생에게 나눠줄 토큰이 없고, 큰 파일도 그대로 올라갑니다.
+            Cloudflare Pages 에 R2 버킷을 <code>BUCKET</code> 이름으로 바인딩하기만 하면 됩니다.
           </p>
 
           <h3 style="font-size:1.6rem;margin-bottom:8px">② GitHub 저장소</h3>
-          <p style="color:var(--text-black-soft);line-height:1.8">
-            이 레포의 <code>data/</code> 폴더를 데이터베이스로, <code>uploads/</code> 폴더를 파일함으로 씁니다.
-            읽기는 누구나 가능하고, 쓰기에는 권한이 필요합니다.
+          <p style="color:var(--text-black-soft);line-height:1.8;margin-bottom:var(--space-4)">
+            레포의 <code>data/</code> 를 데이터베이스로, <code>uploads/</code> 를 파일함으로 씁니다.
+            쓰기에 토큰이 필요하고, 교육생 제출까지 받으려면 <code>worker/</code> 의 프록시를
+            함께 배포해야 합니다. 파일 크기 제약도 더 큽니다.
           </p>
-          <ul style="margin-top:var(--space-3);color:var(--text-black-soft);line-height:1.9">
-            <li>• <strong>프록시 있음</strong> — <code>worker/</code> 의 Cloudflare Worker 를 배포하고
-              그 주소를 <code>config.js</code> 의 <code>proxyUrl</code> 에 넣으면,
-              교육생은 토큰 없이 그냥 제출합니다. <em>권장 구성입니다.</em></li>
-            <li>• <strong>프록시 없음</strong> — 관리자 화면에서 개인 토큰을 등록한 사람만 쓰기가 됩니다.
-              교육생 전원에게 토큰을 줄 수는 없으니, 교육생 제출까지 받으려면 프록시가 필요합니다.</li>
-          </ul>
+
+          <h3 style="font-size:1.6rem;margin-bottom:8px">③ 브라우저 저장</h3>
+          <p style="color:var(--text-black-soft);line-height:1.8">
+            설정이 전혀 필요 없고 즉시 동작합니다. 대신 데이터가 <strong>그 브라우저에만</strong> 남습니다.
+            화면을 확인할 때 쓰세요. 실제 제출을 받을 수는 없습니다.
+          </p>
           <div class="notice notice--info" style="margin-top:var(--space-4)">
             자세한 배포 순서는 레포의 <code>docs/SETUP.md</code> 에 단계별로 적혀 있습니다.
           </div>

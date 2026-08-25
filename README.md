@@ -38,45 +38,43 @@
 
 ---
 
-## 5분 만에 띄우기
+## 배포 — Cloudflare Pages + R2 (현재 구성)
 
 1. 이 브랜치를 `main` 에 머지합니다.
-2. 레포 **Settings → Pages → Source** 를 **GitHub Actions** 로 바꿉니다.
-3. `.github/workflows/pages.yml` 이 자동으로 배포합니다.
-4. `https://<사용자명>.github.io/<레포명>/` 로 접속.
+2. Cloudflare 에서 **R2 버킷을 하나 만들고**, Pages 프로젝트에 `BUCKET` 이름으로 바인딩합니다.
+3. 끝입니다. `functions/api/[[path]].js` 가 함께 배포되어 `/api` 가 살아납니다.
 
-이 상태에서 사이트는 **브라우저 저장(demo) 모드**로 돕니다. 화면과 흐름을 전부 확인할 수 있지만
-데이터가 접속한 브라우저에만 남습니다. 실제로 여러 사람에게 제출을 받으려면 아래를 읽어주세요.
+버튼 하나하나까지 적어둔 순서는 **[docs/SETUP.md](docs/SETUP.md)** 에 있습니다.
 
 ---
 
-## 저장소 모드 — 여기가 핵심입니다
+## 저장소 모드
 
-정적 호스팅에는 서버가 없습니다. 그래서 "데이터를 어디에 쓸 것인가"를 골라야 합니다.
+정적 사이트에는 서버가 없으므로 "데이터를 어디에 쓸 것인가"를 골라야 합니다.
+세 가지를 지원하고, 관리자 화면에서 언제든 전환할 수 있습니다.
 
-| 모드 | 설정 난이도 | 여러 사람 제출 | 데이터 위치 |
-|---|---|---|---|
-| **① 브라우저 저장** (기본) | 없음 | ✗ | 각자의 IndexedDB |
-| **② GitHub + 토큰** | 낮음 | ✗ (토큰 보유자만) | 이 레포 |
-| **③ GitHub + 프록시** | 중간 | **✓** | 이 레포 |
+| 모드 | 설정 | 여러 사람 제출 | 파일 한도 | 데이터 위치 |
+|---|---|---|---|---|
+| **Cloudflare R2** (기본·권장) | 버킷 바인딩 1개 | **✓** 토큰 불필요 | 100MB/파일 | R2 버킷 |
+| GitHub 저장소 | 토큰 또는 프록시 | 프록시 있을 때만 | ~25MB/파일 | 이 레포 |
+| 브라우저 저장 | 없음 | ✗ | — | 각자의 IndexedDB |
 
-### 왜 ③이 필요한가
+### 왜 R2 인가
 
-GitHub Pages 는 파일을 내보내기만 합니다. 레포에 커밋하려면 토큰이 필요한데,
-토큰을 정적 파일에 넣으면 그 순간 전 세계에 공개됩니다. 교육생에게 토큰을 하나씩
-나눠줄 수도 없습니다. 그래서 **토큰을 대신 쥐고 있어줄 아주 작은 조각 하나**가 필요합니다.
+브라우저는 R2 를 직접 만지지 않습니다. 같은 도메인의 `/api` 만 호출하고,
+버킷 권한은 Cloudflare 바인딩으로만 존재합니다. 그래서
 
-`worker/` 에 그 조각을 Cloudflare Worker(무료 티어로 충분)로 넣어두었습니다.
-배포는 명령 세 줄이고, 자세한 순서는 **[docs/SETUP.md](docs/SETUP.md)** 에 있습니다.
-
-> Cloudflare 말고 Vercel·Netlify·Deno Deploy 함수로도 같은 일을 할 수 있습니다.
-> 원리는 동일합니다 — 토큰은 서버 쪽 시크릿에만 두고, 브라우저는 그 함수를 호출합니다.
+- **비밀값이 브라우저로 내려가지 않습니다.** 교육생에게 토큰을 나눠줄 필요가 없습니다.
+- **CORS 설정이 없습니다.** 사이트와 API 가 같은 오리진입니다.
+- **큰 파일이 올라갑니다.** GitHub Contents API 의 base64 인코딩(용량 +33%)과
+  레포 비대화 문제가 사라집니다.
+- **레포가 깨끗합니다.** 제출물이 커밋으로 쌓이지 않습니다.
 
 ---
 
 ## 데이터 구조
 
-GitHub 모드에서 레포 자체가 데이터베이스입니다.
+R2 모드에서 버킷 안은 이렇게 생겼습니다.
 
 ```
 data/projects.json             프로젝트 배열
@@ -86,9 +84,26 @@ uploads/<제출ID>/<파일>         과제 첨부 원본
 uploads/materials/<자료ID>/…   강의자료 원본
 ```
 
-읽기는 `raw.githubusercontent.com` 에서 인증 없이 가져오므로 API 사용량을 쓰지 않습니다.
-쓰기만 토큰(또는 프록시)을 거칩니다. 동시 제출로 색인 파일이 충돌하면
-최신본을 다시 읽어 최대 5회까지 자동 재시도합니다.
+색인 파일은 **etag 기반 조건부 쓰기**로 갱신합니다. 동시에 제출이 겹쳐 etag 가
+어긋나면 서버가 409 와 함께 최신본을 실어 보내고, 클라이언트가 그 위에 다시 적용해
+최대 5회까지 재시도합니다. 그래서 동시 제출에서 한쪽이 조용히 사라지지 않습니다.
+
+### 저장소 API (`/api`)
+
+| 경로 | 하는 일 |
+|---|---|
+| `GET /api/health` | 상태 · 잠금 여부 · 업로드 한도 |
+| `GET /api/data/:name` | 색인 읽기 (없으면 `[]` 로 만들어 줍니다) |
+| `PUT /api/data/:name` | etag 조건부 색인 쓰기 |
+| `POST /api/upload` | 파일 업로드 (키는 서버가 생성) |
+| `GET /api/file/<key>` | 파일 스트리밍 |
+| `DELETE /api/file/<key>` | 파일 삭제 |
+| `POST /api/materials/token` | 강의자료 다운로드 서명 토큰 (잠금 켠 경우) |
+
+업로드된 파일은 항상 `X-Content-Type-Options: nosniff` 와
+`Content-Security-Policy: default-src 'none'; sandbox` 를 달고 나갑니다.
+이미지·PDF·동영상만 인라인으로 열리고 나머지(SVG·HTML 포함)는 첨부로 강제되므로,
+업로드된 파일이 우리 도메인에서 스크립트를 실행할 수 없습니다.
 
 ---
 
@@ -149,18 +164,21 @@ assets/js/
   config.js                 ← 운영 설정은 여기만 고치면 됩니다
   app.js                    진입점 · 라우트 등록 · 전역 크롬
   router.js                 해시 라우터
-  auth.js                   관리자 인증
+  auth.js                   관리자 인증 · 강의자료 잠금
   utils.js                  포맷·검증·해시·DOM 헬퍼
   ui.js                     토스트·모달·라이트박스·파일선택기
   store/
     index.js                저장소 선택 + 도메인 규칙
-    local.js                IndexedDB 어댑터
+    r2.js                   Cloudflare R2 어댑터  ← 기본
     github.js               GitHub 레포 어댑터
+    local.js                IndexedDB 어댑터
   views/
     home.js  project.js  my.js  materials.js  admin.js  guide.js
-data/                       GitHub 모드의 데이터베이스
-uploads/                    GitHub 모드의 첨부 보관함
-worker/                     (선택) 쓰기 프록시 — 토큰 없는 제출을 가능하게
+shared/r2api.js             R2 저장소 API 핸들러 (서버 측)
+functions/api/[[path]].js   Cloudflare Pages Function — /api/* 진입점
+data/, uploads/             GitHub 모드에서만 쓰는 폴더
+worker/                     GitHub 모드용 쓰기 프록시 (선택)
+tests/                      회귀 테스트 4묶음
 docs/SETUP.md               단계별 배포 가이드
 ```
 
@@ -168,12 +186,22 @@ docs/SETUP.md               단계별 배포 가이드
 
 ## 로컬에서 확인하기
 
-ES 모듈은 `file://` 로 열면 CORS 때문에 막힙니다. 간단한 서버를 띄우세요.
+`/api` 가 없는 환경에서는 R2 모드가 뜨지 않습니다. 두 가지 방법이 있습니다.
+
+**① 실제 R2 로 (권장)** — Cloudflare 계정에 붙여 그대로 돌립니다.
+
+```bash
+npx wrangler pages dev . --r2 BUCKET
+```
+
+**② R2 없이 화면만** — 정적 서버를 띄운 뒤 브라우저 콘솔에서 모드를 바꿉니다.
 
 ```bash
 python3 -m http.server 8000
-# http://localhost:8000
+# 접속 후 콘솔에서:  localStorage.setItem('ah.storageMode','local'); location.reload()
 ```
+
+관리자 화면 하단 **저장소** 패널에서도 모드를 바꿀 수 있습니다.
 
 ---
 
@@ -185,4 +213,5 @@ python3 -m http.server 8000
 - 375px 모바일에서 가로 스크롤 없음 · 넓은 표는 자체 스크롤
 - 인쇄 시 네비게이션·버튼 숨김
 - 320px~1600px 전 구간에서 가로 스크롤 없음 (테스트로 검증)
+- 업로드 파일은 sandbox CSP + nosniff 로 제공 — 우리 도메인에서 스크립트 실행 불가
 - Chrome·Edge·Safari·Firefox 최신 버전 기준

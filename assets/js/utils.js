@@ -141,6 +141,23 @@ export function csvCell(v) {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+/**
+ * 첨부를 내려받는 링크의 href 와 부가 속성을 저장소별로 만들어 줍니다.
+ *  - r2     : 같은 도메인 API. `download=1` 을 붙이면 서버가 파일명까지 지정합니다.
+ *  - github : raw 주소는 다른 도메인이라 download 속성이 먹지 않습니다. 새 탭으로.
+ *  - idb    : blob: URL 이므로 download 속성으로 파일명을 지정합니다.
+ */
+export function downloadLink(url, fileRef) {
+  if (!url) return null;
+  if (fileRef?.storage === 'r2') {
+    return { href: `${url}${url.includes('?') ? '&' : '?'}download=1`, attrs: '' };
+  }
+  if (fileRef?.storage === 'github') {
+    return { href: url, attrs: 'target="_blank" rel="noopener"' };
+  }
+  return { href: url, attrs: `download="${esc(fileRef?.name || 'file')}"` };
+}
+
 /** 브라우저에서 파일 다운로드를 트리거합니다. */
 export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);

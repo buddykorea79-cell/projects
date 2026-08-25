@@ -4,9 +4,11 @@
   "type": "module",
   "scripts": {
     "test:parse": "node parse.test.mjs",
+    "test:r2": "node r2.test.mjs",
     "test:github": "node github.test.mjs",
     "test:browser": "node browser.test.mjs",
-    "test": "npm run test:parse && npm run test:github"
+    "test:r2-browser": "node r2-browser.test.mjs",
+    "test": "npm run test:parse && npm run test:r2 && npm run test:github && npm run test:r2-browser"
   },
   "devDependencies": {
     "acorn": "^8.14.0",

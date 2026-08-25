@@ -63,15 +63,26 @@ export const CONFIG = {
    *  'local'  — 브라우저 IndexedDB. 설치 0단계, 즉시 동작.
    *             단, 데이터가 "그 브라우저에만" 남습니다. 시연/연습용.
    *
-   *  'github' — 이 저장소(레포)의 data/ 폴더를 DB로, uploads/ 폴더를 파일함으로
-   *             사용합니다. 읽기는 누구나(공개 레포) 가능하고, 쓰기는 토큰이
-   *             필요합니다. 아래 두 가지 중 하나로 토큰을 공급하세요.
+   *  'r2'     — Cloudflare R2. 파일과 색인을 모두 R2 버킷에 두고, 같은 도메인의
+   *             /api 로만 접근합니다. 토큰을 나눠줄 필요가 없어 교육생이 그냥
+   *             제출할 수 있고, 큰 파일도 올라갑니다. Cloudflare Pages 로
+   *             배포한다면 이 모드가 권장입니다.
    *
-   *             (a) proxyUrl 설정  → 제출자는 토큰 없이 제출 가능 (권장)
+   *  'github' — 레포의 data/ 폴더를 DB로, uploads/ 폴더를 파일함으로 사용합니다.
+   *             읽기는 누구나(공개 레포) 가능하고, 쓰기는 토큰이 필요합니다.
+   *             (a) proxyUrl 설정  → 제출자는 토큰 없이 제출 가능
    *             (b) proxyUrl 없음  → 토큰을 가진 사람만 쓰기 가능
-   *                                  (관리자 + GitHub 계정이 있는 교육생)
    */
-  storage: 'local',
+  storage: 'r2',
+
+  r2: {
+    /**
+     * 저장소 API 주소. Cloudflare Pages 에 functions/ 가 함께 배포되므로
+     * 기본값 '/api' 그대로 두면 됩니다. (같은 도메인 → CORS 설정 불필요)
+     * 별도 Worker 로 띄웠다면 그 주소를 넣으세요. 예: 'https://xxx.workers.dev'
+     */
+    apiBase: '/api',
+  },
 
   github: {
     owner: 'buddykorea79-cell',
@@ -93,8 +104,8 @@ export const CONFIG = {
    * 3) 업로드 정책
    * ========================================================================= */
   upload: {
-    /** 첨부 1개당 최대 크기 (MB) */
-    maxFileMB: 20,
+    /** 첨부 1개당 최대 크기 (MB) — R2 모드에서는 Worker 요청 한도(100MB) 이내로 */
+    maxFileMB: 50,
     /** 제출 1건당 최대 첨부 개수 */
     maxFiles: 5,
     /** 허용 확장자 (소문자, 점 없이) */
@@ -113,7 +124,7 @@ export const CONFIG = {
     /** 자료 1건당 최대 파일 개수 */
     maxFiles: 10,
     /** 파일 1개당 최대 크기 (MB) */
-    maxFileMB: 50,
+    maxFileMB: 100,
     /** 허용 확장자 — 강의자료는 PDF 가 기본입니다. */
     allowedExt: ['pdf', 'ppt', 'pptx', 'zip'],
   },
@@ -126,4 +137,5 @@ export const CONFIG = {
 export const STORAGE_LABEL = {
   local: '브라우저 저장 (demo)',
   github: 'GitHub 저장소',
+  r2: 'Cloudflare R2',
 };

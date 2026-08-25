@@ -1,14 +1,24 @@
 /** 강의자료 다운로드 — 공용 비밀번호로 잠금을 풀고 파일을 내려받습니다. */
 import { store } from '../store/index.js';
 import { CONFIG } from '../config.js';
-import { esc, attr, fmtDate, fmtBytes, extOf } from '../utils.js';
+import { esc, attr, fmtDate, fmtBytes, extOf, downloadLink } from '../utils.js';
 import {
   spinner, emptyState, toastOk, toastErr, fieldError, clearErrors, focusFirstError, busy,
 } from '../ui.js';
 import { isAdmin, materialsUnlocked, unlockMaterials, lockMaterials } from '../auth.js';
 
+/**
+ * 열람 가능 여부.
+ * 서버(R2)가 다운로드를 잠그고 있으면 관리자라도 비밀번호로 서명 토큰을 받아야
+ * 파일이 내려옵니다. 그래서 그때는 관리자 우회를 적용하지 않습니다.
+ */
+function canView() {
+  if (store.materialsGate) return store.hasMaterialsAccess();
+  return materialsUnlocked();
+}
+
 export async function materialsView(mount) {
-  if (!materialsUnlocked()) { gateView(mount); return; }
+  if (!canView()) { gateView(mount); return; }
 
   mount.innerHTML = `
     <section class="band" style="padding-block:var(--space-6)">
@@ -22,9 +32,8 @@ export async function materialsView(mount) {
         </p>
         <div class="row" style="margin-top:var(--space-4)">
           <a class="btn btn--onDark" href="#/">과제 제출하러 가기</a>
-          ${isAdmin()
-            ? '<a class="btn btn--ghostDark" href="#/admin/material/new">＋ 자료 등록</a>'
-            : '<button class="btn btn--ghostDark" data-lock>열람 종료</button>'}
+          ${isAdmin() ? '<a class="btn btn--ghostDark" href="#/admin/material/new">＋ 자료 등록</a>' : ''}
+          <button class="btn btn--ghostDark" data-lock>열람 종료</button>
         </div>
       </div>
     </section>
@@ -39,6 +48,7 @@ export async function materialsView(mount) {
   if (lock) {
     lock.addEventListener('click', () => {
       lockMaterials();
+      store.clearMaterialsAccess?.();
       toastOk('열람을 종료했습니다.');
       materialsView(mount);
     });
@@ -73,8 +83,9 @@ function gateView(mount) {
         </form>
 
         <p style="text-align:center;margin-top:var(--space-4);font-size:1.3rem;color:var(--text-black-soft)">
-          비밀번호를 모르시면 담당 강사에게 문의하세요.<br>
-          관리자는 <a href="#/admin">로그인</a> 후 비밀번호 없이 열람할 수 있습니다.
+          비밀번호를 모르시면 담당 강사에게 문의하세요.${store.materialsGate
+            ? ''
+            : '<br>관리자는 <a href="#/admin">로그인</a> 후 비밀번호 없이 열람할 수 있습니다.'}
         </p>
       </div>
     </section>`;
@@ -86,7 +97,10 @@ function gateView(mount) {
     const btn = form.querySelector('button[type="submit"]');
     busy(btn, true, '확인 중…');
     try {
-      await unlockMaterials(form.password.value);
+      const password = form.password.value;
+      // 화면 잠금(클라이언트 해시)과 다운로드 서명 토큰(서버)을 함께 확인합니다.
+      await unlockMaterials(password);
+      if (store.materialsGate) await store.authorizeMaterials(password);
       toastOk('열람 권한이 확인되었습니다.');
       materialsView(mount);
     } catch (err) {
@@ -144,7 +158,7 @@ async function renderList(mount) {
       }
       const rows = [];
       for (const f of m.files) {
-        const url = await store.fileURL(f);
+        const dl = downloadLink(await store.fileURL(f), f);
         rows.push(`
           <div class="fileitem">
             <div class="fileitem__thumb">${esc(fileBadge(f.name))}</div>
@@ -152,10 +166,8 @@ async function renderList(mount) {
               <div class="fileitem__name">${esc(f.name)}</div>
               <div class="fileitem__meta">${esc(fmtBytes(f.size))}</div>
             </div>
-            ${url
-              ? `<a class="btn btn--primary btn--sm" href="${attr(url)}"
-                   ${f.storage === 'github' ? 'target="_blank" rel="noopener"' : `download="${attr(f.name)}"`}>
-                   내려받기</a>`
+            ${dl
+              ? `<a class="btn btn--primary btn--sm" href="${attr(dl.href)}" ${dl.attrs}>내려받기</a>`
               : '<span class="badge badge--soft">파일 없음</span>'}
           </div>`);
       }
