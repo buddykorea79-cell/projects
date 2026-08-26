@@ -21,6 +21,12 @@
 - `내 제출물` 에서 자기 제출물을 언제든 확인·수정·삭제 (마감 전까지)
 - 남의 제출물은 목록에도 상세에도 나오지 않습니다
 
+**소통방**
+- 회원이면 누구나 글을 남기고 서로 댓글을 달 수 있는 게시판
+- 관리자가 **공지로 지정**한 글은 언제나 목록 맨 위 (금색 배지 + 왼쪽 띠)
+- 내가 쓴 글·댓글만 수정·삭제, 관리자는 전부 정리 가능
+- 제목·내용·작성자 검색, 본문의 주소는 자동으로 링크
+
 **강의자료**
 - 상단 메뉴 `강의자료` → 로그인한 회원이면 바로 목록
 - 한 행에 2칸, 설명에 주소를 적으면 `바로가기` 버튼이 새 창으로 열립니다
@@ -30,6 +36,7 @@
 - 프로젝트 개설·편집·삭제 (마감일시, 접수 상태, 공개 범위, 기관명 필수 여부, 첨부 허용 여부)
 - 강의자료 등록·편집·삭제 (PDF·PPT·ZIP, 자료당 10개까지, 개당 50MB)
 - 전체 제출물 표 — 검색·정렬, 첨부 미리보기, 강제 삭제
+- 소통방 공지 지정·해제, 남의 글·댓글 삭제
 - **회원 관리** — 검색, 관리자 승격·해제, 이용 정지·해제, 비밀번호 초기화, CSV 내려받기
 - 전체 백업 JSON 내보내기 / 복원
 - 저장소 모드 전환
@@ -87,6 +94,7 @@ R2 모드에서 버킷 안은 이렇게 생겼습니다.
 data/projects.json             프로젝트 배열
 data/submissions.json          제출물 메타데이터 배열
 data/materials.json            강의자료 메타데이터 배열
+data/posts.json                소통방 글 + 댓글
 uploads/<제출ID>/<파일>         과제 첨부 원본
 uploads/materials/<자료ID>/…   강의자료 원본
 ```
@@ -110,6 +118,10 @@ uploads/materials/<자료ID>/…   강의자료 원본
 | `GET`·`POST /api/submissions` | 내 제출물 목록 · 제출 (제출자 정보는 서버가 채웁니다) |
 | `PATCH`·`DELETE /api/submissions/:id` | 본인 또는 관리자만 |
 | `PUT /api/submissions` | 백업 복원 — 제출물 색인 통째로 교체 (관리자) |
+| `GET`·`POST /api/posts` | 소통방 목록(공지 우선) · 글쓰기 |
+| `PATCH`·`DELETE /api/posts/:id` | 본인 또는 관리자 — 공지 지정은 관리자만 |
+| `POST /api/posts/:id/comments` | 댓글 달기 |
+| `DELETE /api/posts/:id/comments/:cid` | 본인 또는 관리자 |
 | `POST /api/upload` | 파일 업로드 (저장 위치는 서버가 결정) |
 | `GET /api/file/<key>` | 파일 스트리밍 (회원) |
 | `DELETE /api/file/<key>` | 파일 삭제 (관리자) |
@@ -196,6 +208,7 @@ assets/js/
     demo-auth.js            서버 없는 모드용 회원 흉내 (시연용)
   views/
     home.js  project.js  my.js  materials.js  guide.js
+    board.js                소통방 목록 · 글 · 댓글
     account.js              로그인 · 회원가입 · 내 계정
     admin.js                대시보드 · 프로젝트 · 강의자료 · 제출물 · 회원 관리
 shared/auth.js              비밀번호 해시 · 세션 서명 · 회원 명부 (서버 측)

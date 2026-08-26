@@ -7,7 +7,7 @@ import { uid } from '../utils.js';
 import { DemoAuth } from './demo-auth.js';
 
 const DB_NAME = 'assignment-hub';
-const DB_VER = 2;
+const DB_VER = 3;
 
 let dbPromise = null;
 
@@ -31,6 +31,9 @@ function openDB() {
       if (!db.objectStoreNames.contains('materials')) {
         db.createObjectStore('materials', { keyPath: 'id' });
       }
+      if (!db.objectStoreNames.contains('posts')) {
+        db.createObjectStore('posts', { keyPath: 'id' });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -51,6 +54,14 @@ function tx(store, mode, fn) {
 }
 
 const wrap = (req) => ({ __req: req });
+
+/** 공지를 맨 위로, 그 안에서는 최신순 — 서버(R2) 와 같은 규칙입니다. */
+function sortPosts(list) {
+  return [...list].sort((a, b) => {
+    if (Boolean(b.pinned) !== Boolean(a.pinned)) return b.pinned ? 1 : -1;
+    return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+  });
+}
 
 export class LocalStore {
   constructor() {
@@ -187,6 +198,74 @@ export class LocalStore {
     await tx('materials', 'readwrite', (os) => os.delete(id));
   }
 
+  /* --------------------------------------------------------------- 소통방 */
+
+  async listPosts() {
+    const rows = await tx('posts', 'readonly', (os) => wrap(os.getAll()));
+    return sortPosts(rows || []);
+  }
+
+  async getPost(id) {
+    return (await tx('posts', 'readonly', (os) => wrap(os.get(id)))) || null;
+  }
+
+  async savePost(post) {
+    const now = new Date().toISOString();
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+
+    const rec = post.id
+      ? { ...(await this.getPost(post.id)), title: post.title, body: post.body }
+      : {
+        id: uid('b_'),
+        author: { institution: me.institution || '', name: me.name, email: me.email },
+        title: post.title,
+        body: post.body,
+        pinned: false,
+        comments: [],
+        createdAt: now,
+      };
+    rec.updatedAt = now;
+    await tx('posts', 'readwrite', (os) => os.put(rec));
+    return rec;
+  }
+
+  async pinPost(id, pinned) {
+    const rec = await this.getPost(id);
+    if (!rec) throw new Error('글을 찾을 수 없습니다.');
+    rec.pinned = Boolean(pinned);
+    rec.updatedAt = new Date().toISOString();
+    await tx('posts', 'readwrite', (os) => os.put(rec));
+    return rec;
+  }
+
+  async deletePost(id) {
+    await tx('posts', 'readwrite', (os) => os.delete(id));
+  }
+
+  async addComment(postId, body) {
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+    const rec = await this.getPost(postId);
+    if (!rec) throw new Error('글을 찾을 수 없습니다.');
+    rec.comments = [...(rec.comments || []), {
+      id: uid('c_'),
+      author: { institution: me.institution || '', name: me.name, email: me.email },
+      body,
+      createdAt: new Date().toISOString(),
+    }];
+    await tx('posts', 'readwrite', (os) => os.put(rec));
+    return rec;
+  }
+
+  async deleteComment(postId, commentId) {
+    const rec = await this.getPost(postId);
+    if (!rec) throw new Error('글을 찾을 수 없습니다.');
+    rec.comments = (rec.comments || []).filter((c) => c.id !== commentId);
+    await tx('posts', 'readwrite', (os) => os.put(rec));
+    return rec;
+  }
+
   /* --------------------------------------------------------------- files */
 
   async deleteFile(fileRef) {
@@ -219,6 +298,7 @@ export class LocalStore {
       projects: await this.listProjects(),
       submissions: await this.listSubmissions(),
       materials: await this.listMaterials(),
+      posts: await this.listPosts(),
     };
   }
 
@@ -232,6 +312,9 @@ export class LocalStore {
     }
     for (const m of dump.materials || []) {
       await tx('materials', 'readwrite', (os) => os.put(m));
+    }
+    for (const b of dump.posts || []) {
+      await tx('posts', 'readwrite', (os) => os.put(b));
     }
   }
 }

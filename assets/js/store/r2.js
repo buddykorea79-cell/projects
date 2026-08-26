@@ -259,6 +259,58 @@ export class R2Store {
     await this.mutateIndex('materials', (list) => list.filter((x) => x.id !== id));
   }
 
+  /* ----------------------------------------------------------- 소통방 -- */
+
+  /** 서버가 공지를 맨 위로 정렬해 줍니다. */
+  async listPosts() {
+    const { data } = await this.json('/posts', { cache: 'no-store' });
+    return Array.isArray(data) ? data : [];
+  }
+
+  async getPost(id) {
+    return (await this.listPosts()).find((p) => p.id === id) || null;
+  }
+
+  async savePost(post) {
+    if (!post.id) {
+      const { post: saved } = await this.post('/posts', { title: post.title, body: post.body });
+      return saved;
+    }
+    const { post: saved } = await this.json(`/posts/${encodeURIComponent(post.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: post.title, body: post.body }),
+    });
+    return saved;
+  }
+
+  /** 공지 지정·해제 — 서버가 관리자인지 확인합니다. */
+  async pinPost(id, pinned) {
+    const { post } = await this.json(`/posts/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned: Boolean(pinned) }),
+    });
+    return post;
+  }
+
+  async deletePost(id) {
+    await this.json(`/posts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  async addComment(postId, body) {
+    const { post } = await this.post(`/posts/${encodeURIComponent(postId)}/comments`, { body });
+    return post;
+  }
+
+  async deleteComment(postId, commentId) {
+    const { post } = await this.json(
+      `/posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}`,
+      { method: 'DELETE' },
+    );
+    return post;
+  }
+
   /* ------------------------------------------------------------- files */
 
   /** 관리자만 직접 지울 수 있습니다. 제출물 첨부는 서버가 함께 정리합니다. */
@@ -287,6 +339,7 @@ export class R2Store {
       projects: await this.listProjects(),
       submissions: await this.listSubmissions(),
       materials: await this.listMaterials(),
+      posts: await this.listPosts(),
     };
   }
 

@@ -280,6 +280,63 @@ await step('로그인하지 않으면 그 주소로도 못 받음', async () => 
   await stranger.close();
 });
 
+log('\n== 6-2. 소통방 ==');
+
+await step('회원이 글을 남기면 서버에 저장됨', async () => {
+  await alice.goto(`${origin}/#/board/new`, { waitUntil: 'networkidle' });
+  await alice.waitForSelector('#postForm', { timeout: 8000 });
+  await alice.fill('#postForm [name="title"]', '스터디 같이 하실 분');
+  await alice.fill('#postForm [name="body"]', '주 1회 온라인으로 모이려 합니다.');
+  await alice.locator('#postForm button[type="submit"]').click();
+  await alice.waitForURL(/#\/board\/b_[a-z0-9]+$/, { timeout: 15000 });
+
+  const raw = new TextDecoder().decode(bucket.objects.get('data/posts.json').bytes);
+  if (!raw.includes('스터디 같이 하실 분')) throw new Error('R2 에 저장되지 않음');
+  if (!raw.includes('alice@example.com')) throw new Error('글쓴이가 서버에서 안 채워짐');
+});
+
+await step('다른 회원이 댓글을 달면 글쓴이에게도 보임', async () => {
+  await bob.goto(`${origin}/#/board`, { waitUntil: 'networkidle' });
+  await bob.waitForSelector('.post', { timeout: 10000 });
+  await bob.locator('.post').first().click();
+  await bob.waitForSelector('#commentForm', { timeout: 8000 });
+  await bob.fill('#commentForm [name="body"]', '저도 참여하고 싶습니다.');
+  await bob.locator('#commentForm button[type="submit"]').click();
+  await bob.waitForSelector('.comment', { timeout: 10000 });
+
+  await alice.reload({ waitUntil: 'networkidle' });
+  await alice.waitForSelector('.comment', { timeout: 10000 });
+  const text = await alice.locator('.comment__body').first().innerText();
+  if (!text.includes('저도 참여하고')) throw new Error(text);
+});
+
+await step('남의 글에는 수정·삭제·공지 버튼이 없음', async () => {
+  if (await bob.locator('[data-del]').count()) throw new Error('삭제 버튼이 보임');
+  if (await bob.locator('[data-pin]').count()) throw new Error('공지 버튼이 보임');
+});
+
+await step('관리자가 공지로 지정하면 맨 위로', async () => {
+  await admin.goto(`${origin}/#/board/new`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('#postForm', { timeout: 8000 });
+  await admin.fill('#postForm [name="title"]', '더 최근 글');
+  await admin.fill('#postForm [name="body"]', '공지보다 나중에 쓴 글입니다.');
+  await admin.locator('#postForm button[type="submit"]').click();
+  await admin.waitForURL(/#\/board\/b_[a-z0-9]+$/, { timeout: 15000 });
+
+  await admin.goto(`${origin}/#/board`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('.post', { timeout: 10000 });
+  await admin.locator('.post', { hasText: '스터디 같이' }).click();
+  await admin.waitForSelector('[data-pin]', { timeout: 8000 });
+  await admin.locator('[data-pin]').click();
+  await admin.waitForTimeout(1500);
+
+  await bob.goto(`${origin}/#/board`, { waitUntil: 'networkidle' });
+  await bob.waitForSelector('.post', { timeout: 10000 });
+  const first = await bob.locator('.post').first().innerText();
+  if (!first.includes('스터디 같이')) throw new Error(first.split('\n')[0]);
+  if (!(await bob.locator('.post--pinned').count())) throw new Error('공지 표시 없음');
+});
+
 log('\n== 7. 회원 관리 ==');
 
 await step('관리자만 회원 목록을 볼 수 있음', async () => {

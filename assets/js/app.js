@@ -11,6 +11,7 @@ import { projectView, submitView } from './views/project.js';
 import { myView, submissionView, editSubmissionView } from './views/my.js';
 import { guideView } from './views/guide.js';
 import { materialsView } from './views/materials.js';
+import { boardView, postView, postFormView } from './views/board.js';
 import { loginView, signupView, accountView } from './views/account.js';
 import {
   adminView, projectFormView, adminSubmissionsView, materialFormView, membersView,
@@ -54,7 +55,7 @@ function renderNavLinks() {
   const signed = isSignedIn();
   document.querySelectorAll('.gnav__links a, .gnav__drawer a').forEach((a) => {
     const href = a.getAttribute('href') || '';
-    const memberOnly = ['#/materials', '#/my'].includes(href);
+    const memberOnly = ['#/materials', '#/board', '#/my'].includes(href);
     a.hidden = memberOnly && !signed;
   });
 }
@@ -65,6 +66,7 @@ function markActiveNav(path) {
     const nav = a.dataset.nav;
     const active = (nav === 'home' && (key === 'home' || key === 'p'))
       || (nav === 'materials' && key === 'materials')
+      || (nav === 'board' && key === 'board')
       || (nav === 'my' && (key === 'my' || key === 's'))
       || (nav === 'guide' && key === 'guide');
     if (active) a.setAttribute('aria-current', 'page');
@@ -93,6 +95,7 @@ function setupDrawer() {
 async function updateFrap(path) {
   const frap = $('#frap');
   if (!isSignedIn() || path.startsWith('/admin') || path.startsWith('/materials')
+      || path.startsWith('/board')
       || path.includes('/submit') || PUBLIC_PATHS.has(path)) {
     frap.hidden = true;
     return;
@@ -163,6 +166,11 @@ function registerRoutes() {
   R.route('/', view((m) => homeView(m)));
   R.route('/guide', view((m) => guideView(m)));
   R.route('/materials', view((m) => materialsView(m)));
+
+  R.route('/board', view((m) => boardView(m)));
+  R.route('/board/new', view((m) => postFormView(m, { id: 'new' })));
+  R.route('/board/:id', view((m, p) => postView(m, p)));
+  R.route('/board/:id/edit', view((m, p) => postFormView(m, p)));
   R.route('/my', view((m) => myView(m)));
 
   R.route('/login', view((m) => loginView(m)));

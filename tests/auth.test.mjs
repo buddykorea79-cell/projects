@@ -426,6 +426,110 @@ await t('관리자 강의자료 업로드는 materials 폴더로', async () => {
   if (!r.data.key.startsWith('uploads/materials/m_abc123/')) throw new Error(r.data.key);
 });
 
+console.log('\n== 소통방 ==');
+
+// 밥은 앞에서 관리자로 승격됐으므로, 소통방에는 평범한 회원을 따로 하나 만듭니다.
+const talker = client();
+await t('소통방 시험용 회원 준비', async () => {
+  const r = await signup(talker, 'talker@example.com', { name: '수다', institution: '한국정보화진흥원' });
+  eq(r.status, 200, 'status');
+  eq(r.data.me.role, 'member', '일반 회원이어야 함');
+});
+
+let postId;
+await t('회원이 글을 남기면 글쓴이를 서버가 채움', async () => {
+  const r = await alice('/posts', {
+    method: 'POST',
+    body: { title: '자료 요청', body: '1주차 슬라이드 다시 올려주세요.', author: { name: '해커' } },
+  });
+  eq(r.status, 200, 'status');
+  eq(r.data.post.author.name, '앨리스', '글쓴이');
+  eq(r.data.post.author.email, 'alice@example.com', '이메일');
+  eq(r.data.post.pinned, false, '공지 아님');
+  postId = r.data.post.id;
+});
+
+await t('비회원은 목록도 글쓰기도 막힘', async () => {
+  eq((await client()('/posts')).status, 401, '목록');
+  eq((await client()('/posts', { method: 'POST', body: { title: 'a', body: 'b' } })).status, 401, '글쓰기');
+});
+
+await t('제목이나 내용이 비면 거부', async () => {
+  eq((await alice('/posts', { method: 'POST', body: { title: '', body: 'x' } })).status, 400, '제목 없음');
+  eq((await alice('/posts', { method: 'POST', body: { title: 'x', body: '  ' } })).status, 400, '내용 없음');
+});
+
+await t('회원은 스스로 공지로 만들 수 없음', async () => {
+  const made = await alice('/posts', { method: 'POST', body: { title: '가짜 공지', body: 'x', pinned: true } });
+  eq(made.data.post.pinned, false, '생성 시');
+
+  const patched = await alice(`/posts/${made.data.post.id}`, { method: 'PATCH', body: { pinned: true } });
+  eq(patched.status, 200, '요청 자체는 성공');
+  eq(patched.data.post.pinned, false, '수정 시');
+
+  await alice(`/posts/${made.data.post.id}`, { method: 'DELETE' });
+});
+
+await t('관리자가 공지로 지정하면 목록 맨 위로', async () => {
+  await alice('/posts', { method: 'POST', body: { title: '나중 글', body: '더 최근입니다.' } });
+
+  const pin = await admin(`/posts/${postId}`, { method: 'PATCH', body: { pinned: true } });
+  eq(pin.status, 200, 'status');
+  eq(pin.data.post.pinned, true, 'pinned');
+
+  const rows = (await alice('/posts')).data.data;
+  eq(rows[0].id, postId, `맨 위가 공지여야 함 (${rows.map((p) => p.title).join(',')})`);
+});
+
+await t('남의 글은 수정·삭제 불가', async () => {
+  eq((await talker(`/posts/${postId}`, { method: 'PATCH', body: { title: '가로채기' } })).status, 403, '수정');
+  eq((await talker(`/posts/${postId}`, { method: 'DELETE' })).status, 403, '삭제');
+});
+
+await t('본인 글은 수정 가능', async () => {
+  const r = await alice(`/posts/${postId}`, { method: 'PATCH', body: { body: '내용을 고쳤습니다.' } });
+  eq(r.status, 200, 'status');
+  eq(r.data.post.body, '내용을 고쳤습니다.', '내용');
+  eq(r.data.post.pinned, true, '공지 상태는 유지');
+});
+
+let commentId;
+await t('다른 회원이 댓글을 달 수 있음', async () => {
+  const r = await talker(`/posts/${postId}/comments`, { method: 'POST', body: { body: '저도 필요합니다.' } });
+  eq(r.status, 200, 'status');
+  eq(r.data.post.comments.length, 1, '댓글 수');
+  eq(r.data.post.comments[0].author.name, '수다', '댓글 글쓴이');
+  commentId = r.data.post.comments[0].id;
+});
+
+await t('빈 댓글은 거부, 없는 글에는 댓글 불가', async () => {
+  eq((await alice(`/posts/${postId}/comments`, { method: 'POST', body: { body: ' ' } })).status, 400, '빈 댓글');
+  eq((await alice('/posts/b_nope/comments', { method: 'POST', body: { body: 'x' } })).status, 404, '없는 글');
+});
+
+await t('남의 댓글은 지울 수 없고 본인·관리자는 지울 수 있음', async () => {
+  eq((await alice(`/posts/${postId}/comments/${commentId}`, { method: 'DELETE' })).status, 403, '남의 댓글');
+
+  const r = await admin(`/posts/${postId}/comments/${commentId}`, { method: 'DELETE' });
+  eq(r.status, 200, '관리자');
+  eq(r.data.post.comments.length, 0, '삭제됨');
+});
+
+await t('남의 이메일은 목록에서 가려지고 관리자에게만 보임', async () => {
+  const seen = (await talker('/posts')).data.data.find((p) => p.id === postId);
+  eq(seen.author.name, '앨리스', '이름은 보임');
+  if (seen.author.email) throw new Error('이메일이 노출됨');
+
+  const asAdmin = (await admin('/posts')).data.data.find((p) => p.id === postId);
+  eq(asAdmin.author.email, 'alice@example.com', '관리자에게는 보임');
+});
+
+await t('관리자는 남의 글도 삭제 가능', async () => {
+  const r = await admin(`/posts/${postId}`, { method: 'DELETE' });
+  eq(r.status, 200, 'status');
+  eq((await alice('/posts')).data.data.some((p) => p.id === postId), false, '아직 남아 있음');
+});
+
 console.log('\n== 세션 무효화 ==');
 
 await t('비밀번호를 바꾸면 다른 기기의 세션이 끊김', async () => {

@@ -98,8 +98,10 @@ await step('헤더에 로그인 · 회원가입 버튼', async () => {
 await step('회원 전용 메뉴는 감춰지고 홈·이용안내는 남음', async () => {
   const materials = page.locator('.gnav__links a[data-nav="materials"]');
   if (!(await materials.isHidden())) throw new Error('강의자료 메뉴가 보임');
-  if (!(await page.locator('.gnav__links a[data-nav="my"]').isHidden())) {
-    throw new Error('내 제출물 메뉴가 보임');
+  for (const nav of ['board', 'my']) {
+    if (!(await page.locator(`.gnav__links a[data-nav="${nav}"]`).isHidden())) {
+      throw new Error(`${nav} 메뉴가 보임`);
+    }
   }
   for (const nav of ['home', 'guide']) {
     if (!(await page.locator(`.gnav__links a[data-nav="${nav}"]`).isVisible())) {
@@ -196,12 +198,16 @@ await step('로그인 성공', async () => {
   await page.waitForSelector('.hero__title', { timeout: 8000 });
 });
 await step('로그인하면 회원 메뉴가 나타남', async () => {
-  if (!(await page.locator('.gnav__links a[data-nav="materials"]').isVisible())) {
-    throw new Error('강의자료 메뉴가 안 보임');
+  for (const nav of ['materials', 'board', 'my']) {
+    if (!(await page.locator(`.gnav__links a[data-nav="${nav}"]`).isVisible())) {
+      throw new Error(`${nav} 메뉴가 안 보임`);
+    }
   }
-  if (!(await page.locator('.gnav__links a[data-nav="my"]').isVisible())) {
-    throw new Error('내 제출물 메뉴가 안 보임');
-  }
+});
+await step('소통방 메뉴가 강의자료 바로 다음', async () => {
+  const order = await page.locator('.gnav__links a').evaluateAll(
+    (els) => els.map((e) => e.dataset.nav));
+  if (order.indexOf('board') !== order.indexOf('materials') + 1) throw new Error(order.join(' > '));
 });
 await step('로그인 뒤 next 경로로 돌아감', async () => {
   await logout();
@@ -577,6 +583,141 @@ await step('일반 회원에게 자료 등록 버튼이 없음', async () => {
   if (await page.locator('a[href="#/admin/material/new"]').count()) {
     throw new Error('등록 버튼이 노출됨');
   }
+});
+
+/* ====================================================== 9-2. 소통방 == */
+
+log('\n== 9-2. 소통방 ==');
+await step('회원이 글을 남김', async () => {
+  await page.goto(`${BASE}#/board`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#postList', { timeout: 6000 });
+  await page.locator('a[href="#/board/new"]').first().click();
+  await page.waitForSelector('#postForm', { timeout: 5000 });
+
+  await page.fill('#postForm [name="title"]', '1주차 자료 요청합니다');
+  await page.fill('#postForm [name="body"]', '슬라이드를 다시 올려주실 수 있을까요? https://example.com/ref');
+  await page.locator('#postForm button[type="submit"]').click();
+  await page.waitForURL(/#\/board\/b_[a-z0-9]+$/, { timeout: 8000 });
+  await page.waitForSelector('.page-title', { timeout: 5000 });
+});
+await step('빈 제목·내용은 막힘', async () => {
+  await page.goto(`${BASE}#/board/new`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#postForm', { timeout: 5000 });
+  await page.locator('#postForm button[type="submit"]').click();
+  await page.waitForSelector('.field__err', { timeout: 3000 });
+  const n = await page.locator('.field__err').count();
+  if (n !== 2) throw new Error(`오류 ${n}건`);
+});
+await step('글쓴이가 로그인 회원으로 기록되고 주소는 링크가 됨', async () => {
+  await page.goto(`${BASE}#/board`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.post', { timeout: 6000 });
+  await page.locator('.post').first().click();
+  await page.waitForSelector('.prose', { timeout: 5000 });
+
+  const meta = await page.locator('.page-sub').first().innerText();
+  if (!meta.includes(USER.name)) throw new Error(meta);
+  const link = page.locator('.prose a').first();
+  if (!(await link.count())) throw new Error('주소가 링크가 안 됨');
+  if (await link.getAttribute('href') !== 'https://example.com/ref') {
+    throw new Error(await link.getAttribute('href'));
+  }
+});
+await step('본인 글에는 수정·삭제, 공지 버튼은 없음', async () => {
+  if (!(await page.locator('[data-del]').count())) throw new Error('삭제 버튼 없음');
+  if (await page.locator('[data-pin]').count()) throw new Error('회원에게 공지 버튼이 보임');
+});
+await step('댓글 등록', async () => {
+  await page.fill('#commentForm [name="body"]', '저도 같은 자료가 필요합니다.');
+  await page.locator('#commentForm button[type="submit"]').click();
+  await page.waitForSelector('.comment', { timeout: 6000 });
+  const t = await page.locator('.comment__body').first().innerText();
+  if (!t.includes('저도 같은 자료가')) throw new Error(t);
+  if ((await page.locator('#commentCount').innerText()).trim() !== '1') {
+    throw new Error(await page.locator('#commentCount').innerText());
+  }
+});
+await step('빈 댓글은 막힘', async () => {
+  await page.locator('#commentForm button[type="submit"]').click();
+  await page.waitForSelector('#commentForm .field__err', { timeout: 3000 });
+});
+await step('내 댓글 삭제', async () => {
+  await page.locator('[data-cdel]').first().click();
+  await confirmOk();
+  await page.waitForTimeout(600);
+  if (await page.locator('.comment').count()) throw new Error('댓글이 남음');
+});
+await step('목록에 댓글 수가 표시됨', async () => {
+  await page.fill('#commentForm [name="body"]', '다시 답니다.');
+  await page.locator('#commentForm button[type="submit"]').click();
+  await page.waitForSelector('.comment', { timeout: 6000 });
+
+  await page.goto(`${BASE}#/board`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.post', { timeout: 6000 });
+  const badge = await page.locator('.post__count').first().innerText();
+  if (!badge.includes('1')) throw new Error(badge);
+});
+await step('검색으로 걸러짐', async () => {
+  await page.fill('#q', '없는말없는말');
+  await page.waitForTimeout(400);
+  if (await page.locator('.post').count()) throw new Error('검색 결과가 남음');
+  await page.fill('#q', '자료');
+  await page.waitForTimeout(400);
+  if (!(await page.locator('.post').count())) throw new Error('검색이 안 됨');
+});
+
+await step('관리자가 공지로 지정하면 맨 위로', async () => {
+  await logout();
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: ADMIN.email, password: ADMIN.password });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
+
+  // 관리자가 나중 글을 하나 더 써서, 공지가 최신순을 이기는지 봅니다.
+  await page.goto(`${BASE}#/board/new`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#postForm', { timeout: 5000 });
+  await page.fill('#postForm [name="title"]', '가장 최근에 쓴 글');
+  await page.fill('#postForm [name="body"]', '이 글이 제일 최신입니다.');
+  await page.locator('#postForm button[type="submit"]').click();
+  await page.waitForURL(/#\/board\/b_[a-z0-9]+$/, { timeout: 8000 });
+
+  await page.goto(`${BASE}#/board`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.post', { timeout: 6000 });
+  await page.locator('.post', { hasText: '1주차 자료 요청' }).click();
+  await page.waitForSelector('[data-pin]', { timeout: 5000 });
+  await page.locator('[data-pin]').click();
+  await page.waitForTimeout(900);
+
+  await page.goto(`${BASE}#/board`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.post', { timeout: 6000 });
+  const first = await page.locator('.post').first().innerText();
+  if (!first.includes('1주차 자료 요청')) throw new Error(`맨 위: ${first.split('\n')[0]}`);
+  if (!(await page.locator('.post--pinned').count())) throw new Error('공지 표시가 없음');
+  const badge = await page.locator('.post').first().locator('.badge--gold').innerText();
+  if (badge.trim() !== '공지') throw new Error(badge);
+});
+await step('관리자는 남의 글도 지울 수 있음', async () => {
+  await page.locator('.post', { hasText: '가장 최근에 쓴 글' }).click();
+  await page.waitForSelector('[data-del]', { timeout: 5000 });
+  await page.locator('[data-del]').click();
+  await confirmOk();
+  await page.waitForURL(/#\/board$/, { timeout: 8000 });
+  await page.waitForSelector('.post', { timeout: 6000 });
+  if (await page.locator('.post', { hasText: '가장 최근에 쓴 글' }).count()) {
+    throw new Error('글이 남아 있음');
+  }
+});
+await step('일반 회원으로 돌아오면 공지 버튼이 사라짐', async () => {
+  await logout();
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: USER.email, password: USER.password });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
+
+  await page.goto(`${BASE}#/board`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.post', { timeout: 6000 });
+  await page.locator('.post').first().click();
+  await page.waitForSelector('.prose', { timeout: 5000 });
+  if (await page.locator('[data-pin]').count()) throw new Error('회원에게 공지 버튼이 보임');
 });
 
 /* ======================================================= 10. 내 계정 == */

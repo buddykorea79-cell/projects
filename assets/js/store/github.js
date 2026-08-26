@@ -198,6 +198,7 @@ export class GitHubStore {
   get projectsPath()    { return `${this.cfg.dataDir}/projects.json`; }
   get submissionsPath() { return `${this.cfg.dataDir}/submissions.json`; }
   get materialsPath()   { return `${this.cfg.dataDir}/materials.json`; }
+  get postsPath()       { return `${this.cfg.dataDir}/posts.json`; }
 
   /**
    * 새 파일들을 uploads/ 아래에 커밋하고 레코드의 files 배열을 채웁니다.
@@ -214,6 +215,100 @@ export class GitHubStore {
         storage: 'github', path,
       });
     }
+  }
+
+  /* ----------------------------------------------------------- 소통방 -- */
+
+  async listPosts() {
+    const rows = await this.readJSON(this.postsPath, []);
+    return (Array.isArray(rows) ? rows : []).sort((a, b) => {
+      if (Boolean(b.pinned) !== Boolean(a.pinned)) return b.pinned ? 1 : -1;
+      return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+    });
+  }
+
+  async getPost(id) {
+    return (await this.listPosts()).find((p) => p.id === id) || null;
+  }
+
+  async savePost(post) {
+    const now = new Date().toISOString();
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+
+    const isNew = !post.id;
+    const rec = isNew
+      ? {
+        id: uid('b_'),
+        author: { institution: me.institution || '', name: me.name, email: me.email },
+        title: post.title,
+        body: post.body,
+        pinned: false,
+        comments: [],
+        createdAt: now,
+        updatedAt: now,
+      }
+      : { ...(await this.getPost(post.id)), title: post.title, body: post.body, updatedAt: now };
+
+    await this.mutateJSON(this.postsPath, [], (list) => {
+      const arr = Array.isArray(list) ? list : [];
+      const i = arr.findIndex((x) => x.id === rec.id);
+      if (i >= 0) arr[i] = rec; else arr.push(rec);
+      return arr;
+    }, `${isNew ? 'feat' : 'chore'}(posts): ${isNew ? 'add' : 'update'} ${rec.id}`);
+
+    return rec;
+  }
+
+  async pinPost(id, pinned) {
+    let out = null;
+    await this.mutateJSON(this.postsPath, [], (list) => {
+      const arr = Array.isArray(list) ? list : [];
+      const p = arr.find((x) => x.id === id);
+      if (p) { p.pinned = Boolean(pinned); p.updatedAt = new Date().toISOString(); out = p; }
+      return arr;
+    }, `chore(posts): pin ${id}`);
+    return out;
+  }
+
+  async deletePost(id) {
+    await this.mutateJSON(this.postsPath, [], (list) =>
+      (Array.isArray(list) ? list : []).filter((p) => p.id !== id),
+    `chore(posts): remove ${id}`);
+  }
+
+  async addComment(postId, body) {
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+    let out = null;
+    await this.mutateJSON(this.postsPath, [], (list) => {
+      const arr = Array.isArray(list) ? list : [];
+      const p = arr.find((x) => x.id === postId);
+      if (p) {
+        p.comments = [...(p.comments || []), {
+          id: uid('c_'),
+          author: { institution: me.institution || '', name: me.name, email: me.email },
+          body,
+          createdAt: new Date().toISOString(),
+        }];
+        out = p;
+      }
+      return arr;
+    }, `feat(posts): comment on ${postId}`);
+    if (!out) throw new Error('글을 찾을 수 없습니다.');
+    return out;
+  }
+
+  async deleteComment(postId, commentId) {
+    let out = null;
+    await this.mutateJSON(this.postsPath, [], (list) => {
+      const arr = Array.isArray(list) ? list : [];
+      const p = arr.find((x) => x.id === postId);
+      if (p) { p.comments = (p.comments || []).filter((c) => c.id !== commentId); out = p; }
+      return arr;
+    }, `chore(posts): remove comment ${commentId}`);
+    if (!out) throw new Error('글을 찾을 수 없습니다.');
+    return out;
   }
 
   /* ---------------------------------------------------------- projects */
@@ -365,6 +460,7 @@ export class GitHubStore {
       projects: await this.listProjects(),
       submissions: await this.listSubmissions(),
       materials: await this.listMaterials(),
+      posts: await this.listPosts(),
     };
   }
 
@@ -377,6 +473,9 @@ export class GitHubStore {
     }
     if (dump.materials) {
       await this.mutateJSON(this.materialsPath, [], () => dump.materials, 'chore(materials): import');
+    }
+    if (dump.posts) {
+      await this.mutateJSON(this.postsPath, [], () => dump.posts, 'chore(posts): import');
     }
   }
 }

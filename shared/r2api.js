@@ -32,6 +32,12 @@
  *   PATCH  /submissions/:id         (본인·관리자)
  *   DELETE /submissions/:id         (본인·관리자)
  *   POST   /upload                  (로그인)
+ *   GET    /posts                   (로그인) 소통방 목록 — 공지가 맨 위
+ *   POST   /posts                   (로그인) 글쓰기
+ *   PATCH  /posts/:id               (본인 또는 관리자) — pinned 는 관리자만
+ *   DELETE /posts/:id               (본인 또는 관리자)
+ *   POST   /posts/:id/comments      (로그인) 댓글
+ *   DELETE /posts/:id/comments/:cid (본인 또는 관리자)
  *   GET    /file/<key>              (로그인)
  *   DELETE /file/<key>              (관리자)
  */
@@ -176,6 +182,28 @@ async function route(request, env, url, path, cors) {
     if (method === 'PATCH') return patchSubmission(request, env, subMatch[1], cors);
     if (method === 'DELETE') return removeSubmission(request, env, subMatch[1], cors);
     return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
+
+  /* ------------------------------------------------------------ 소통방 -- */
+
+  if (path === '/posts') {
+    if (method === 'GET') return listPosts(request, env, cors);
+    if (method === 'POST') return createPost(request, env, cors);
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
+  const postMatch = path.match(/^\/posts\/([A-Za-z0-9_-]{1,64})$/);
+  if (postMatch) {
+    if (method === 'PATCH') return patchPost(request, env, postMatch[1], cors);
+    if (method === 'DELETE') return removePost(request, env, postMatch[1], cors);
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
+  const commentMatch = path.match(/^\/posts\/([A-Za-z0-9_-]{1,64})\/comments$/);
+  if (commentMatch && method === 'POST') {
+    return createComment(request, env, commentMatch[1], cors);
+  }
+  const oneComment = path.match(/^\/posts\/([A-Za-z0-9_-]{1,64})\/comments\/([A-Za-z0-9_-]{1,64})$/);
+  if (oneComment && method === 'DELETE') {
+    return removeComment(request, env, oneComment[1], oneComment[2], cors);
   }
 
   /* ------------------------------------------------------- 파일 -- */
@@ -682,6 +710,188 @@ async function removeSubmission(request, env, id, cors) {
     if (f.key) await env.BUCKET.delete(f.key).catch(() => {});
   }
   return json({ ok: true }, 200, cors);
+}
+
+/* ========================================================== 소통방 == */
+
+/**
+ * 회원끼리 글을 남기고 댓글을 다는 게시판.
+ *
+ * 제출물과 같은 원칙입니다 — 색인은 서버만 고치고, 글쓴이는 세션에서 채우며,
+ * 남의 글은 고치거나 지울 수 없습니다. 공지 지정(pinned)은 관리자만 합니다.
+ * 이메일은 본인과 관리자에게만 보입니다.
+ */
+const POST_TITLE_MAX = 150;
+const POST_BODY_MAX = 20000;
+const COMMENT_MAX = 2000;
+
+function viewPost(post, viewer) {
+  const hide = (a) => (
+    viewer.role === 'admin' || normEmail(a?.email) === normEmail(viewer.email)
+      ? a : { ...a, email: undefined });
+  return {
+    ...post,
+    author: hide(post.author),
+    comments: (post.comments || []).map((c) => ({ ...c, author: hide(c.author) })),
+  };
+}
+
+/** 공지를 맨 위로, 그 안에서는 최신순. */
+function sortPosts(list) {
+  return [...list].sort((a, b) => {
+    if (Boolean(b.pinned) !== Boolean(a.pinned)) return b.pinned ? 1 : -1;
+    return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+  });
+}
+
+const canEditPost = (post, me) => (
+  me.role === 'admin' || normEmail(post.author?.email) === normEmail(me.email));
+
+async function listPosts(request, env, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+
+  const { data } = await readIndex(env, 'posts');
+  const rows = sortPosts(data).map((p) => viewPost(p, got.member));
+  return json({ data: rows }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+async function createPost(request, env, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  const body = await request.json().catch(() => null);
+  const title = String(body?.title || '').trim();
+  const text = String(body?.body || '').trim();
+  if (!title || !text) return json({ message: '제목과 내용을 입력하세요.' }, 400, cors);
+
+  const now = new Date().toISOString();
+  const rec = {
+    id: uid('b_'),
+    author: authorOf(me),
+    title: title.slice(0, POST_TITLE_MAX),
+    body: text.slice(0, POST_BODY_MAX),
+    // 공지는 관리자만 지정할 수 있습니다. 일반 회원이 보내도 무시합니다.
+    pinned: me.role === 'admin' ? Boolean(body?.pinned) : false,
+    comments: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await mutateIndex(env, 'posts', (list) => { list.push(rec); return list; });
+  return json({ post: viewPost(rec, me) }, 200, cors);
+}
+
+async function patchPost(request, env, id, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ message: '잘못된 요청 형식입니다.' }, 400, cors);
+
+  let denied = null;
+  let updated = null;
+  const result = await mutateIndex(env, 'posts', (list) => {
+    const p = list.find((x) => x.id === id);
+    if (!p) return null;
+    if (!canEditPost(p, me)) { denied = { message: '본인 글만 수정할 수 있습니다.', status: 403 }; return null; }
+
+    if (body.title !== undefined) {
+      const t = String(body.title).trim();
+      if (!t) { denied = { message: '제목을 입력하세요.', status: 400 }; return null; }
+      p.title = t.slice(0, POST_TITLE_MAX);
+    }
+    if (body.body !== undefined) {
+      const t = String(body.body).trim();
+      if (!t) { denied = { message: '내용을 입력하세요.', status: 400 }; return null; }
+      p.body = t.slice(0, POST_BODY_MAX);
+    }
+    // 공지 지정은 관리자만. 회원이 보낸 pinned 는 조용히 무시합니다.
+    if (body.pinned !== undefined && me.role === 'admin') p.pinned = Boolean(body.pinned);
+
+    p.updatedAt = new Date().toISOString();
+    updated = p;
+    return list;
+  });
+
+  if (denied) return json({ message: denied.message }, denied.status, cors);
+  if (!result.ok) return json({ message: '글을 찾을 수 없습니다.' }, 404, cors);
+  return json({ post: viewPost(updated, me) }, 200, cors);
+}
+
+async function removePost(request, env, id, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  let denied = null;
+  const result = await mutateIndex(env, 'posts', (list) => {
+    const p = list.find((x) => x.id === id);
+    if (!p) return null;
+    if (!canEditPost(p, me)) { denied = '본인 글만 삭제할 수 있습니다.'; return null; }
+    return list.filter((x) => x.id !== id);
+  });
+
+  if (denied) return json({ message: denied }, 403, cors);
+  if (!result.ok) return json({ message: '글을 찾을 수 없습니다.' }, 404, cors);
+  return json({ ok: true }, 200, cors);
+}
+
+async function createComment(request, env, postId, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  const body = await request.json().catch(() => null);
+  const text = String(body?.body || '').trim();
+  if (!text) return json({ message: '댓글 내용을 입력하세요.' }, 400, cors);
+
+  let updated = null;
+  const result = await mutateIndex(env, 'posts', (list) => {
+    const p = list.find((x) => x.id === postId);
+    if (!p) return null;
+    if (!Array.isArray(p.comments)) p.comments = [];
+    p.comments.push({
+      id: uid('c_'),
+      author: authorOf(me),
+      body: text.slice(0, COMMENT_MAX),
+      createdAt: new Date().toISOString(),
+    });
+    updated = p;
+    return list;
+  });
+
+  if (!result.ok) return json({ message: '글을 찾을 수 없습니다.' }, 404, cors);
+  return json({ post: viewPost(updated, me) }, 200, cors);
+}
+
+async function removeComment(request, env, postId, commentId, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  let denied = null;
+  let updated = null;
+  const result = await mutateIndex(env, 'posts', (list) => {
+    const p = list.find((x) => x.id === postId);
+    if (!p) return null;
+    const c = (p.comments || []).find((x) => x.id === commentId);
+    if (!c) return null;
+    // 댓글은 쓴 사람과 관리자가 지울 수 있습니다.
+    if (me.role !== 'admin' && normEmail(c.author?.email) !== normEmail(me.email)) {
+      denied = '본인 댓글만 삭제할 수 있습니다.';
+      return null;
+    }
+    p.comments = p.comments.filter((x) => x.id !== commentId);
+    updated = p;
+    return list;
+  });
+
+  if (denied) return json({ message: denied }, 403, cors);
+  if (!result.ok) return json({ message: '댓글을 찾을 수 없습니다.' }, 404, cors);
+  return json({ post: viewPost(updated, me) }, 200, cors);
 }
 
 /* ============================================================ 업로드 == */

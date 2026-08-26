@@ -444,6 +444,43 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 }
 .material__desc a:hover { color: var(--sb-green); }
 
+/* ------------------------------------------------------------- 소통방 -- */
+
+.post {
+  display: block; text-decoration: none; color: inherit;
+  margin-bottom: var(--space-3);
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+.post:hover { transform: translateY(-2px); box-shadow: var(--shadow-card-hover); }
+.post--pinned { border-left: 4px solid var(--gold); }
+
+.post__head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.post__title {
+  font-size: 1.9rem; font-weight: 600; color: var(--sb-green);
+  margin: 0; flex: 1; min-width: 0; word-break: break-word;
+}
+.post__count { font-size: 1.4rem; color: var(--text-black-soft); white-space: nowrap; }
+.post__preview {
+  margin-top: var(--space-2); font-size: 1.5rem; color: var(--text-black-soft);
+  word-break: break-word;
+}
+.post__meta { margin-top: var(--space-2); font-size: 1.3rem; color: var(--text-black-mute); }
+
+.comment { padding: var(--space-3) 0; border-bottom: 1px solid var(--hairline); }
+.comment:first-child { padding-top: 0; }
+.comment:last-child { border-bottom: 0; padding-bottom: 0; }
+.comment__head {
+  display: flex; align-items: center; gap: var(--space-2);
+  font-size: 1.4rem; color: var(--text-black-soft); margin-bottom: 6px;
+}
+.comment__time { color: var(--text-black-mute); font-size: 1.3rem; }
+.comment__head .btn { margin-left: auto; color: var(--red); }
+.comment__body { font-size: 1.5rem; }
+.comment__body a, .prose a {
+  color: var(--green-accent); text-decoration: underline;
+  text-underline-offset: 2px; word-break: break-all;
+}
+
 .expander { border-bottom: 1px solid var(--hairline); }
 .expander__btn {
   width: 100%; display: flex; justify-content: space-between; align-items: center; gap: var(--space-3);
