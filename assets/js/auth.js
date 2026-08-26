@@ -53,6 +53,14 @@ export function changePassword(current, next) {
   return store.auth.changePassword(current, next);
 }
 
+/**
+ * "비밀번호를 잊었습니다" 접수. 메일 발송 수단이 없어, 관리자 화면에
+ * 처리 대기로 올라가고 관리자가 임시 비밀번호를 발급합니다.
+ */
+export function requestReset(email) {
+  return store.auth.requestReset(email);
+}
+
 /** 세션이 서버에서 끊겼는지 다시 확인합니다(다른 기기에서 정지 처리 등). */
 export function refreshSession() {
   return store?.auth?.refresh?.() ?? Promise.resolve(null);

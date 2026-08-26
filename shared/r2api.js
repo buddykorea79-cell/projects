@@ -47,7 +47,7 @@ import {
   signSession, readSession, cookieValue, sessionCookie, clearCookie,
   readMembers, updateMembers, findMember, publicMember,
   lockState, registerFailure, clearFailures, epochOf, bumpEpoch,
-  validateSignup, normEmail, MIN_PASSWORD,
+  validateSignup, normEmail, MIN_PASSWORD, RESET_REQUEST_COOLDOWN_MS,
 } from './auth.js';
 
 /** 이 이메일로 가입하면 자동으로 관리자 권한이 붙습니다. */
@@ -127,6 +127,7 @@ async function route(request, env, url, path, cors) {
     return json({ me: publicMember(me) }, 200, cors);
   }
   if (path === '/auth/password' && method === 'POST') return changePassword(request, env, url, cors);
+  if (path === '/auth/forgot' && method === 'POST') return requestReset(request, env, cors);
 
   if (path === '/auth/members') {
     const admin = await requireAdmin(request, env);
@@ -430,6 +431,33 @@ async function patchMember(request, env, admin, cors) {
   return json({ member: publicMember(withRole(updated, env)) }, 200, cors);
 }
 
+/**
+ * "비밀번호를 잊었습니다" 접수.
+ *
+ * 메일을 보낼 수단이 없으므로, 본인이 남긴 요청을 관리자 화면에 대기 목록으로
+ * 띄우고 관리자가 임시 비밀번호를 발급하는 방식입니다.
+ *
+ * 응답은 계정이 있든 없든 **항상 같습니다.** 그러지 않으면 이 창구가
+ * "이 이메일이 가입돼 있는지" 확인하는 도구가 됩니다.
+ */
+async function requestReset(request, env, cors) {
+  const body = await request.json().catch(() => null);
+  const email = normEmail(body?.email);
+
+  if (email) {
+    await updateMembers(env, (l) => {
+      const m = findMember(l, email);
+      if (!m) return null;
+      const last = m.resetRequestedAt ? Date.parse(m.resetRequestedAt) : 0;
+      // 연타해도 대기 목록이 도배되지 않게 합니다.
+      if (Number.isFinite(last) && Date.now() - last < RESET_REQUEST_COOLDOWN_MS) return null;
+      m.resetRequestedAt = new Date().toISOString();
+      return l;
+    });
+  }
+  return json({ ok: true }, 200, cors);
+}
+
 async function resetMemberPassword(request, env, cors) {
   const body = await request.json().catch(() => null);
   const email = normEmail(body?.email);
@@ -446,6 +474,7 @@ async function resetMemberPassword(request, env, cors) {
     m.failedAttempts = 0;
     m.lockedUntil = 0;
     m.updatedAt = new Date().toISOString();
+    m.resetRequestedAt = null;   // 처리했으므로 대기 목록에서 내립니다
     bumpEpoch(m);             // 비밀번호를 잃어버린 그 기기의 세션도 함께 끊습니다
     return l;
   });

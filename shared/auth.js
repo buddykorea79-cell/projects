@@ -29,6 +29,12 @@ export const SESSION_TTL_MS = 12 * 3600 * 1000;
 const DEFAULT_ITERATIONS = 15000;
 const MAX_ITERATIONS = 600000;
 
+/**
+ * 같은 계정의 재설정 요청 간격. 짧게 연타해도 관리자 화면이 도배되지 않게 합니다.
+ * (메일을 보내지 않으므로 발송 비용 문제는 없고, 순전히 화면 정리용입니다.)
+ */
+export const RESET_REQUEST_COOLDOWN_MS = 5 * 60 * 1000;
+
 /** 로그인 시도 제한 — 온라인 대입 공격을 막는 주 방어선입니다. */
 const MAX_FAILED = 8;
 const LOCK_MS = 10 * 60 * 1000;
@@ -263,6 +269,8 @@ export function publicMember(m) {
     createdAt: m.createdAt,
     lastLoginAt: m.lastLoginAt || null,
     mustChangePassword: Boolean(m.mustChangePassword),
+    // 본인이 "비밀번호를 잊었다"고 알린 시각. 관리자 화면에서 처리 대기로 보입니다.
+    resetRequestedAt: m.resetRequestedAt || null,
   };
 }
 

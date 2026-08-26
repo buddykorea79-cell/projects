@@ -425,6 +425,11 @@ class R2Auth {
     return member;
   }
 
+  /** "비밀번호를 잊었습니다" 접수. 계정이 있든 없든 응답은 같습니다. */
+  async requestReset(email) {
+    await this.store.post('/auth/forgot', { email });
+  }
+
   async resetPassword(email) {
     const { tempPassword } = await this.store.post('/auth/members/reset', { email });
     return tempPassword;

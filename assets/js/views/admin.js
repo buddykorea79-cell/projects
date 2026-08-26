@@ -159,8 +159,15 @@ export async function adminView(mount) {
     const memberHolder = mount.querySelector('#adminMembers');
     const active = members.filter((m) => m.status !== 'blocked');
     const admins = members.filter((m) => m.role === 'admin');
+    const waiting = members.filter((m) => m.resetRequestedAt);
     memberHolder.innerHTML = members.length
-      ? `<div class="kv">
+      ? `${waiting.length ? `
+         <div class="notice notice--warn" style="margin-bottom:var(--space-3)">
+           <strong>비밀번호 재설정 요청 ${esc(waiting.length)}건</strong> —
+           ${esc(waiting.map((m) => m.name).slice(0, 3).join(', '))}${waiting.length > 3 ? ' 외' : ''}.
+           <a href="#/admin/members">회원 관리</a>에서 임시 비밀번호를 발급해 전달하세요.
+         </div>` : ''}
+         <div class="kv">
            <div class="kv__row"><div class="kv__k">전체</div><div class="kv__v">${members.length}명</div></div>
            <div class="kv__row"><div class="kv__k">이용중</div><div class="kv__v">${active.length}명</div></div>
            <div class="kv__row"><div class="kv__k">관리자</div><div class="kv__v">${
@@ -738,6 +745,7 @@ export async function membersView(mount) {
           <input class="input" id="q" type="search" placeholder="기관 · 성명 · 이메일 검색" />
           <select class="select" id="filter">
             <option value="all">전체</option>
+            <option value="reset">비밀번호 재설정 요청</option>
             <option value="active">이용중만</option>
             <option value="blocked">정지만</option>
             <option value="admin">관리자만</option>
@@ -760,9 +768,14 @@ export async function membersView(mount) {
       if (filterEl.value === 'active' && m.status === 'blocked') return false;
       if (filterEl.value === 'blocked' && m.status !== 'blocked') return false;
       if (filterEl.value === 'admin' && m.role !== 'admin') return false;
+      if (filterEl.value === 'reset' && !m.resetRequestedAt) return false;
       if (!q) return true;
       return [m.institution, m.name, m.email].some((v) => String(v || '').toLowerCase().includes(q));
-    }).sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    }).sort((a, b) => {
+      // 처리할 일이 있는 사람(재설정 요청)을 맨 위로 올립니다.
+      if (Boolean(b.resetRequestedAt) !== Boolean(a.resetRequestedAt)) return b.resetRequestedAt ? 1 : -1;
+      return (b.createdAt || '').localeCompare(a.createdAt || '');
+    });
 
     if (!rows.length) {
       rowsEl.innerHTML = emptyState({
@@ -788,7 +801,10 @@ export async function membersView(mount) {
                 <td>${m.role === 'admin' ? '<span class="badge badge--gold">관리자</span>' : '회원'}</td>
                 <td>${m.status === 'blocked'
                   ? '<span class="badge badge--due">정지</span>'
-                  : '<span class="badge badge--open">이용중</span>'}</td>
+                  : '<span class="badge badge--open">이용중</span>'}
+                  ${m.resetRequestedAt
+                    ? `<span class="badge badge--gold" title="${attr(fmtDate(m.resetRequestedAt, true))} 요청">비밀번호 요청</span>`
+                    : ''}</td>
                 <td>${esc(fmtDate(m.createdAt))}</td>
                 <td>${esc(m.lastLoginAt ? fmtDate(m.lastLoginAt, true) : '—')}</td>
                 <td style="white-space:nowrap">

@@ -70,6 +70,7 @@ function publicMember(m) {
     createdAt: m.createdAt,
     lastLoginAt: m.lastLoginAt || null,
     mustChangePassword: Boolean(m.mustChangePassword),
+    resetRequestedAt: m.resetRequestedAt || null,
   };
 }
 
@@ -162,6 +163,19 @@ export class DemoAuth {
     this._me = { ...this._me, mustChangePassword: false };
   }
 
+  async requestReset(email) {
+    const list = this.members();
+    const m = list.find((x) => normEmail(x.email) === normEmail(email));
+    if (m) {
+      const last = m.resetRequestedAt ? Date.parse(m.resetRequestedAt) : 0;
+      if (!(Number.isFinite(last) && Date.now() - last < 5 * 60 * 1000)) {
+        m.resetRequestedAt = new Date().toISOString();
+        write(MEMBERS_KEY, list);
+      }
+    }
+    // 계정이 없어도 성공한 것처럼 끝냅니다(가입 여부를 알려주지 않기 위해).
+  }
+
   async listMembers() { return this.members().map(publicMember); }
 
   async patchMember(email, changes) {
@@ -186,6 +200,7 @@ export class DemoAuth {
     const temp = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('');
     m.passwordHash = await hash(temp);
     m.mustChangePassword = true;
+    m.resetRequestedAt = null;
     write(MEMBERS_KEY, list);
     return temp;
   }

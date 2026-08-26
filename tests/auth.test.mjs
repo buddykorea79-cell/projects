@@ -530,6 +530,58 @@ await t('관리자는 남의 글도 삭제 가능', async () => {
   eq((await alice('/posts')).data.data.some((p) => p.id === postId), false, '아직 남아 있음');
 });
 
+console.log('\n== 비밀번호 재설정 요청 ==');
+
+await t('요청을 남기면 관리자 목록에 대기로 뜸', async () => {
+  const c = client();
+  await signup(c, 'forgot@example.com', { name: '잊은이' });
+
+  const r = await c('/auth/forgot', { method: 'POST', body: { email: 'forgot@example.com' } });
+  eq(r.status, 200, 'status');
+
+  const row = (await admin('/auth/members')).data.data.find((m) => m.email === 'forgot@example.com');
+  if (!row.resetRequestedAt) throw new Error('요청이 기록되지 않음');
+});
+
+await t('로그인하지 않아도 요청할 수 있음', async () => {
+  const anon = client();
+  eq((await anon('/auth/forgot', { method: 'POST', body: { email: 'forgot@example.com' } })).status, 200, 'status');
+  if (anon.hasCookie()) throw new Error('세션이 생겼음');
+});
+
+await t('없는 계정도 같은 응답 — 가입 여부가 새지 않음', async () => {
+  const a = await client()('/auth/forgot', { method: 'POST', body: { email: 'nobody@example.com' } });
+  const b = await client()('/auth/forgot', { method: 'POST', body: { email: 'forgot@example.com' } });
+  eq(a.status, b.status, 'status');
+  eq(JSON.stringify(a.data), JSON.stringify(b.data), '본문');
+
+  const known = (await admin('/auth/members')).data.data.map((m) => m.email);
+  eq(known.includes('nobody@example.com'), false, '없는 계정이 만들어짐');
+});
+
+await t('짧은 간격의 재요청은 시각을 새로 쓰지 않음', async () => {
+  const before = (await admin('/auth/members')).data.data
+    .find((m) => m.email === 'forgot@example.com').resetRequestedAt;
+  await client()('/auth/forgot', { method: 'POST', body: { email: 'forgot@example.com' } });
+  const after = (await admin('/auth/members')).data.data
+    .find((m) => m.email === 'forgot@example.com').resetRequestedAt;
+  eq(after, before, '연타로 갱신됨');
+});
+
+await t('관리자가 임시 비밀번호를 발급하면 대기에서 내려감', async () => {
+  const r = await admin('/auth/members/reset', { method: 'POST', body: { email: 'forgot@example.com' } });
+  eq(r.status, 200, 'status');
+
+  const row = (await admin('/auth/members')).data.data.find((m) => m.email === 'forgot@example.com');
+  if (row.resetRequestedAt) throw new Error('대기 표시가 남음');
+  eq(row.mustChangePassword, true, '비밀번호 변경 안내');
+
+  const relog = client();
+  eq((await relog('/auth/login', {
+    method: 'POST', body: { email: 'forgot@example.com', password: r.data.tempPassword },
+  })).status, 200, '임시 비밀번호로 로그인');
+});
+
 console.log('\n== 세션 무효화 ==');
 
 await t('비밀번호를 바꾸면 다른 기기의 세션이 끊김', async () => {

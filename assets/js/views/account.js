@@ -1,7 +1,7 @@
 /** 로그인 · 회원가입 · 내 계정. */
 import { CONFIG } from '../config.js';
 import {
-  currentUser, isSimulated, signup, login, logout, changePassword,
+  currentUser, isSimulated, signup, login, logout, changePassword, requestReset,
 } from '../auth.js';
 import { esc, attr, fmtDate, isEmail } from '../utils.js';
 import {
@@ -17,7 +17,6 @@ function nextPath() {
 
 const demoNotice = () => (isSimulated()
   ? `<div class="notice notice--warn" style="margin-bottom:var(--space-4)">
-       <span class="note__icon"></span>
        <span><strong>시연용 계정입니다.</strong> 지금 저장소가 서버 없는 모드라
        회원 정보가 이 브라우저에만 저장됩니다. 실제 운영은 Cloudflare R2 모드에서 하세요.</span>
      </div>`
@@ -56,7 +55,7 @@ export function loginView(mount) {
           <a href="#/signup">회원가입</a>
         </p>
         <p style="text-align:center;margin-top:var(--space-2);font-size:1.3rem;color:var(--text-black-soft)">
-          비밀번호를 잊으셨다면 담당자에게 문의하세요. 임시 비밀번호를 발급해 드립니다.
+          <a href="#/forgot">비밀번호를 잊으셨나요?</a>
         </p>
       </div>
     </section>`;
@@ -82,6 +81,79 @@ export function loginView(mount) {
       busy(btn, false);
       fieldError(form.password, err.message);
       focusFirstError(form);
+    }
+  });
+  form.email.focus();
+}
+
+/* ------------------------------------------------------ 비밀번호 찾기 -- */
+
+/**
+ * 메일을 보낼 수단이 없으므로, 여기서는 "요청을 접수"만 합니다.
+ * 관리자 화면에 처리 대기로 올라가고, 관리자가 임시 비밀번호를 발급해 전달합니다.
+ */
+export function forgotView(mount) {
+  mount.innerHTML = `
+    <section class="section">
+      <div class="wrap wrap--narrow" style="max-width:440px">
+        <div style="text-align:center;margin-bottom:var(--space-5)">
+          <h1 class="page-title">비밀번호 찾기</h1>
+          <p class="page-sub">가입할 때 쓴 이메일을 알려주세요.</p>
+        </div>
+
+        <div class="notice notice--info" style="margin-bottom:var(--space-4)">
+          메일이 자동으로 발송되지는 않습니다. 요청을 남기면 <strong>담당자가
+          임시 비밀번호를 발급해 직접 전달</strong>해 드립니다.
+        </div>
+
+        <form class="card" id="forgotForm" novalidate>
+          <label class="field">
+            <span class="field__label">이메일</span>
+            <input class="input" name="email" type="email" inputmode="email"
+                   autocomplete="username" placeholder="you@example.com" />
+          </label>
+          <button class="btn btn--primary btn--block btn--lg" type="submit">요청 남기기</button>
+        </form>
+
+        <div id="forgotDone" hidden>
+          <div class="card" style="text-align:center">
+            <h2 class="page-title" style="font-size:1.9rem">요청이 접수되었습니다</h2>
+            <p style="color:var(--text-black-soft);margin-top:var(--space-2);font-size:1.5rem">
+              담당자가 확인한 뒤 임시 비밀번호를 알려드립니다.<br>
+              받으신 뒤에는 <strong>내 계정</strong>에서 새 비밀번호로 바꿔주세요.
+            </p>
+            <div class="row" style="justify-content:center;margin-top:var(--space-4)">
+              <a class="btn btn--outline" href="#/login">로그인 화면으로</a>
+            </div>
+          </div>
+        </div>
+
+        <p style="text-align:center;margin-top:var(--space-4);color:var(--text-black-soft);font-size:1.4rem">
+          <a href="#/login">← 로그인으로 돌아가기</a>
+        </p>
+      </div>
+    </section>`;
+
+  const form = mount.querySelector('#forgotForm');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearErrors(form);
+    if (!isEmail(form.email.value)) {
+      fieldError(form.email, '올바른 이메일을 입력하세요.');
+      focusFirstError(form);
+      return;
+    }
+
+    const btn = form.querySelector('button[type="submit"]');
+    busy(btn, true, '접수 중…');
+    try {
+      await requestReset(form.email.value);
+      // 가입 여부를 알려주지 않기 위해, 계정이 없어도 같은 화면을 보여줍니다.
+      form.hidden = true;
+      mount.querySelector('#forgotDone').hidden = false;
+    } catch (err) {
+      busy(btn, false);
+      toastErr(`요청을 남기지 못했습니다 — ${err.message}`);
     }
   });
   form.email.focus();

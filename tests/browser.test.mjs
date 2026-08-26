@@ -14,6 +14,7 @@ const log = (...a) => console.log(...a);
 
 const ADMIN = { email: 'aireader@mois.go.kr', password: 'dlrhd26!!', name: '관리자', inst: '행정안전부' };
 const USER = { email: 'hong@example.com', password: 'hong-pass-2026', name: '홍길동', inst: '한국디자인진흥원' };
+let tempPassword = '';
 
 // 이 환경에는 Chromium 이 미리 깔려 있습니다. 다른 곳에서는 CHROME_PATH 로 지정하거나
 // 이 옵션을 지우고 `npx playwright install chromium` 을 쓰세요.
@@ -224,6 +225,45 @@ await step('외부 주소는 next 로 안 먹힘', async () => {
   await submitForm('#loginForm', { email: USER.email, password: USER.password });
   await page.waitForSelector('.hero__title', { timeout: 8000 });
   if (!page.url().startsWith(BASE)) throw new Error(page.url());
+});
+
+/* ================================================ 3-2. 비밀번호 찾기 == */
+
+log('\n== 3-2. 비밀번호 찾기 ==');
+await step('로그인 화면에서 비밀번호 찾기로 이동', async () => {
+  await logout();
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await page.locator('a[href="#/forgot"]').click();
+  await page.waitForSelector('#forgotForm', { timeout: 5000 });
+  const notice = await page.locator('.notice').first().innerText();
+  if (!notice.includes('자동으로 발송되지는')) throw new Error(notice);
+});
+await step('잘못된 이메일은 막힘', async () => {
+  await page.fill('#forgotForm [name="email"]', 'not-an-email');
+  await page.locator('#forgotForm button[type="submit"]').click();
+  await page.waitForSelector('.field__err', { timeout: 3000 });
+});
+await step('요청을 남기면 접수 안내가 뜸', async () => {
+  await page.fill('#forgotForm [name="email"]', USER.email);
+  await page.locator('#forgotForm button[type="submit"]').click();
+  await page.waitForSelector('#forgotDone:not([hidden])', { timeout: 5000 });
+  const t = await page.locator('#forgotDone').innerText();
+  if (!t.includes('접수되었습니다')) throw new Error(t);
+});
+await step('가입하지 않은 주소도 같은 화면 (가입 여부가 안 새어나감)', async () => {
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.locator('a[href="#/forgot"]').click();
+  await page.waitForSelector('#forgotForm', { timeout: 5000 });
+  await page.fill('#forgotForm [name="email"]', 'nobody-here@example.com');
+  await page.locator('#forgotForm button[type="submit"]').click();
+  await page.waitForSelector('#forgotDone:not([hidden])', { timeout: 5000 });
+});
+await step('다시 로그인', async () => {
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: USER.email, password: USER.password });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
 });
 
 /* ============================================================== 4. 홈 == */
@@ -440,24 +480,80 @@ await step('회원을 관리자로 승격했다가 되돌림', async () => {
   await confirmOk();
   await page.waitForTimeout(500);
   const row = () => page.locator('.table tbody tr', { hasText: USER.email });
-  if (!(await row().locator('.badge--gold').count())) throw new Error(await row().innerText());
+  const adminBadge = () => row().locator('.badge--gold', { hasText: '관리자' });
+  if (!(await adminBadge().count())) throw new Error(await row().innerText());
 
   await row().locator('[data-role]').click();
   await confirmOk();
   await page.waitForTimeout(500);
-  if (await row().locator('.badge--gold').count()) throw new Error(await row().innerText());
+  if (await adminBadge().count()) throw new Error(await row().innerText());
+});
+await step('재설정 요청이 대기 목록에 보임', async () => {
+  await page.goto(`${BASE}#/admin`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#adminMembers .notice--warn', { timeout: 6000 });
+  const notice = await page.locator('#adminMembers .notice--warn').innerText();
+  if (!notice.includes('비밀번호 재설정 요청')) throw new Error(notice);
+  if (!notice.includes(USER.name)) throw new Error(notice);
+
+  await page.goto(`${BASE}#/admin/members`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.table tbody tr', { timeout: 6000 });
+  const row = page.locator('.table tbody tr', { hasText: USER.email });
+  if (!(await row.locator('.badge--gold', { hasText: '비밀번호 요청' }).count())) {
+    throw new Error(await row.innerText());
+  }
+  // 요청이 있는 사람이 맨 위로 옵니다.
+  const first = await page.locator('.table tbody tr').first().innerText();
+  if (!first.includes(USER.email)) throw new Error(first);
+});
+await step('필터로 요청만 추릴 수 있음', async () => {
+  await page.selectOption('#filter', 'reset');
+  await page.waitForTimeout(400);
+  const n = await page.locator('.table tbody tr').count();
+  if (n !== 1) throw new Error(`${n}명`);
+  await page.selectOption('#filter', 'all');
+  await page.waitForTimeout(400);
 });
 await step('비밀번호 초기화로 임시 비밀번호 발급', async () => {
-  await page.locator('.table tbody tr', { hasText: 'kim@example.com' }).locator('[data-reset]').click();
+  await page.locator('.table tbody tr', { hasText: USER.email }).locator('[data-reset]').click();
   await confirmOk();                       // "초기화할까요?"
   await page.waitForSelector('.modal', { timeout: 5000 });
   const text = await page.locator('.modal').innerText();
   if (!text.includes('임시 비밀번호')) throw new Error(text.slice(0, 120));
-  if (!text.includes('kim@example.com')) throw new Error(text.slice(0, 120));
+  if (!text.includes(USER.email)) throw new Error(text.slice(0, 120));
   const m = text.match(/[A-Za-z2-9]{12}/);
   if (!m) throw new Error(text.slice(0, 200));
   log(`        임시 비밀번호: ${m[0]}`);
+  tempPassword = m[0];
   await confirmOk();
+});
+await step('발급하면 대기 표시가 사라짐', async () => {
+  await page.waitForTimeout(600);
+  const row = page.locator('.table tbody tr', { hasText: USER.email });
+  if (await row.locator('.badge--gold', { hasText: '비밀번호 요청' }).count()) {
+    throw new Error(await row.innerText());
+  }
+});
+await step('임시 비밀번호로 로그인하면 비밀번호 변경 안내', async () => {
+  await logout();
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: USER.email, password: tempPassword });
+  await page.waitForSelector('#pwForm', { timeout: 8000 });
+  const notice = await page.locator('.notice--warn').first().innerText();
+  if (!notice.includes('임시 비밀번호')) throw new Error(notice);
+
+  // 원래 비밀번호로 되돌려 두어야 뒤 단계가 이어집니다.
+  await submitForm('#pwForm', {
+    current: tempPassword, next: USER.password, confirm: USER.password,
+  });
+  await page.waitForSelector('.toast--ok', { timeout: 6000 });
+
+  // 뒤 단계는 관리자 화면에서 이어집니다.
+  await logout();
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: ADMIN.email, password: ADMIN.password });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
 });
 await step('이용 정지하면 로그인이 막힘', async () => {
   await page.goto(`${BASE}#/admin/members`, { waitUntil: 'networkidle' });
