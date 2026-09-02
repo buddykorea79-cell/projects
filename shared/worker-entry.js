@@ -23,11 +23,12 @@
 import { handleApi } from './r2api.js';
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
-      return handleApi(request, env, { basePath: '/api' });
+      // ctx 는 실제 Workers 런타임이 항상 넘겨주지만, 없어도(예: 테스트) 죽지 않게 방어합니다.
+      return handleApi(request, env, { basePath: '/api', waitUntil: ctx?.waitUntil?.bind(ctx) });
     }
 
     // 나머지는 정적 파일. assets 바인딩이 없으면 설정이 잘못된 것이라

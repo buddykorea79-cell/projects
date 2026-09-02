@@ -89,6 +89,22 @@ await t('짧은 비밀번호 거부', async () => {
   if (!r.data.errors?.password) throw new Error('오류 안내 없음');
 });
 
+await t('문자·숫자·특수문자 중 빠진 비밀번호 거부', async () => {
+  // 특수문자 없음 / 숫자 없음 / 문자 없음 — 셋 다 8자 이상이지만 정책 위반
+  for (const password of ['abcdefg1', 'abcdefg!', '1234567!']) {
+    const r = await signup(client(), 'weak@example.com', { password });
+    eq(r.status, 400, `status (${password})`);
+    if (!r.data.errors?.password) throw new Error(`오류 안내 없음 (${password})`);
+  }
+});
+
+await t('비밀번호 변경도 같은 정책을 지남', async () => {
+  const c = client();
+  await signup(c, 'policy@example.com');
+  const r = await c('/auth/password', { method: 'POST', body: { current: 'hunter2!hunter2', next: 'onlyletters' } });
+  eq(r.status, 400, 'status');
+});
+
 await t('필수 항목 누락 거부', async () => {
   const r = await signup(client(), 'x@example.com', { name: '', institution: '' });
   eq(r.status, 400, 'status');
@@ -323,14 +339,14 @@ console.log('\n== 비밀번호 관리 ==');
 await t('본인 비밀번호 변경', async () => {
   const c = client();
   await signup(c, 'pw@example.com');
-  const bad = await c('/auth/password', { method: 'POST', body: { current: 'wrong-wrong', next: 'newpassword1' } });
+  const bad = await c('/auth/password', { method: 'POST', body: { current: 'wrong-wrong', next: 'newpassword1!' } });
   eq(bad.status, 401, '현재 비밀번호 틀림');
 
-  const ok = await c('/auth/password', { method: 'POST', body: { current: 'hunter2!hunter2', next: 'newpassword1' } });
+  const ok = await c('/auth/password', { method: 'POST', body: { current: 'hunter2!hunter2', next: 'newpassword1!' } });
   eq(ok.status, 200, '변경 성공');
 
   const relog = client();
-  eq((await relog('/auth/login', { method: 'POST', body: { email: 'pw@example.com', password: 'newpassword1' } })).status, 200, '새 비번으로 로그인');
+  eq((await relog('/auth/login', { method: 'POST', body: { email: 'pw@example.com', password: 'newpassword1!' } })).status, 200, '새 비번으로 로그인');
   eq((await client()('/auth/login', { method: 'POST', body: { email: 'pw@example.com', password: 'hunter2!hunter2' } })).status, 401, '옛 비번은 막힘');
 });
 
@@ -591,7 +607,7 @@ await t('비밀번호를 바꾸면 다른 기기의 세션이 끊김', async () 
   await laptop('/auth/login', { method: 'POST', body: { email: 'twodev@example.com', password: 'hunter2!hunter2' } });
   eq((await laptop('/auth/me')).status, 200, '사전 조건: 두 기기 모두 로그인');
 
-  const ch = await phone('/auth/password', { method: 'POST', body: { current: 'hunter2!hunter2', next: 'newpassword9' } });
+  const ch = await phone('/auth/password', { method: 'POST', body: { current: 'hunter2!hunter2', next: 'newpassword9!' } });
   eq(ch.status, 200, '변경 성공');
 
   eq((await laptop('/auth/me')).status, 401, '다른 기기 세션이 남음');

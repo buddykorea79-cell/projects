@@ -369,8 +369,8 @@ await step('내 계정에서 비밀번호 변경', async () => {
   await alice.goto(`${origin}/#/account`, { waitUntil: 'networkidle' });
   await alice.waitForSelector('#pwForm', { timeout: 8000 });
   await alice.fill('#pwForm [name="current"]', PASSWORD);
-  await alice.fill('#pwForm [name="next"]', 'brand-new-pass');
-  await alice.fill('#pwForm [name="confirm"]', 'brand-new-pass');
+  await alice.fill('#pwForm [name="next"]', 'brand-new-pass1');
+  await alice.fill('#pwForm [name="confirm"]', 'brand-new-pass1');
   await alice.locator('#pwForm button[type="submit"]').click();
   await alice.waitForSelector('.toast--ok', { timeout: 10000 });
 });
@@ -379,7 +379,7 @@ await step('새 비밀번호로 다시 로그인됨', async () => {
   const again = await person('앨리스2');
   await again.goto(`${origin}/#/login`, { waitUntil: 'networkidle' });
   await again.fill('#loginForm [name="email"]', 'alice@example.com');
-  await again.fill('#loginForm [name="password"]', 'brand-new-pass');
+  await again.fill('#loginForm [name="password"]', 'brand-new-pass1');
   await again.locator('#loginForm button[type="submit"]').click();
   await again.waitForSelector('.tile, .empty', { timeout: 12000 });
   await again.goto(`${origin}/#/my`, { waitUntil: 'networkidle' });

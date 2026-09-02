@@ -7,4 +7,7 @@
  */
 import { handleApi } from '../../shared/r2api.js';
 
-export const onRequest = (context) => handleApi(context.request, context.env, { basePath: '/api' });
+export const onRequest = (context) => handleApi(context.request, context.env, {
+  basePath: '/api',
+  waitUntil: context.waitUntil.bind(context),
+});

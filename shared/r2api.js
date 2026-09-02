@@ -18,6 +18,9 @@
  *   ALLOWED_EXT          (선택) 쉼표 구분
  *   PBKDF2_ITERATIONS    (선택) 기본 15000 (무료 플랜 CPU 10ms 기준)
  *   TOKEN_SECRET         (선택) 세션 서명 키. 없으면 R2 에 자동 생성
+ *   TELEGRAM_BOT_TOKEN       (선택) Hermes 알림용 봇 토큰 — shared/telegram.js
+ *   TELEGRAM_CHAT_ID         (선택) 알림을 받을 채팅 ID
+ *   TELEGRAM_WEBHOOK_SECRET  (선택) 텔레그램 웹훅 검증용 시크릿
  *
  * 경로 (basePath 기본 '/api')
  *   GET    /health
@@ -26,6 +29,8 @@
  *   GET    /auth/members            (관리자)
  *   PATCH  /auth/members            (관리자) 역할·차단
  *   POST   /auth/members/reset      (관리자) 임시 비밀번호 발급
+ *   POST   /auth/reset/confirm      (공개) 재설정 링크(토큰)로 새 비밀번호 설정
+ *   POST   /telegram/webhook        (텔레그램) 재설정 버튼 콜백 — Hermes
  *   GET    /data/projects|materials (로그인)   PUT (관리자)
  *   GET    /submissions             (로그인, 권한에 따라 필터)
  *   POST   /submissions             (로그인)
@@ -43,12 +48,14 @@
  */
 import {
   SESSION_COOKIE, SESSION_TTL_MS,
-  hashPassword, verifyPassword, tempPassword,
+  hashPassword, verifyPassword, issueTempPassword,
+  newResetToken, resetPasswordWithToken, clearResetToken, validatePassword,
   signSession, readSession, cookieValue, sessionCookie, clearCookie,
   readMembers, updateMembers, findMember, publicMember,
   lockState, registerFailure, clearFailures, epochOf, bumpEpoch,
-  validateSignup, normEmail, MIN_PASSWORD, RESET_REQUEST_COOLDOWN_MS,
+  validateSignup, normEmail, RESET_REQUEST_COOLDOWN_MS,
 } from './auth.js';
+import { notifySignup, notifySubmission, notifyResetRequest, handleTelegramWebhook } from './telegram.js';
 
 /** 이 이메일로 가입하면 자동으로 관리자 권한이 붙습니다. */
 const DEFAULT_ADMIN_EMAILS = ['aireader@mois.go.kr'];
@@ -73,7 +80,7 @@ const SAFE_INLINE = new Set([
   'application/pdf',
 ]);
 
-export async function handleApi(request, env, { basePath = '/api' } = {}) {
+export async function handleApi(request, env, { basePath = '/api', waitUntil } = {}) {
   const url = new URL(request.url);
   const path = url.pathname.startsWith(basePath)
     ? url.pathname.slice(basePath.length) || '/'
@@ -93,13 +100,13 @@ export async function handleApi(request, env, { basePath = '/api' } = {}) {
   }
 
   try {
-    return await route(request, env, url, path, cors);
+    return await route(request, env, url, path, cors, waitUntil);
   } catch (e) {
     return json({ message: `서버 오류: ${e.message}` }, 500, cors);
   }
 }
 
-async function route(request, env, url, path, cors) {
+async function route(request, env, url, path, cors, waitUntil) {
   const method = request.method;
 
   if (path === '/health' && method === 'GET') {
@@ -116,7 +123,7 @@ async function route(request, env, url, path, cors) {
 
   /* ------------------------------------------------------------ 인증 -- */
 
-  if (path === '/auth/signup' && method === 'POST') return signup(request, env, url, cors);
+  if (path === '/auth/signup' && method === 'POST') return signup(request, env, url, cors, waitUntil);
   if (path === '/auth/login' && method === 'POST') return login(request, env, url, cors);
   if (path === '/auth/logout' && method === 'POST') {
     return json({ ok: true }, 200, { ...cors, 'Set-Cookie': clearCookie(url) });
@@ -127,7 +134,8 @@ async function route(request, env, url, path, cors) {
     return json({ me: publicMember(me) }, 200, cors);
   }
   if (path === '/auth/password' && method === 'POST') return changePassword(request, env, url, cors);
-  if (path === '/auth/forgot' && method === 'POST') return requestReset(request, env, cors);
+  if (path === '/auth/forgot' && method === 'POST') return requestReset(request, env, cors, waitUntil);
+  if (path === '/auth/reset/confirm' && method === 'POST') return confirmReset(request, env, cors);
 
   if (path === '/auth/members') {
     const admin = await requireAdmin(request, env);
@@ -143,6 +151,12 @@ async function route(request, env, url, path, cors) {
     const admin = await requireAdmin(request, env);
     if (admin.error) return json({ message: admin.error }, admin.status, cors);
     return resetMemberPassword(request, env, cors);
+  }
+
+  /* --------------------------------------------------------- 텔레그램 -- */
+  // 텔레그램 서버가 직접 호출합니다(로그인 세션 없음) — 웹훅 시크릿으로 인증합니다.
+  if (path === '/telegram/webhook' && method === 'POST') {
+    return handleTelegramWebhook(request, env);
   }
 
   /* ------------------------------------------- 프로젝트 · 강의자료 색인 -- */
@@ -170,7 +184,7 @@ async function route(request, env, url, path, cors) {
 
   if (path === '/submissions') {
     if (method === 'GET') return listSubmissions(request, env, cors);
-    if (method === 'POST') return createSubmission(request, env, cors);
+    if (method === 'POST') return createSubmission(request, env, cors, waitUntil);
     if (method === 'PUT') {
       const admin = await requireAdmin(request, env);
       if (admin.error) return json({ message: admin.error }, admin.status, cors);
@@ -273,7 +287,7 @@ async function requireAdmin(request, env) {
 
 /* ========================================================= 회원 처리 == */
 
-async function signup(request, env, url, cors) {
+async function signup(request, env, url, cors, waitUntil) {
   const body = await request.json().catch(() => null);
   if (!body) return json({ message: '잘못된 요청 형식입니다.' }, 400, cors);
 
@@ -306,6 +320,8 @@ async function signup(request, env, url, cors) {
   if (!result.ok) {
     return json({ message: '이미 가입된 이메일입니다. 로그인해 주세요.', errors: { email: '이미 가입된 이메일입니다.' } }, 409, cors);
   }
+
+  notifySignup(env, waitUntil, created);
 
   const token = await issueToken(created, env);
   return json({ me: publicMember(withRole(created, env)) }, 200,
@@ -379,8 +395,9 @@ async function changePassword(request, env, url, cors) {
   const current = String(body?.current ?? '');
   const next = String(body?.next ?? '');
 
-  if (next.length < MIN_PASSWORD) {
-    return json({ message: `새 비밀번호는 ${MIN_PASSWORD}자 이상이어야 합니다.` }, 400, cors);
+  const pwIssue = validatePassword(next);
+  if (pwIssue) {
+    return json({ message: pwIssue }, 400, cors);
   }
   if (!(await verifyPassword(current, got.member.passwordHash))) {
     return json({ message: '현재 비밀번호가 올바르지 않습니다.' }, 401, cors);
@@ -394,6 +411,7 @@ async function changePassword(request, env, url, cors) {
       m.passwordHash = hash;
       m.mustChangePassword = false;
       m.updatedAt = new Date().toISOString();
+      clearResetToken(m);     // 나가 있던 재설정 링크가 있었다면 무효화합니다
       bumpEpoch(m);           // 다른 기기에 남아 있던 세션을 끊습니다
       updated = m;
     }
@@ -435,26 +453,57 @@ async function patchMember(request, env, admin, cors) {
  * "비밀번호를 잊었습니다" 접수.
  *
  * 메일을 보낼 수단이 없으므로, 본인이 남긴 요청을 관리자 화면에 대기 목록으로
- * 띄우고 관리자가 임시 비밀번호를 발급하는 방식입니다.
+ * 띄웁니다. 텔레그램(Hermes)을 설정했다면 신청자가 스스로 새 비밀번호를 정할 수
+ * 있는 1회용 링크가 알림에 함께 나가고, 관리자가 그 링크를 본인에게 전달합니다.
  *
  * 응답은 계정이 있든 없든 **항상 같습니다.** 그러지 않으면 이 창구가
  * "이 이메일이 가입돼 있는지" 확인하는 도구가 됩니다.
  */
-async function requestReset(request, env, cors) {
+async function requestReset(request, env, cors, waitUntil) {
   const body = await request.json().catch(() => null);
   const email = normEmail(body?.email);
 
   if (email) {
-    await updateMembers(env, (l) => {
+    // updateMembers 의 mutate 는 동기 함수라, 토큰 해시를 먼저 계산해 두고
+    // 요청 접수와 한 번의 쓰기로 저장합니다.
+    const fresh = await newResetToken();
+    const result = await updateMembers(env, (l) => {
       const m = findMember(l, email);
       if (!m) return null;
       const last = m.resetRequestedAt ? Date.parse(m.resetRequestedAt) : 0;
       // 연타해도 대기 목록이 도배되지 않게 합니다.
       if (Number.isFinite(last) && Date.now() - last < RESET_REQUEST_COOLDOWN_MS) return null;
       m.resetRequestedAt = new Date().toISOString();
+      fresh.apply(m);
       return l;
     });
+    // 실제로 접수됐을 때만(계정이 있고 쿨다운에 걸리지 않았을 때만) 알립니다.
+    // 응답은 아래에서 항상 { ok: true } 로 같으므로, 알림 여부가 계정 존재를 흘리지 않습니다.
+    if (result.ok) {
+      const m = findMember(result.list, email);
+      if (m) {
+        const resetUrl = `${new URL(request.url).origin}/#/reset?token=${fresh.token}`;
+        notifyResetRequest(env, waitUntil, m, resetUrl);
+      }
+    }
   }
+  return json({ ok: true }, 200, cors);
+}
+
+/**
+ * 재설정 링크로 새 비밀번호 설정 (공개 — 링크에 담긴 토큰이 곧 인증입니다).
+ * 토큰은 무작위 256비트라 추측할 수 없고, 유효 시간이 지나거나 한 번 쓰면
+ * 폐기됩니다. 새 비밀번호는 가입과 같은 정책(8자 이상, 문자·숫자·특수문자)을
+ * 지나고, 저장은 언제나 PBKDF2 해시로만 합니다.
+ */
+async function confirmReset(request, env, cors) {
+  const body = await request.json().catch(() => null);
+  const token = String(body?.token ?? '');
+  const password = String(body?.password ?? '');
+  if (!token) return json({ message: '재설정 링크가 올바르지 않습니다.' }, 400, cors);
+
+  const result = await resetPasswordWithToken(token, password, env);
+  if (!result.ok) return json({ message: result.message }, 400, cors);
   return json({ ok: true }, 200, cors);
 }
 
@@ -463,25 +512,11 @@ async function resetMemberPassword(request, env, cors) {
   const email = normEmail(body?.email);
   if (!email) return json({ message: '대상 이메일이 필요합니다.' }, 400, cors);
 
-  const temp = tempPassword();
-  const hash = await hashPassword(temp, env);
-
-  const result = await updateMembers(env, (l) => {
-    const m = findMember(l, email);
-    if (!m) return null;
-    m.passwordHash = hash;
-    m.mustChangePassword = true;
-    m.failedAttempts = 0;
-    m.lockedUntil = 0;
-    m.updatedAt = new Date().toISOString();
-    m.resetRequestedAt = null;   // 처리했으므로 대기 목록에서 내립니다
-    bumpEpoch(m);             // 비밀번호를 잃어버린 그 기기의 세션도 함께 끊습니다
-    return l;
-  });
+  const result = await issueTempPassword(email, env);
   if (!result.ok) return json({ message: '해당 회원을 찾을 수 없습니다.' }, 404, cors);
 
   // 메일을 보낼 수단이 없으므로 관리자가 직접 전달합니다.
-  return json({ tempPassword: temp }, 200, cors);
+  return json({ tempPassword: result.tempPassword }, 200, cors);
 }
 
 /* ====================================================== 색인 읽기/쓰기 == */
@@ -632,7 +667,7 @@ function ownsFiles(files, prefix, isAdmin) {
   return (files || []).every((f) => typeof f?.key === 'string' && f.key.startsWith(`uploads/${prefix}/`));
 }
 
-async function createSubmission(request, env, cors) {
+async function createSubmission(request, env, cors, waitUntil) {
   const got = await requireMember(request, env);
   if (got.error) return json({ message: got.error }, got.status, cors);
   const me = got.member;
@@ -665,6 +700,7 @@ async function createSubmission(request, env, cors) {
   };
 
   await mutateIndex(env, 'submissions', (list) => { list.push(rec); return list; });
+  notifySubmission(env, waitUntil, rec, projects.find((p) => p.id === rec.projectId));
   return json({ submission: rec }, 200, cors);
 }
 

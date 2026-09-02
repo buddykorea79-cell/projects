@@ -430,6 +430,11 @@ class R2Auth {
     await this.store.post('/auth/forgot', { email });
   }
 
+  /** 재설정 링크(토큰)로 새 비밀번호 설정 — 로그인 없이 호출됩니다. */
+  async confirmReset(token, password) {
+    await this.store.post('/auth/reset/confirm', { token, password });
+  }
+
   async resetPassword(email) {
     const { tempPassword } = await this.store.post('/auth/members/reset', { email });
     return tempPassword;

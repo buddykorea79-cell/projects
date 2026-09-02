@@ -1,9 +1,9 @@
 /** 로그인 · 회원가입 · 내 계정. */
 import { CONFIG } from '../config.js';
 import {
-  currentUser, isSimulated, signup, login, logout, changePassword, requestReset,
+  currentUser, isSimulated, signup, login, logout, changePassword, requestReset, confirmReset,
 } from '../auth.js';
-import { esc, attr, fmtDate, isEmail } from '../utils.js';
+import { esc, attr, fmtDate, isEmail, passwordIssue } from '../utils.js';
 import {
   toastOk, toastErr, fieldError, clearErrors, focusFirstError, busy, confirmModal,
 } from '../ui.js';
@@ -90,7 +90,8 @@ export function loginView(mount) {
 
 /**
  * 메일을 보낼 수단이 없으므로, 여기서는 "요청을 접수"만 합니다.
- * 관리자 화면에 처리 대기로 올라가고, 관리자가 임시 비밀번호를 발급해 전달합니다.
+ * 관리자 화면에 처리 대기로 올라가고(텔레그램을 설정했다면 즉시 알림),
+ * 담당자가 재설정 링크나 임시 비밀번호를 본인에게 전달합니다.
  */
 export function forgotView(mount) {
   mount.innerHTML = `
@@ -103,7 +104,7 @@ export function forgotView(mount) {
 
         <div class="notice notice--info" style="margin-bottom:var(--space-4)">
           메일이 자동으로 발송되지는 않습니다. 요청을 남기면 <strong>담당자가
-          임시 비밀번호를 발급해 직접 전달</strong>해 드립니다.
+          비밀번호 재설정 링크나 임시 비밀번호를 직접 전달</strong>해 드립니다.
         </div>
 
         <form class="card" id="forgotForm" novalidate>
@@ -119,8 +120,9 @@ export function forgotView(mount) {
           <div class="card" style="text-align:center">
             <h2 class="page-title" style="font-size:1.9rem">요청이 접수되었습니다</h2>
             <p style="color:var(--text-black-soft);margin-top:var(--space-2);font-size:1.5rem">
-              담당자가 확인한 뒤 임시 비밀번호를 알려드립니다.<br>
-              받으신 뒤에는 <strong>내 계정</strong>에서 새 비밀번호로 바꿔주세요.
+              담당자가 확인한 뒤 재설정 링크나 임시 비밀번호를 알려드립니다.<br>
+              링크를 받으면 그 화면에서 새 비밀번호를 직접 정하고,<br>
+              임시 비밀번호를 받으면 <strong>내 계정</strong>에서 새 비밀번호로 바꿔주세요.
             </p>
             <div class="row" style="justify-content:center;margin-top:var(--space-4)">
               <a class="btn btn--outline" href="#/login">로그인 화면으로</a>
@@ -159,6 +161,96 @@ export function forgotView(mount) {
   form.email.focus();
 }
 
+/* --------------------------------------------------- 비밀번호 재설정 -- */
+
+/**
+ * 재설정 링크(`#/reset?token=…`)가 여는 화면. 링크에 담긴 토큰이 곧 인증이라
+ * 로그인 없이 열리고, 새 비밀번호는 본인이 직접 정합니다. 토큰이 만료됐거나
+ * 이미 쓰였으면 서버가 거부하고, 그때는 다시 요청하도록 안내합니다.
+ */
+export function resetView(mount) {
+  const token = currentQuery().get('token') || '';
+
+  if (!token) {
+    mount.innerHTML = `
+      <section class="section"><div class="wrap wrap--narrow" style="max-width:440px">
+        <div class="notice notice--warn">
+          <strong>재설정 링크가 올바르지 않습니다.</strong><br>
+          전달받은 링크 전체를 그대로 열었는지 확인하시고, 안 되면
+          <a href="#/forgot">다시 요청</a>해 주세요.
+        </div>
+      </div></section>`;
+    return;
+  }
+
+  mount.innerHTML = `
+    <section class="section">
+      <div class="wrap wrap--narrow" style="max-width:440px">
+        <div style="text-align:center;margin-bottom:var(--space-5)">
+          <h1 class="page-title">새 비밀번호 설정</h1>
+          <p class="page-sub">본인만 아는 새 비밀번호를 정해주세요.</p>
+        </div>
+
+        <form class="card" id="resetForm" novalidate>
+          <label class="field">
+            <span class="field__label">새 비밀번호</span>
+            <input class="input" name="password" type="password" autocomplete="new-password" />
+            <span class="field__hint">8자 이상, 문자·숫자·특수문자를 모두 포함해야 합니다.</span>
+          </label>
+          <label class="field">
+            <span class="field__label">새 비밀번호 확인</span>
+            <input class="input" name="confirm" type="password" autocomplete="new-password" />
+          </label>
+          <button class="btn btn--primary btn--block btn--lg" type="submit">비밀번호 바꾸기</button>
+        </form>
+
+        <div id="resetDone" hidden>
+          <div class="card" style="text-align:center">
+            <h2 class="page-title" style="font-size:1.9rem">비밀번호가 바뀌었습니다</h2>
+            <p style="color:var(--text-black-soft);margin-top:var(--space-2);font-size:1.5rem">
+              새 비밀번호로 로그인해 주세요.
+            </p>
+            <div class="row" style="justify-content:center;margin-top:var(--space-4)">
+              <a class="btn btn--primary" href="#/login">로그인하러 가기</a>
+            </div>
+          </div>
+        </div>
+
+        <p style="text-align:center;margin-top:var(--space-4);color:var(--text-black-soft);font-size:1.4rem">
+          <a href="#/login">← 로그인으로 돌아가기</a>
+        </p>
+      </div>
+    </section>`;
+
+  const form = mount.querySelector('#resetForm');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearErrors(form);
+
+    let ok = true;
+    const pwIssue = passwordIssue(form.password.value);
+    if (pwIssue) { fieldError(form.password, pwIssue); ok = false; }
+    if (form.password.value !== form.confirm.value) {
+      fieldError(form.confirm, '비밀번호가 서로 다릅니다.'); ok = false;
+    }
+    if (!ok) { focusFirstError(form); return; }
+
+    const btn = form.querySelector('button[type="submit"]');
+    busy(btn, true, '변경 중…');
+    try {
+      await confirmReset(token, form.password.value);
+      toastOk('비밀번호가 바뀌었습니다.');
+      form.hidden = true;
+      mount.querySelector('#resetDone').hidden = false;
+    } catch (err) {
+      busy(btn, false);
+      fieldError(form.password, err.message);
+      focusFirstError(form);
+    }
+  });
+  form.password.focus();
+}
+
 /* ----------------------------------------------------------- 회원가입 -- */
 
 export function signupView(mount) {
@@ -195,7 +287,7 @@ export function signupView(mount) {
           <label class="field">
             <span class="field__label">비밀번호<span class="field__req">*</span></span>
             <input class="input" name="password" type="password" autocomplete="new-password" />
-            <span class="field__hint">8자 이상. 다른 곳에서 쓰는 비밀번호는 피해주세요.</span>
+            <span class="field__hint">8자 이상, 문자·숫자·특수문자를 모두 포함. 다른 곳에서 쓰는 비밀번호는 피해주세요.</span>
           </label>
           <label class="field">
             <span class="field__label">비밀번호 확인<span class="field__req">*</span></span>
@@ -225,7 +317,8 @@ export function signupView(mount) {
     if (!form.institution.value.trim()) { fieldError(form.institution, '기관명을 입력하세요.'); ok = false; }
     if (!form.name.value.trim()) { fieldError(form.name, '성명을 입력하세요.'); ok = false; }
     if (!isEmail(form.email.value)) { fieldError(form.email, '올바른 이메일을 입력하세요.'); ok = false; }
-    if (form.password.value.length < 8) { fieldError(form.password, '비밀번호는 8자 이상이어야 합니다.'); ok = false; }
+    const pwIssue = passwordIssue(form.password.value);
+    if (pwIssue) { fieldError(form.password, pwIssue); ok = false; }
     if (form.password.value !== form.confirm.value) {
       fieldError(form.confirm, '비밀번호가 서로 다릅니다.'); ok = false;
     }
@@ -305,7 +398,7 @@ export function accountView(mount) {
             <label class="field">
               <span class="field__label">새 비밀번호</span>
               <input class="input" name="next" type="password" autocomplete="new-password" />
-              <span class="field__hint">8자 이상</span>
+              <span class="field__hint">8자 이상, 문자·숫자·특수문자 포함</span>
             </label>
             <label class="field">
               <span class="field__label">새 비밀번호 확인</span>
@@ -339,7 +432,8 @@ export function accountView(mount) {
 
     let ok = true;
     if (!form.current.value) { fieldError(form.current, '현재 비밀번호를 입력하세요.'); ok = false; }
-    if (form.next.value.length < 8) { fieldError(form.next, '8자 이상이어야 합니다.'); ok = false; }
+    const pwIssue = passwordIssue(form.next.value);
+    if (pwIssue) { fieldError(form.next, pwIssue); ok = false; }
     if (form.next.value !== form.confirm.value) { fieldError(form.confirm, '비밀번호가 서로 다릅니다.'); ok = false; }
     if (!ok) { focusFirstError(form); return; }
 

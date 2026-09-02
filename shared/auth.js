@@ -41,6 +41,9 @@ const LOCK_MS = 10 * 60 * 1000;
 
 export const MIN_PASSWORD = 8;
 
+/** 재설정 링크의 유효 시간. 지나면 링크가 무효가 됩니다. */
+export const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
 const enc = new TextEncoder();
 
 /* ------------------------------------------------------------ 인코딩 -- */
@@ -111,11 +114,122 @@ export async function verifyPassword(password, stored) {
   }
 }
 
+/**
+ * 비밀번호 정책 — 8자 이상, 문자·숫자·특수문자를 모두 포함.
+ * 가입 · 비밀번호 변경 · 재설정 링크 세 곳 모두 이 한 함수를 지나갑니다.
+ * (assets/js/utils.js 의 passwordIssue 는 화면용 사본 — 함께 고치세요.)
+ */
+export function validatePassword(password) {
+  const p = String(password ?? '');
+  if (p.length < MIN_PASSWORD) return `비밀번호는 ${MIN_PASSWORD}자 이상이어야 합니다.`;
+  if (p.length > 200) return '비밀번호가 너무 깁니다.';
+  if (!/\p{L}/u.test(p) || !/[0-9]/.test(p) || !/[^\p{L}0-9]/u.test(p)) {
+    return '비밀번호에 문자·숫자·특수문자를 모두 넣어주세요.';
+  }
+  return null;
+}
+
 /** 관리자가 초기화해 줄 때 쓰는, 사람이 받아적기 좋은 임시 비밀번호. */
 export function tempPassword() {
   const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
   const bytes = crypto.getRandomValues(new Uint32Array(12));
   return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('');
+}
+
+/**
+ * 임시 비밀번호 발급 (핵심 로직).
+ *
+ * 관리자 화면의 `/auth/members/reset` 과 텔레그램 재설정 버튼이 똑같은 코드를
+ * 쓰도록 여기 한 곳에 모아둡니다. 메일을 보낼 수단이 없으므로, 돌려준
+ * `tempPassword` 는 호출한 쪽(관리자)이 본인 책임으로 신청자에게 직접 전달합니다.
+ */
+export async function issueTempPassword(email, env) {
+  const temp = tempPassword();
+  const hash = await hashPassword(temp, env);
+
+  const result = await updateMembers(env, (l) => {
+    const m = findMember(l, email);
+    if (!m) return null;
+    m.passwordHash = hash;
+    m.mustChangePassword = true;
+    m.failedAttempts = 0;
+    m.lockedUntil = 0;
+    m.updatedAt = new Date().toISOString();
+    m.resetRequestedAt = null;   // 처리했으므로 대기 목록에서 내립니다
+    clearResetToken(m);        // 나가 있던 재설정 링크도 함께 무효화합니다
+    bumpEpoch(m);              // 비밀번호를 잃어버린 그 기기의 세션도 함께 끊습니다
+    return l;
+  });
+  if (!result.ok) return { ok: false };
+  return { ok: true, tempPassword: temp };
+}
+
+/* -------------------------------------------------- 재설정 링크(토큰) -- */
+
+async function sha256b64url(text) {
+  const digest = await crypto.subtle.digest('SHA-256', enc.encode(String(text)));
+  return b64url(new Uint8Array(digest));
+}
+
+export function clearResetToken(member) {
+  member.resetTokenHash = null;
+  member.resetTokenExpiresAt = 0;
+  return member;
+}
+
+/**
+ * 재설정 링크에 넣을 토큰을 만듭니다.
+ *
+ * 토큰 원문은 링크로만 나가고, 명부에는 SHA-256 해시만 저장합니다 — 명부가
+ * 새어도 살아있는 링크를 재구성할 수 없습니다. 회원 레코드에 어떤 필드를
+ * 적어야 하는지는 호출한 쪽이 `apply` 로 붙입니다(명부 쓰기와 한 번에 저장하기
+ * 위해서입니다 — updateMembers 의 mutate 는 동기 함수라 해시를 미리 계산해 둡니다).
+ */
+export async function newResetToken() {
+  const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  const tokenHash = await sha256b64url(token);
+  const expiresAt = Date.now() + RESET_TOKEN_TTL_MS;
+  return {
+    token,
+    apply(member) {
+      member.resetTokenHash = tokenHash;
+      member.resetTokenExpiresAt = expiresAt;
+      return member;
+    },
+  };
+}
+
+/**
+ * 재설정 링크로 새 비밀번호를 적용합니다. 토큰은 1회용 — 성공하면 폐기됩니다.
+ * @returns {{ok:true, email:string} | {ok:false, message:string}}
+ */
+export async function resetPasswordWithToken(token, password, env) {
+  const issue = validatePassword(password);
+  if (issue) return { ok: false, message: issue };
+
+  const expired = { ok: false, message: '링크가 만료되었거나 이미 사용되었습니다. 다시 요청해 주세요.' };
+  const tokenHash = await sha256b64url(token);
+  const { list } = await readMembers(env);
+  const found = list.find((m) => m.resetTokenHash && safeEqual(m.resetTokenHash, tokenHash));
+  if (!found || Number(found.resetTokenExpiresAt || 0) < Date.now()) return expired;
+
+  const hash = await hashPassword(password, env);
+  const result = await updateMembers(env, (l) => {
+    const m = findMember(l, found.email);
+    // 읽고 나서 해시를 계산하는 사이에 새 링크가 발급됐을 수 있어 같은 토큰인지 다시 봅니다.
+    if (!m || !m.resetTokenHash || !safeEqual(m.resetTokenHash, tokenHash)) return null;
+    m.passwordHash = hash;
+    m.mustChangePassword = false;
+    m.failedAttempts = 0;
+    m.lockedUntil = 0;
+    m.updatedAt = new Date().toISOString();
+    m.resetRequestedAt = null;
+    clearResetToken(m);
+    bumpEpoch(m);
+    return l;
+  });
+  if (!result.ok) return expired;
+  return { ok: true, email: normEmail(found.email) };
 }
 
 /* ------------------------------------------------------------ 세션 -- */
@@ -307,12 +421,8 @@ export function validateSignup({ email, password, name, institution }) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(normEmail(email))) {
     errors.email = '올바른 이메일 주소를 입력하세요.';
   }
-  if (String(password || '').length < MIN_PASSWORD) {
-    errors.password = `비밀번호는 ${MIN_PASSWORD}자 이상이어야 합니다.`;
-  }
-  if (String(password || '').length > 200) {
-    errors.password = '비밀번호가 너무 깁니다.';
-  }
+  const pwIssue = validatePassword(password);
+  if (pwIssue) errors.password = pwIssue;
   if (!String(name || '').trim()) errors.name = '성명을 입력하세요.';
   if (!String(institution || '').trim()) errors.institution = '기관명을 입력하세요.';
   return errors;

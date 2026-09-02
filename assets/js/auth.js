@@ -55,10 +55,21 @@ export function changePassword(current, next) {
 
 /**
  * "비밀번호를 잊었습니다" 접수. 메일 발송 수단이 없어, 관리자 화면에
- * 처리 대기로 올라가고 관리자가 임시 비밀번호를 발급합니다.
+ * 처리 대기로 올라가고 관리자가 재설정 링크나 임시 비밀번호를 전달합니다.
  */
 export function requestReset(email) {
   return store.auth.requestReset(email);
+}
+
+/**
+ * 재설정 링크(토큰)로 새 비밀번호 설정. 서버가 토큰을 검증하는 R2 모드에서만
+ * 동작합니다 — 시연용 모드에는 링크를 만들어 줄 서버가 없습니다.
+ */
+export function confirmReset(token, password) {
+  if (typeof store?.auth?.confirmReset !== 'function') {
+    return Promise.reject(new Error('이 저장소 모드에서는 재설정 링크를 지원하지 않습니다.'));
+  }
+  return store.auth.confirmReset(token, password);
 }
 
 /** 세션이 서버에서 끊겼는지 다시 확인합니다(다른 기기에서 정지 처리 등). */

@@ -83,6 +83,21 @@ export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 export function isEmail(v) { return EMAIL_RE.test(String(v || '').trim()); }
 
+/**
+ * 비밀번호 정책 — 8자 이상, 문자·숫자·특수문자를 모두 포함.
+ * 서버(shared/auth.js 의 validatePassword)와 같은 규칙의 화면용 사본입니다.
+ * 어긋난 점을 문구로 돌려주고, 통과하면 null 입니다.
+ */
+export function passwordIssue(pw) {
+  const p = String(pw ?? '');
+  if (p.length < 8) return '비밀번호는 8자 이상이어야 합니다.';
+  if (p.length > 200) return '비밀번호가 너무 깁니다.';
+  if (!/\p{L}/u.test(p) || !/[0-9]/.test(p) || !/[^\p{L}0-9]/u.test(p)) {
+    return '비밀번호에 문자·숫자·특수문자를 모두 넣어주세요.';
+  }
+  return null;
+}
+
 export function normEmail(v) { return String(v || '').trim().toLowerCase(); }
 
 export function extOf(filename) {
