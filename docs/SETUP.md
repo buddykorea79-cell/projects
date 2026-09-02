@@ -328,12 +328,9 @@ curl "https://api.telegram.org/bot<토큰>/setWebhook" \
      if (!data || data.secret !== SECRET) {
        return ContentService.createTextOutput('unauthorized');
      }
-     MailApp.sendEmail({
-       to: String(data.to),
-       subject: String(data.subject),
-       body: String(data.text),
-       name: '과제 제출 사이트',
-     });
+     const options = { name: String(data.fromName || '알림') };
+     if (data.html) options.htmlBody = String(data.html);   // 링크가 클릭되도록 HTML 본문 지원
+     MailApp.sendEmail(String(data.to), String(data.subject), String(data.text || ''), options);
      return ContentService.createTextOutput('ok');
    }
    ```
@@ -355,6 +352,9 @@ A-5 와 같은 자리(Settings 맨 위 → **Variables and Secrets**)에 2개를
 |---|---|
 | `EMAIL_WEBHOOK_URL` | E-1 의 웹 앱 URL |
 | `EMAIL_WEBHOOK_SECRET` | E-1 코드에 적은 SECRET 과 동일한 문자열 |
+
+메일 제목의 머리말과 발신자 표시 이름(기본: `AI 리더스 아카데미`)을 바꾸려면
+`SITE_NAME` 변수를 추가하면 됩니다 (선택).
 
 ### E-3. 확인
 

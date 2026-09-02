@@ -178,7 +178,8 @@ await t('재설정 요청하면 신청자 이메일로도 같은 링크가 발�
   eq(mails[0].secret, 'mail-secret', '웹훅 시크릿');
   const link = calls[0].payload.text.match(/https?:\S+#\/reset\?token=[A-Za-z0-9_-]+/)?.[0];
   if (!link || !mails[0].text.includes(link)) throw new Error('메일과 텔레그램의 링크가 다름');
-  if (!mails[0].subject) throw new Error('제목 없음');
+  if (!mails[0].html?.includes(`href="${link}"`)) throw new Error('HTML 본문에 클릭 가능한 링크가 없음');
+  if (!mails[0].subject.includes('AI 리더스 아카데미')) throw new Error(`제목 오류: ${mails[0].subject}`);
 });
 
 await t('쿨다운 안에 재요청하면 알림·메일이 다시 가지 않음', async () => {
