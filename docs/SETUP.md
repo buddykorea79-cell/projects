@@ -300,6 +300,74 @@ curl "https://api.telegram.org/bot<토큰>/setWebhook" \
 
 ---
 
+## E. 메일로 재설정 링크 자동 발송 (선택)
+
+비밀번호 재설정 요청이 접수되면, 텔레그램 알림과 별개로 **신청자의 가입
+이메일로 재설정 링크를 자동 발송**합니다. 이 사이트에는 메일 서버가 없으므로,
+관리자의 Google 계정에 만든 **Apps Script 웹앱**(무료)을 발송 창구로 씁니다.
+설정하지 않으면 메일 기능만 조용히 꺼진 채 나머지는 그대로 동작합니다.
+
+> 개인 Gmail 은 하루 약 100통 발송 제한이 있습니다. 교육 과정 규모에는
+> 충분합니다. 발신자는 웹앱을 배포한 Google 계정(예: buddykorea79@gmail.com)이
+> 됩니다.
+
+### E-1. Apps Script 웹앱 만들기
+
+1. 발신에 쓸 Google 계정으로 로그인한 상태에서 <https://script.google.com> 접속
+2. **새 프로젝트** 를 만들고, 편집기의 내용을 전부 지운 뒤 아래 코드를 붙여넣습니다.
+   첫 줄의 `SECRET` 값만 무작위 문자열로 바꾸세요 (영문+숫자, 예: 24자).
+
+   ```javascript
+   const SECRET = '여기에-무작위-문자열';   // EMAIL_WEBHOOK_SECRET 와 같아야 합니다
+
+   function doPost(e) {
+     let data;
+     try { data = JSON.parse(e.postData.contents); } catch (err) {
+       return ContentService.createTextOutput('bad request');
+     }
+     if (!data || data.secret !== SECRET) {
+       return ContentService.createTextOutput('unauthorized');
+     }
+     MailApp.sendEmail({
+       to: String(data.to),
+       subject: String(data.subject),
+       body: String(data.text),
+       name: '과제 제출 사이트',
+     });
+     return ContentService.createTextOutput('ok');
+   }
+   ```
+
+3. 저장(💾) 후 오른쪽 위 **배포 → 새 배포** 를 누릅니다.
+4. 유형 선택(⚙️)에서 **웹 앱** 을 고르고:
+   - 다음 사용자 인증 정보로 실행: **나**
+   - 액세스 권한이 있는 사용자: **모든 사용자**
+5. **배포** 를 누르면 권한 승인 창이 뜹니다 — 본인 계정 선택 → "고급" →
+   "이동(안전하지 않음)" → 허용. (내가 만든 스크립트라 안전합니다.)
+6. 발급된 **웹 앱 URL**(`https://script.google.com/macros/s/.../exec`)을 복사합니다.
+
+### E-2. 환경변수 등록
+
+A-5 와 같은 자리(Settings 맨 위 → **Variables and Secrets**)에 2개를 **Secret**
+타입으로 추가하고 재배포합니다.
+
+| 이름 | 값 |
+|---|---|
+| `EMAIL_WEBHOOK_URL` | E-1 의 웹 앱 URL |
+| `EMAIL_WEBHOOK_SECRET` | E-1 코드에 적은 SECRET 과 동일한 문자열 |
+
+### E-3. 확인
+
+로그인 화면에서 `비밀번호를 잊으셨나요?` 로 가입된 이메일을 넣으면, 몇 초 안에
+그 주소로 "[과제 제출 사이트] 비밀번호 재설정 링크" 메일이 도착합니다
+(첫 메일은 스팸함으로 갈 수 있으니 확인하세요). 텔레그램 알림도 그대로
+함께 옵니다.
+
+> **코드를 수정했을 때**: Apps Script 는 저장만으로는 반영되지 않습니다.
+> **배포 → 배포 관리 → ✏️ → 버전: 새 버전 → 배포** 를 해야 URL 에 반영됩니다.
+
+---
+
 ## 운영 팁
 
 **과정 시작 전**
@@ -363,3 +431,4 @@ curl "https://api.telegram.org/bot<토큰>/setWebhook" \
 | 재설정 버튼을 눌러도 반응 없음 | `setWebhook` 을 등록했는지(D-4), `secret_token` 이 `TELEGRAM_WEBHOOK_SECRET` 과 같은지 — `getWebhookInfo` 로 `last_error_message` 확인 |
 | 버튼이 "허용되지 않은 채팅입니다" | 그 채팅의 `chat.id` 가 D-2 에서 넣은 `TELEGRAM_CHAT_ID` 와 다릅니다. 그룹을 새로 팠거나 사람이 바뀌었으면 다시 확인하세요 |
 | 재설정 링크가 "만료되었거나 이미 사용" | 링크는 60분 · 1회용입니다. 새 요청을 다시 남기게 하세요 (같은 계정의 재요청은 5분 간격) |
+| 재설정 메일이 안 옴 | `EMAIL_WEBHOOK_URL`·`EMAIL_WEBHOOK_SECRET` 2개가 다 있는지(하나라도 비면 조용히 꺼짐), 스팸함, Apps Script 코드의 SECRET 이 같은지, 코드 수정 후 "새 버전"으로 재배포했는지(E-3 참고) |

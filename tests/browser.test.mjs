@@ -237,7 +237,7 @@ await step('로그인 화면에서 비밀번호 찾기로 이동', async () => {
   await page.locator('a[href="#/forgot"]').click();
   await page.waitForSelector('#forgotForm', { timeout: 5000 });
   const notice = await page.locator('.notice').first().innerText();
-  if (!notice.includes('자동으로 발송되지는')) throw new Error(notice);
+  if (!notice.includes('재설정 링크')) throw new Error(notice);
 });
 await step('잘못된 이메일은 막힘', async () => {
   await page.fill('#forgotForm [name="email"]', 'not-an-email');

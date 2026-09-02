@@ -21,6 +21,8 @@
  *   TELEGRAM_BOT_TOKEN       (선택) Hermes 알림용 봇 토큰 — shared/telegram.js
  *   TELEGRAM_CHAT_ID         (선택) 알림을 받을 채팅 ID
  *   TELEGRAM_WEBHOOK_SECRET  (선택) 텔레그램 웹훅 검증용 시크릿
+ *   EMAIL_WEBHOOK_URL        (선택) 재설정 링크 메일 발송용 Apps Script URL — shared/email.js
+ *   EMAIL_WEBHOOK_SECRET     (선택) 위 웹앱과 맞춰 둔 비밀 문자열
  *
  * 경로 (basePath 기본 '/api')
  *   GET    /health
@@ -56,6 +58,7 @@ import {
   validateSignup, normEmail, RESET_REQUEST_COOLDOWN_MS,
 } from './auth.js';
 import { notifySignup, notifySubmission, notifyResetRequest, handleTelegramWebhook } from './telegram.js';
+import { sendResetEmail } from './email.js';
 
 /** 이 이메일로 가입하면 자동으로 관리자 권한이 붙습니다. */
 const DEFAULT_ADMIN_EMAILS = ['aireader@mois.go.kr'];
@@ -484,6 +487,8 @@ async function requestReset(request, env, cors, waitUntil) {
       if (m) {
         const resetUrl = `${new URL(request.url).origin}/#/reset?token=${fresh.token}`;
         notifyResetRequest(env, waitUntil, m, resetUrl);
+        // 메일 발송이 설정돼 있으면(EMAIL_WEBHOOK_*) 신청자 본인에게도 링크를 보냅니다.
+        sendResetEmail(env, waitUntil, m, resetUrl);
       }
     }
   }

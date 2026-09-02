@@ -1,7 +1,7 @@
 /**
- * Hermes(텔레그램 알림 + 재설정 버튼) 테스트.
- * 메모리 R2 스텁 위에서 실제 shared/r2api.js + shared/telegram.js 를 돌리고,
- * global.fetch 를 목으로 바꿔 텔레그램 호출을 가로챕니다.
+ * Hermes(텔레그램 알림 + 재설정 버튼) · 재설정 링크 메일 발송 테스트.
+ * 메모리 R2 스텁 위에서 실제 shared/r2api.js + shared/telegram.js + shared/email.js
+ * 를 돌리고, global.fetch 를 목으로 바꿔 텔레그램·메일 웹훅 호출을 가로챕니다.
  */
 import { MockBucket } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
@@ -25,10 +25,13 @@ const env = {
   TELEGRAM_BOT_TOKEN: 'test-token',
   TELEGRAM_CHAT_ID: '424242',
   TELEGRAM_WEBHOOK_SECRET: 'wh-secret',
+  EMAIL_WEBHOOK_URL: 'https://script.google.com/macros/s/test-app/exec',
+  EMAIL_WEBHOOK_SECRET: 'mail-secret',
 };
 
-/** 텔레그램 API 로 나가는 호출만 가로채고, 나머지는 실제 fetch 로 흘려보냅니다. */
+/** 텔레그램·메일 웹훅으로 나가는 호출만 가로채고, 나머지는 실제 fetch 로 흘려보냅니다. */
 let calls = [];
+let mails = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, init) => {
   if (typeof url === 'string' && url.startsWith('https://api.telegram.org/')) {
@@ -36,6 +39,10 @@ globalThis.fetch = async (url, init) => {
     const payload = init?.body ? JSON.parse(init.body) : {};
     calls.push({ method, payload });
     return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+  }
+  if (typeof url === 'string' && url.startsWith('https://script.google.com/')) {
+    mails.push(init?.body ? JSON.parse(init.body) : {});
+    return new Response('ok', { status: 200 });
   }
   return realFetch(url, init);
 };
@@ -97,9 +104,13 @@ console.log('\n== 알림: 환경변수 없음 ==');
 await t('환경변수가 없으면 가입해도 텔레그램을 호출하지 않음', async () => {
   const bareEnv = { BUCKET: bucket, PBKDF2_ITERATIONS: 1000 };
   calls = [];
+  mails = [];
   const r = await signup(client(bareEnv), 'noenv@example.com');
   eq(r.status, 200, 'status');
   eq(calls.length, 0, 'calls');
+  const forgot = await client(bareEnv)('/auth/forgot', { method: 'POST', body: { email: 'noenv@example.com' } });
+  eq(forgot.status, 200, 'forgot status');
+  eq(mails.length, 0, '메일 웹훅 미설정이면 발송 없음');
 });
 
 console.log('\n== 알림: 가입 ==');
@@ -151,6 +162,7 @@ await t('회원 가입: dave', async () => {
 
 await t('재설정 요청하면 1회용 링크와 버튼이 달린 알림이 감', async () => {
   calls = [];
+  mails = [];
   const r = await client()('/auth/forgot', { method: 'POST', body: { email: 'dave@example.com' } });
   eq(r.status, 200, 'status');
   eq(calls.length, 1, 'calls');
@@ -160,18 +172,31 @@ await t('재설정 요청하면 1회용 링크와 버튼이 달린 알림이 감
   if (!calls[0].payload.text.includes(`${ORIGIN}/#/reset?token=`)) throw new Error('재설정 링크 누락');
 });
 
-await t('쿨다운 안에 재요청하면 알림이 다시 가지 않음', async () => {
+await t('재설정 요청하면 신청자 이메일로도 같은 링크가 발송됨', async () => {
+  eq(mails.length, 1, 'mails');
+  eq(mails[0].to, 'dave@example.com', '수신자');
+  eq(mails[0].secret, 'mail-secret', '웹훅 시크릿');
+  const link = calls[0].payload.text.match(/https?:\S+#\/reset\?token=[A-Za-z0-9_-]+/)?.[0];
+  if (!link || !mails[0].text.includes(link)) throw new Error('메일과 텔레그램의 링크가 다름');
+  if (!mails[0].subject) throw new Error('제목 없음');
+});
+
+await t('쿨다운 안에 재요청하면 알림·메일이 다시 가지 않음', async () => {
   calls = [];
+  mails = [];
   const r = await client()('/auth/forgot', { method: 'POST', body: { email: 'dave@example.com' } });
   eq(r.status, 200, 'status');
   eq(calls.length, 0, 'calls');
+  eq(mails.length, 0, 'mails');
 });
 
-await t('가입하지 않은 이메일은 알림 없음 (계정 존재를 흘리지 않음)', async () => {
+await t('가입하지 않은 이메일은 알림·메일 없음 (계정 존재를 흘리지 않음)', async () => {
   calls = [];
+  mails = [];
   const r = await client()('/auth/forgot', { method: 'POST', body: { email: 'nobody@example.com' } });
   eq(r.status, 200, 'status');
   eq(calls.length, 0, 'calls');
+  eq(mails.length, 0, 'mails');
 });
 
 /* ================================================================ 웹훅 == */

@@ -103,8 +103,9 @@ export function forgotView(mount) {
         </div>
 
         <div class="notice notice--info" style="margin-bottom:var(--space-4)">
-          메일이 자동으로 발송되지는 않습니다. 요청을 남기면 <strong>담당자가
-          비밀번호 재설정 링크나 임시 비밀번호를 직접 전달</strong>해 드립니다.
+          요청을 남기면 담당자에게 바로 알림이 갑니다. 메일 발송이 설정된 사이트라면
+          <strong>가입 이메일로 재설정 링크가 자동 발송</strong>되고, 아니면 담당자가
+          링크나 임시 비밀번호를 직접 전달해 드립니다.
         </div>
 
         <form class="card" id="forgotForm" novalidate>
@@ -120,9 +121,10 @@ export function forgotView(mount) {
           <div class="card" style="text-align:center">
             <h2 class="page-title" style="font-size:1.9rem">요청이 접수되었습니다</h2>
             <p style="color:var(--text-black-soft);margin-top:var(--space-2);font-size:1.5rem">
-              담당자가 확인한 뒤 재설정 링크나 임시 비밀번호를 알려드립니다.<br>
-              링크를 받으면 그 화면에서 새 비밀번호를 직접 정하고,<br>
-              임시 비밀번호를 받으면 <strong>내 계정</strong>에서 새 비밀번호로 바꿔주세요.
+              가입하신 이메일의 받은편지함(스팸함 포함)을 확인해 보세요.<br>
+              재설정 링크 메일이 없다면, 담당자가 확인한 뒤 링크나 임시 비밀번호를
+              직접 전달해 드립니다.<br>
+              링크를 받으면 그 화면에서 새 비밀번호를 직접 정하시면 됩니다.
             </p>
             <div class="row" style="justify-content:center;margin-top:var(--space-4)">
               <a class="btn btn--outline" href="#/login">로그인 화면으로</a>
