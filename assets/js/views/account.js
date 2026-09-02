@@ -1,5 +1,6 @@
 /** 로그인 · 회원가입 · 내 계정. */
 import { CONFIG } from '../config.js';
+import { store } from '../store/index.js';
 import {
   currentUser, isSimulated, signup, login, logout, changePassword, requestReset, confirmReset,
 } from '../auth.js';
@@ -89,11 +90,13 @@ export function loginView(mount) {
 /* ------------------------------------------------------ 비밀번호 찾기 -- */
 
 /**
- * 메일을 보낼 수단이 없으므로, 여기서는 "요청을 접수"만 합니다.
- * 관리자 화면에 처리 대기로 올라가고(텔레그램을 설정했다면 즉시 알림),
- * 담당자가 재설정 링크나 임시 비밀번호를 본인에게 전달합니다.
+ * 서버에 메일 발송이 설정돼 있으면(store.mailReset) "초기화 링크를 메일로 보냈다"는
+ * 흐름으로, 아니면 "담당자가 전달한다"는 흐름으로 안내합니다. 어느 쪽이든 응답은
+ * 계정 존재 여부와 무관하게 같습니다 — 가입 여부를 흘리지 않기 위해서입니다.
  */
 export function forgotView(mount) {
+  const mailReset = Boolean(store?.mailReset);
+
   mount.innerHTML = `
     <section class="section">
       <div class="wrap wrap--narrow" style="max-width:440px">
@@ -103,9 +106,12 @@ export function forgotView(mount) {
         </div>
 
         <div class="notice notice--info" style="margin-bottom:var(--space-4)">
-          요청을 남기면 담당자에게 바로 알림이 갑니다. 메일 발송이 설정된 사이트라면
-          <strong>가입 이메일로 재설정 링크가 자동 발송</strong>되고, 아니면 담당자가
-          링크나 임시 비밀번호를 직접 전달해 드립니다.
+          ${mailReset
+    ? `아래에 이메일을 입력하고 버튼을 누르면, <strong>등록하신 메일 주소로
+          비밀번호 초기화 링크</strong>가 전송됩니다. 링크에서 새 비밀번호를
+          직접 정하시면 됩니다.`
+    : `요청을 남기면 담당자에게 바로 알림이 갑니다. 담당자가 비밀번호
+          재설정 링크나 임시 비밀번호를 직접 전달해 드립니다.`}
         </div>
 
         <form class="card" id="forgotForm" novalidate>
@@ -114,18 +120,28 @@ export function forgotView(mount) {
             <input class="input" name="email" type="email" inputmode="email"
                    autocomplete="username" placeholder="you@example.com" />
           </label>
-          <button class="btn btn--primary btn--block btn--lg" type="submit">요청 남기기</button>
+          <button class="btn btn--primary btn--block btn--lg" type="submit">
+            ${mailReset ? '비밀번호 초기화' : '요청 남기기'}</button>
         </form>
 
         <div id="forgotDone" hidden>
           <div class="card" style="text-align:center">
-            <h2 class="page-title" style="font-size:1.9rem">요청이 접수되었습니다</h2>
+            ${mailReset
+    ? `<h2 class="page-title" style="font-size:1.9rem">초기화 링크를 보냈습니다</h2>
             <p style="color:var(--text-black-soft);margin-top:var(--space-2);font-size:1.5rem">
-              가입하신 이메일의 받은편지함(스팸함 포함)을 확인해 보세요.<br>
-              재설정 링크 메일이 없다면, 담당자가 확인한 뒤 링크나 임시 비밀번호를
-              직접 전달해 드립니다.<br>
-              링크를 받으면 그 화면에서 새 비밀번호를 직접 정하시면 됩니다.
+              가입된 계정이라면 <strong id="forgotEmail"></strong> 주소로<br>
+              비밀번호 초기화 링크가 전송되었습니다.<br>
+              받은편지함(스팸함 포함)을 확인해 주세요.<br>
+              링크는 <strong>60분 동안, 한 번만</strong> 쓸 수 있습니다.
             </p>
+            <p style="color:var(--text-black-soft);margin-top:var(--space-2);font-size:1.3rem">
+              메일이 오지 않으면 이메일 주소를 다시 확인하시거나 담당자에게 문의해 주세요.
+            </p>`
+    : `<h2 class="page-title" style="font-size:1.9rem">요청이 접수되었습니다</h2>
+            <p style="color:var(--text-black-soft);margin-top:var(--space-2);font-size:1.5rem">
+              담당자가 확인한 뒤 재설정 링크나 임시 비밀번호를 전달해 드립니다.<br>
+              링크를 받으면 그 화면에서 새 비밀번호를 직접 정하시면 됩니다.
+            </p>`}
             <div class="row" style="justify-content:center;margin-top:var(--space-4)">
               <a class="btn btn--outline" href="#/login">로그인 화면으로</a>
             </div>
@@ -149,10 +165,12 @@ export function forgotView(mount) {
     }
 
     const btn = form.querySelector('button[type="submit"]');
-    busy(btn, true, '접수 중…');
+    busy(btn, true, mailReset ? '전송 중…' : '접수 중…');
     try {
       await requestReset(form.email.value);
       // 가입 여부를 알려주지 않기 위해, 계정이 없어도 같은 화면을 보여줍니다.
+      const emailSlot = mount.querySelector('#forgotEmail');
+      if (emailSlot) emailSlot.textContent = form.email.value.trim();
       form.hidden = true;
       mount.querySelector('#forgotDone').hidden = false;
     } catch (err) {

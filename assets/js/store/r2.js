@@ -50,6 +50,8 @@ export class R2Store {
       if (!res.ok) throw await this.httpError(res);
       const info = await res.json();
       this.maxUploadMB = info.maxUploadMB ?? null;
+      // 재설정 링크 메일 발송이 서버에 설정돼 있는지 — 비밀번호 찾기 화면 문구용.
+      this.mailReset = Boolean(info.mailReset);
       this.auth.setMe(info.me || null);
       this.auth.synced = true;   // 방금 서버에 확인했습니다
       this.ready = true;

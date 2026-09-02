@@ -119,6 +119,8 @@ async function route(request, env, url, path, cors, waitUntil) {
       mode: 'r2',
       members: true,
       maxUploadMB: maxUploadMB(env),
+      // 재설정 링크 메일 발송이 설정돼 있는지 — 비밀번호 찾기 화면의 문구가 달라집니다.
+      mailReset: Boolean(env.EMAIL_WEBHOOK_URL && env.EMAIL_WEBHOOK_SECRET),
       signedIn: Boolean(me),
       me: publicMember(me),
     }, 200, cors);
