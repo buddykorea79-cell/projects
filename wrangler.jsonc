@@ -16,6 +16,11 @@
   //
   "name": "projects",
 
+  // 배포할 때 대시보드에서 넣은 환경변수(Text 타입)를 지우지 않습니다.
+  // 이 설정이 없으면 매 배포마다 이 파일에 없는 일반 변수가 삭제됩니다
+  // (Secret 은 원래 살아남습니다). TELEGRAM_* 변수를 대시보드에서 관리하므로 필수.
+  "keep_vars": true,
+
   // /api 요청을 처리할 코드. 나머지 요청은 아래 assets 가 처리합니다.
   "main": "shared/worker-entry.js",
   "compatibility_date": "2026-08-01",
