@@ -4,7 +4,7 @@ import { CONFIG, STORAGE_LABEL } from '../config.js';
 import { currentUser, isAdmin, isSimulated } from '../auth.js';
 import {
   esc, attr, fmtDate, fmtBytes, toLocalInput, fromLocalInput, csvCell,
-  downloadBlob, isPastDue, debounce, firstUrl,
+  downloadBlob, isPastDue, debounce, firstUrl, normEmail,
 } from '../utils.js';
 import {
   spinner, emptyState, toastOk, toastErr, confirmModal, FilePicker,
@@ -148,6 +148,8 @@ export async function adminView(mount) {
                   <td style="white-space:nowrap">
                     <a class="btn btn--outline btn--sm" href="#/admin/project/${attr(p.id)}">편집</a>
                     <a class="btn btn--quiet btn--sm" href="#/admin/submissions/${attr(p.id)}">제출물</a>
+                    <a class="btn btn--quiet btn--sm" href="#/admin/roster/${attr(p.id)}">현황</a>
+                    <a class="btn btn--quiet btn--sm" href="#/admin/evaluate/${attr(p.id)}">평가하기</a>
                   </td>
                 </tr>`;
               }).join('')}
@@ -593,6 +595,8 @@ export async function adminSubmissionsView(mount, { projectId }) {
             <p class="page-sub">${esc(project.title)} · 총 ${all.length}건</p>
           </div>
           <div class="row">
+            <a class="btn btn--primary" href="#/admin/evaluate/${attr(project.id)}">평가하기</a>
+            <a class="btn btn--outline" href="#/admin/roster/${attr(project.id)}">제출 현황</a>
             <button class="btn btn--outline" data-csv>CSV 내려받기</button>
             <a class="btn btn--quiet" href="#/admin/project/${attr(project.id)}">프로젝트 편집</a>
           </div>
@@ -720,6 +724,225 @@ export async function adminSubmissionsView(mount, { projectId }) {
 }
 
 
+/* --------------------------------------------------------- 제출 현황 -- */
+
+/**
+ * 누가 냈고 누가 안 냈는지.
+ *
+ * 회원 명부와 제출물을 이메일로 맞춰 봅니다. 관리자와 정지된 계정은 보통
+ * 제출 대상이 아니라 기본으로 빼 두되, 체크를 풀면 다시 셈에 넣습니다.
+ * 미제출자 이메일은 한 번에 복사할 수 있습니다 — 독촉 안내를 보내려면
+ * 결국 그 목록이 필요하기 때문입니다.
+ */
+export async function rosterView(mount, { projectId }) {
+  mount.innerHTML = `<section class="section"><div class="wrap">${spinner()}</div></section>`;
+
+  const project = await store.getProject(projectId);
+  if (!project) { toastErr('프로젝트를 찾을 수 없습니다.'); go('/admin'); return; }
+
+  const [subs, members] = await Promise.all([
+    store.listSubmissions({ projectId }),
+    store.auth.listMembers().catch(() => []),
+  ]);
+
+  /** 이메일 → 이 프로젝트에 낸 제출물 요약. */
+  const done = new Map();
+  for (const s of subs) {
+    const key = normEmail(s.author?.email);
+    if (!key) continue;
+    const cur = done.get(key) || { count: 0, last: '', first: null };
+    cur.count += 1;
+    if (String(s.createdAt || '') > cur.last) cur.last = s.createdAt || '';
+    if (!cur.first) cur.first = s;
+    done.set(key, cur);
+  }
+
+  // 계정을 지운 뒤에도 제출물은 남아 있을 수 있습니다. 명부에서 못 찾는 제출자는
+  // 표에서 빠지므로, 숫자가 안 맞는 이유를 따로 알려 줍니다.
+  const roster = new Set(members.map((m) => normEmail(m.email)));
+  const orphans = subs.filter((s) => !roster.has(normEmail(s.author?.email)));
+
+  mount.innerHTML = `
+    <section class="section">
+      <div class="wrap">
+        <p class="crumb">
+          <a href="#/admin">관리자</a><span>/</span>
+          <a href="#/p/${attr(project.id)}">${esc(project.title)}</a><span>/</span>제출 현황
+        </p>
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">제출 현황</h1>
+            <p class="page-sub">${esc(project.title)} · 마감 ${esc(fmtDate(project.dueAt, true))}</p>
+          </div>
+          <div class="row">
+            <a class="btn btn--outline" href="#/admin/submissions/${attr(project.id)}">제출물 관리</a>
+            <a class="btn btn--quiet" href="#/admin/evaluate/${attr(project.id)}">평가하기</a>
+          </div>
+        </div>
+
+        <div id="rosterStats" class="stat-row" style="margin-bottom:var(--space-4)"></div>
+
+        <div class="toolbar">
+          <input class="input" id="q" type="search" placeholder="기관 · 성명 · 이메일 검색" />
+          <select class="select" id="filter">
+            <option value="all">전체</option>
+            <option value="missing">미제출자만</option>
+            <option value="done">제출자만</option>
+          </select>
+          <label class="check" style="padding:0">
+            <input type="checkbox" id="noAdmin" checked /><span>관리자 제외</span>
+          </label>
+          <label class="check" style="padding:0">
+            <input type="checkbox" id="noBlocked" checked /><span>정지 회원 제외</span>
+          </label>
+          <button class="btn btn--outline btn--sm" data-csv>CSV 내려받기</button>
+          <button class="btn btn--quiet btn--sm" data-copy>미제출자 이메일 복사</button>
+        </div>
+
+        ${orphans.length ? `
+          <div class="notice notice--warn" style="margin-bottom:var(--space-3)">
+            <strong>명부에 없는 제출자 ${orphans.length}건</strong> —
+            ${esc([...new Set(orphans.map((s) => s.author?.name || '이름 없음'))].slice(0, 5).join(', '))}.
+            계정이 삭제된 뒤에도 제출물은 남습니다. 아래 표에는 나오지 않습니다.
+          </div>` : ''}
+
+        <div id="rosterRows"></div>
+      </div>
+    </section>`;
+
+  const rowsEl = mount.querySelector('#rosterRows');
+  const statsEl = mount.querySelector('#rosterStats');
+  const qEl = mount.querySelector('#q');
+  const filterEl = mount.querySelector('#filter');
+  const noAdminEl = mount.querySelector('#noAdmin');
+  const noBlockedEl = mount.querySelector('#noBlocked');
+  const copyBtn = mount.querySelector('[data-copy]');
+
+  /** 지금 "제출 대상"으로 보고 있는 사람들. 제출률의 분모입니다. */
+  const pool = () => members.filter((m) => {
+    if (noAdminEl.checked && m.role === 'admin') return false;
+    if (noBlockedEl.checked && m.status === 'blocked') return false;
+    return true;
+  });
+
+  const submitted = (m) => done.get(normEmail(m.email)) || null;
+
+  /** 화면에 그릴 줄 — 검색어와 제출 여부까지 걸린 결과. */
+  const visible = () => {
+    const q = qEl.value.trim().toLowerCase();
+    return pool().filter((m) => {
+      const got = submitted(m);
+      if (filterEl.value === 'missing' && got) return false;
+      if (filterEl.value === 'done' && !got) return false;
+      if (!q) return true;
+      return [m.institution, m.name, m.email].some((v) => String(v || '').toLowerCase().includes(q));
+    }).sort((a, b) => {
+      // 미제출자를 위로 — 처리할 일이 있는 쪽이 먼저 보여야 합니다.
+      const ga = submitted(a) ? 1 : 0;
+      const gb = submitted(b) ? 1 : 0;
+      if (ga !== gb) return ga - gb;
+      return (a.institution || '').localeCompare(b.institution || '', 'ko')
+        || (a.name || '').localeCompare(b.name || '', 'ko');
+    });
+  };
+
+  const draw = () => {
+    const target = pool();
+    const withSub = target.filter(submitted);
+    const missing = target.filter((m) => !submitted(m));
+    const rate = target.length ? Math.round((withSub.length / target.length) * 100) : 0;
+
+    statsEl.innerHTML = `
+      ${stat(target.length, '제출 대상')}
+      ${stat(withSub.length, '제출')}
+      ${stat(missing.length, '미제출')}
+      ${stat(`${rate}%`, '제출률')}
+      ${stat(subs.length, '총 제출물')}`;
+
+    copyBtn.textContent = `미제출자 이메일 복사 (${missing.length})`;
+
+    const rows = visible();
+    if (!rows.length) {
+      rowsEl.innerHTML = emptyState({
+        title: members.length ? '해당하는 회원이 없습니다' : '아직 회원이 없습니다',
+        body: members.length ? '검색어나 필터를 바꿔 보세요.' : '교육생이 가입하면 이곳에 표시됩니다.',
+      });
+      return;
+    }
+
+    rowsEl.innerHTML = `
+      <div class="tablewrap">
+        <table class="table">
+          <thead><tr><th>#</th><th>기관명</th><th>성명</th><th>이메일</th><th>제출</th>
+                     <th>건수</th><th>최근 제출</th><th>계정</th><th></th></tr></thead>
+          <tbody>
+            ${rows.map((m, i) => {
+    const got = submitted(m);
+    return `
+              <tr>
+                <td class="num">${i + 1}</td>
+                <td>${esc(m.institution || '—')}</td>
+                <td>${esc(m.name)}</td>
+                <td><a href="mailto:${attr(m.email)}">${esc(m.email)}</a></td>
+                <td>${got
+    ? '<span class="badge badge--open">제출</span>'
+    : '<span class="badge badge--due">미제출</span>'}</td>
+                <td class="num">${got ? got.count : 0}</td>
+                <td>${esc(got ? fmtDate(got.last, true) : '—')}</td>
+                <td>${m.role === 'admin' ? '<span class="badge badge--gold">관리자</span> ' : ''}${
+  m.status === 'blocked' ? '<span class="badge badge--closed">정지</span>' : ''}</td>
+                <td style="white-space:nowrap">${got?.first
+    ? `<a class="btn btn--quiet btn--sm" href="#/s/${attr(got.first.id)}">보기</a>`
+    : ''}</td>
+              </tr>`;
+  }).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  };
+
+  qEl.addEventListener('input', debounce(draw, 200));
+  [filterEl, noAdminEl, noBlockedEl].forEach((el) => el.addEventListener('change', draw));
+
+  copyBtn.addEventListener('click', async () => {
+    const list = pool().filter((m) => !submitted(m)).map((m) => m.email);
+    if (!list.length) { toastOk('미제출자가 없습니다.'); return; }
+    const text = list.join(', ');
+    try {
+      await navigator.clipboard.writeText(text);
+      toastOk(`미제출자 ${list.length}명의 이메일을 복사했습니다.`);
+    } catch {
+      // 클립보드 권한이 없을 수 있습니다 — 그럴 땐 눈으로 옮겨 적게 띄웁니다.
+      await confirmModal({
+        title: `미제출자 ${list.length}명`,
+        body: text,
+        confirmLabel: '닫기', cancelLabel: '취소',
+      });
+    }
+  });
+
+  mount.querySelector('[data-csv]').addEventListener('click', () => {
+    const header = ['번호', '기관명', '성명', '이메일', '제출여부', '제출건수', '최근 제출', '권한', '상태'];
+    const lines = [header.map(csvCell).join(',')];
+    visible().forEach((m, i) => {
+      const got = submitted(m);
+      lines.push([
+        i + 1, m.institution || '', m.name, m.email,
+        got ? '제출' : '미제출',
+        got ? got.count : 0,
+        got ? fmtDate(got.last, true) : '',
+        m.role === 'admin' ? '관리자' : '회원',
+        m.status === 'blocked' ? '정지' : '이용중',
+      ].map(csvCell).join(','));
+    });
+    downloadBlob(new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }),
+      `제출현황_${project.title.slice(0, 20)}_${new Date().toISOString().slice(0, 10)}.csv`);
+    toastOk('CSV 를 내려받았습니다.');
+  });
+
+  draw();
+}
+
 /* ---------------------------------------------------------- 회원 관리 -- */
 
 export async function membersView(mount) {
@@ -730,7 +953,10 @@ export async function membersView(mount) {
         <div class="page-head">
           <div>
             <h1 class="page-title">회원 관리</h1>
-            <p class="page-sub">가입한 교육생을 확인하고 권한·이용 상태를 조정합니다.</p>
+            <p class="page-sub">
+              가입한 교육생을 확인하고 권한·이용 상태를 조정합니다.
+              삭제는 <strong>이용 정지된 일반 회원</strong>만 가능합니다.
+            </p>
           </div>
           <button class="btn btn--outline" data-csv>CSV 내려받기</button>
         </div>
@@ -761,6 +987,12 @@ export async function membersView(mount) {
   const filterEl = mount.querySelector('#filter');
   const me = currentUser();
   let all = [];
+  /**
+   * 이메일 → 그 사람이 낸 제출물 수.
+   * 표에는 넣지 않습니다(줄이 좁아집니다) — 삭제할 때 무엇이 딸려 있는지 알려 주고,
+   * CSV 에 함께 담는 용도입니다.
+   */
+  let subCount = new Map();
 
   const draw = () => {
     const q = qEl.value.trim().toLowerCase();
@@ -818,7 +1050,9 @@ export async function membersView(mount) {
                             data-next="${m.status === 'blocked' ? 'active' : 'blocked'}"
                             style="color:${m.status === 'blocked' ? 'var(--moss, var(--sb-green))' : 'var(--red)'}">
                       ${m.status === 'blocked' ? '정지 해제' : '이용 정지'}
-                    </button>`}
+                    </button>
+                    ${m.status === 'blocked' && m.role !== 'admin' ? `
+                      <button class="btn btn--danger btn--sm" data-remove="${attr(m.email)}">삭제</button>` : ''}`}
                 </td>
               </tr>`;
             }).join('')}
@@ -850,6 +1084,43 @@ export async function membersView(mount) {
       });
     });
 
+    rowsEl.querySelectorAll('[data-remove]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const email = btn.dataset.remove;
+        const target = all.find((x) => x.email === email);
+        const mine = subCount.get(normEmail(email)) || 0;
+
+        const ok = await confirmModal({
+          title: '이 회원을 삭제할까요?',
+          body: `${target?.name || ''} · ${email}\n`
+            + '명부에서 완전히 지워집니다. 되돌릴 수 없습니다.\n'
+            + (mine ? `이 회원의 제출물 ${mine}건을 어떻게 할지는 다음 화면에서 고릅니다.`
+              : '남아 있는 제출물은 없습니다.'),
+          confirmLabel: '삭제', danger: true, requireText: '삭제',
+        });
+        if (!ok) return;
+
+        // 제출물은 프로젝트의 기록이기도 해서, 지울지 남길지는 관리자가 정합니다.
+        let purgeSubmissions = false;
+        if (mine) {
+          purgeSubmissions = await confirmModal({
+            title: `제출물 ${mine}건도 함께 지울까요?`,
+            body: '함께 지우면 첨부 원본까지 영구 삭제됩니다.\n'
+              + '남겨두면 제출물은 프로젝트 기록으로 그대로 보입니다.',
+            confirmLabel: '함께 삭제', cancelLabel: '제출물은 남기기', danger: true,
+          });
+        }
+
+        try {
+          const out = await store.auth.deleteMember(email, { purgeSubmissions });
+          toastOk(out?.removedSubmissions
+            ? `삭제했습니다. 제출물 ${out.removedSubmissions}건도 함께 지웠습니다.`
+            : '삭제했습니다.');
+          await load();
+        } catch (e) { toastErr(e.message); }
+      });
+    });
+
     rowsEl.querySelectorAll('[data-reset]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const email = btn.dataset.reset;
@@ -874,7 +1145,17 @@ export async function membersView(mount) {
 
   const load = async () => {
     try {
-      all = await store.auth.listMembers();
+      // 제출물은 "이 사람을 지우면 무엇이 함께 사라지는가"를 보여주기 위해 함께 셉니다.
+      const [members, subs] = await Promise.all([
+        store.auth.listMembers(),
+        store.listSubmissions().catch(() => []),
+      ]);
+      all = members;
+      subCount = new Map();
+      for (const s of subs) {
+        const key = normEmail(s.author?.email);
+        if (key) subCount.set(key, (subCount.get(key) || 0) + 1);
+      }
       draw();
     } catch (e) {
       rowsEl.innerHTML = `<div class="notice notice--err">회원 목록을 불러오지 못했습니다 — ${esc(e.message)}</div>`;
@@ -885,13 +1166,14 @@ export async function membersView(mount) {
   filterEl.addEventListener('change', draw);
 
   mount.querySelector('[data-csv]').addEventListener('click', () => {
-    const header = ['번호', '기관명', '성명', '이메일', '권한', '상태', '가입일', '최근 로그인'];
+    const header = ['번호', '기관명', '성명', '이메일', '권한', '상태', '제출건수', '가입일', '최근 로그인'];
     const lines = [header.map(csvCell).join(',')];
     all.forEach((m, i) => {
       lines.push([
         i + 1, m.institution || '', m.name, m.email,
         m.role === 'admin' ? '관리자' : '회원',
         m.status === 'blocked' ? '정지' : '이용중',
+        subCount.get(normEmail(m.email)) || 0,
         fmtDate(m.createdAt), m.lastLoginAt ? fmtDate(m.lastLoginAt, true) : '',
       ].map(csvCell).join(','));
     });

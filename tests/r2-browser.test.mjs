@@ -363,6 +363,100 @@ await step('이용 정지하면 그 회원의 세션이 끊김', async () => {
   if (!title.includes('로그인')) throw new Error(title);
 });
 
+log('\n== 7-2. 제출 현황 · 평가 · 회원 삭제 ==');
+
+await step('평가할 제출물을 다시 하나 준비', async () => {
+  await alice.goto(`${origin}/#/p/${projectId}/submit`, { waitUntil: 'networkidle' });
+  await alice.waitForSelector('#submitForm', { timeout: 8000 });
+  await alice.fill('[name="title"]', '평가용 시안');
+  await alice.fill('[name="body"]', '참고 사이트는 https://example.com 입니다.');
+  await alice.setInputFiles('[data-input]', {
+    name: '평가시안.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489'
+      + '0000000a49444154789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082', 'hex'),
+  });
+  await alice.waitForSelector('.fileitem', { timeout: 5000 });
+  await alice.check('[name="agree"]');
+  await alice.locator('#submitForm button[type="submit"]').click();
+  await alice.waitForURL(/#\/s\//, { timeout: 15000 });
+});
+
+await step('제출 현황이 제출자와 미제출자를 갈라 보여줌', async () => {
+  await admin.goto(`${origin}/#/admin/roster/${projectId}`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('#rosterRows .table tbody tr', { timeout: 10000 });
+
+  // 정지 회원 제외가 기본 — 정지된 밥은 대상에서 빠집니다.
+  if (await admin.locator('#rosterRows tr', { hasText: 'bob@example.com' }).count()) {
+    throw new Error('정지 회원이 기본으로 보임');
+  }
+  const aliceRow = admin.locator('#rosterRows tr', { hasText: 'alice@example.com' });
+  if (!(await aliceRow.locator('.badge--open').count())) throw new Error('제출 표시 없음');
+
+  // 체크를 풀면 정지 회원도 대상에 들어가고 미제출로 잡힙니다.
+  await admin.uncheck('#noBlocked');
+  const bobRow = admin.locator('#rosterRows tr', { hasText: 'bob@example.com' });
+  if (!(await bobRow.locator('.badge--due').count())) throw new Error('미제출 표시 없음');
+});
+
+await step('미제출자만 걸러서 볼 수 있음', async () => {
+  await admin.selectOption('#filter', 'missing');
+  const text = await admin.locator('#rosterRows').innerText();
+  if (text.includes('alice@example.com')) throw new Error('제출자가 남아 있음');
+  if (!text.includes('bob@example.com')) throw new Error('미제출자가 없음');
+});
+
+await step('평가 화면이 제출물과 첨부를 한 화면에 보여줌', async () => {
+  await admin.goto(`${origin}/#/admin/evaluate/${projectId}`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('.eval-card', { timeout: 10000 });
+  await admin.waitForSelector('.eval-card__media img', { timeout: 10000 });
+  const ok = await admin.locator('.eval-card__media img').first()
+    .evaluate((img) => img.complete && img.naturalWidth > 0);
+  if (!ok) throw new Error('미리보기 이미지가 로드되지 않음');
+  // 본문에 적힌 주소는 새 창으로 열 수 있게 버튼으로 나옵니다.
+  const links = await admin.locator('.eval-card__links').first().innerText();
+  if (!links.includes('사이트 열기')) throw new Error(links);
+});
+
+await step('순위를 매겨 투표하면 결과에 순위표가 나옴', async () => {
+  await admin.locator('.eval-card [data-rank]').first().selectOption('1');
+  await admin.locator('[data-submit]').click();
+  await admin.waitForSelector('.result-bar', { timeout: 10000 });
+
+  const text = await admin.locator('#evalBody').innerText();
+  if (!text.includes('순위점수')) throw new Error('순위표가 아님');
+
+  const ballots = JSON.parse(new TextDecoder().decode(
+    bucket.objects.get('data/evaluations.json').bytes));
+  if (ballots.length !== 1) throw new Error(`투표용지 ${ballots.length}장`);
+  if (ballots[0].picks[0].rank !== 1) throw new Error(`순위 ${ballots[0].picks[0].rank}`);
+  if (ballots[0].voter.email !== 'aireader@mois.go.kr') throw new Error(ballots[0].voter.email);
+});
+
+await step('삭제 버튼은 정지된 회원에게만 보임', async () => {
+  await admin.goto(`${origin}/#/admin/members`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('#memberRows .table tbody tr', { timeout: 10000 });
+
+  const aliceRow = admin.locator('#memberRows tr', { hasText: 'alice@example.com' });
+  if (await aliceRow.locator('[data-remove]').count()) throw new Error('이용중 회원에 삭제 버튼');
+  const bobRow = admin.locator('#memberRows tr', { hasText: 'bob@example.com' });
+  if (!(await bobRow.locator('[data-remove]').count())) throw new Error('정지 회원에 삭제 버튼 없음');
+});
+
+await step('정지된 회원을 삭제하면 명부에서 사라짐', async () => {
+  const bobRow = admin.locator('#memberRows tr', { hasText: 'bob@example.com' });
+  await bobRow.locator('[data-remove]').click();
+  await admin.fill('.modal [data-require]', '삭제');
+  await admin.locator('.modal [data-ok]').click();
+  await admin.waitForTimeout(2500);
+
+  const members = JSON.parse(new TextDecoder().decode(bucket.objects.get('data/members.json').bytes));
+  if (members.some((m) => m.email === 'bob@example.com')) throw new Error('명부에 남아 있음');
+  if (await admin.locator('#memberRows tr', { hasText: 'bob@example.com' }).count()) {
+    throw new Error('표에 남아 있음');
+  }
+});
+
 log('\n== 8. 계정 ==');
 
 await step('내 계정에서 비밀번호 변경', async () => {

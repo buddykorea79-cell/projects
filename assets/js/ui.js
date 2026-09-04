@@ -45,7 +45,7 @@ export function confirmModal(opts) {
       <div class="modal-scrim" data-scrim>
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mdTitle">
           <h2 id="mdTitle">${esc(title)}</h2>
-          ${body ? `<p style="color:var(--text-black-soft);line-height:1.7">${esc(body)}</p>` : ''}
+          ${body ? `<p style="color:var(--text-black-soft);line-height:1.7;white-space:pre-line">${esc(body)}</p>` : ''}
           ${requireText ? `
             <label class="field" style="margin-top:var(--space-3)">
               <span class="field__label">확인을 위해 <code>${esc(requireText)}</code> 를 입력하세요</span>

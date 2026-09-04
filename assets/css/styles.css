@@ -271,6 +271,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .badge--gold   { background: transparent; border-color: var(--gold); color: var(--gold); }
 .badge--soft   { background: var(--neutral-cool); color: var(--text-black-soft); border-color: var(--hairline); }
 .badge--due    { background: var(--red-tint); color: var(--red); }
+/* display 를 직접 정해 뒀으므로 hidden 을 다시 눌러 줘야 실제로 숨겨집니다. */
+.badge[hidden] { display: none; }
 
 /* ------------------------------------------------------------ hero band -- */
 .hero { background: var(--neutral-warm); padding-block: var(--space-6) var(--space-7); }
@@ -501,6 +503,96 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .stat { background: var(--white); border-radius: var(--radius-card); box-shadow: var(--shadow-card); padding: var(--space-3); }
 .stat__v { font-size: 2.8rem; font-weight: 700; color: var(--sb-green); font-variant-numeric: tabular-nums; line-height: 1.1; }
 .stat__k { font-size: 1.3rem; color: var(--text-black-soft); font-weight: 600; margin-top: 4px; }
+
+/* ---------------------------------------------------------------- 평가 -- */
+
+/* 탭 — 평가하기 / 결과 */
+.tabs { display: flex; gap: var(--space-2); margin-bottom: var(--space-4); flex-wrap: wrap; }
+.tab {
+  background: transparent; border: 1px solid var(--input-border); color: var(--text-black-soft);
+  border-radius: var(--radius-pill); padding: 8px 20px; min-height: 38px;
+  font-size: 1.4rem; font-weight: 600; cursor: pointer;
+  transition: background var(--duration) ease, color var(--duration) ease, border-color var(--duration) ease;
+}
+.tab:hover { border-color: var(--green-accent); color: var(--green-accent); }
+.tab[aria-selected="true"] {
+  background: var(--green-accent); border-color: var(--green-accent); color: #fff;
+}
+
+/* 제출물 카드 — 한 화면에 펼쳐 놓고 비교합니다. */
+.eval-grid {
+  display: grid; gap: var(--space-4);
+  grid-template-columns: 1fr;
+}
+@media (min-width: 760px)  { .eval-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1280px) { .eval-grid { grid-template-columns: repeat(3, 1fr); } }
+
+.eval-card {
+  background: var(--white); border-radius: var(--radius-card); box-shadow: var(--shadow-card);
+  overflow: hidden; display: flex; flex-direction: column;
+  border: 2px solid transparent;
+  transition: border-color var(--duration) ease, box-shadow var(--duration) ease;
+}
+.eval-card.is-picked { border-color: var(--green-accent); box-shadow: var(--shadow-card-hover); }
+
+.eval-card__media {
+  aspect-ratio: 16/10; background: var(--ceramic);
+  display: grid; place-items: center; overflow: hidden; position: relative;
+}
+.eval-card__media img, .eval-card__media video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.eval-card__media img { cursor: zoom-in; }
+/* 첨부가 여러 개면 한 칸 안에서 나눠 보여줍니다. */
+.eval-card__media--multi { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px; place-items: stretch; }
+.eval-card__media--multi img, .eval-card__media--multi video { object-fit: cover; }
+.eval-card__none {
+  padding: var(--space-3); text-align: center;
+  font-size: 1.3rem; color: var(--text-black-soft); word-break: break-all;
+}
+.eval-card__hint {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,.62); color: #fff; font-size: 1.1rem; padding: 6px 10px;
+}
+.eval-frame { width: 100%; height: 100%; border: 0; background: var(--white); }
+
+.eval-card__body { padding: var(--space-3); display: flex; flex-direction: column; gap: 6px; flex: 1 1 auto; }
+.eval-card__title { font-size: 1.7rem; color: var(--sb-green); flex: 1; min-width: 0; word-break: break-word; }
+.eval-card__meta { font-size: 1.3rem; color: var(--text-black-soft); }
+.eval-card__desc {
+  font-size: 1.4rem; color: var(--text-black-soft); line-height: 1.6;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.eval-card__links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: var(--space-2); }
+.eval-card__links .btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.eval-card__vote {
+  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3); border-top: 1px solid var(--hairline);
+  background: var(--neutral-cool);
+}
+.eval-rank { margin: 0; }
+.eval-rank .select { width: auto; min-width: 118px; padding-block: 6px; font-size: 1.3rem; min-height: 36px; }
+.eval-card__vote .btn { margin-left: auto; }
+
+/* 투표 완료 줄 — 카드 목록 아래에 붙어 따라옵니다. */
+.eval-actions {
+  position: sticky; bottom: 0; z-index: 5;
+  margin-top: var(--space-4); padding: var(--space-3);
+  background: var(--white); border-radius: var(--radius-card); box-shadow: var(--shadow-frap);
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap;
+}
+.eval-actions__count { font-size: 1.4rem; color: var(--text-black-soft); }
+.eval-actions__count strong { color: var(--sb-green); font-size: 1.8rem; }
+
+/* 결과 — 득표를 막대로 함께 보여줍니다. */
+.result-bar { margin-top: 6px; height: 6px; border-radius: 3px; background: var(--ceramic); overflow: hidden; }
+.result-bar span { display: block; height: 100%; background: var(--green-accent); border-radius: 3px; }
+.place {
+  display: inline-grid; place-items: center; min-width: 26px; height: 26px; padding: 0 6px;
+  border-radius: var(--radius-pill); background: var(--green-light); color: var(--sb-green);
+  font-weight: 700; font-size: 1.3rem;
+}
+.table tbody tr.is-top { background: var(--gold-lightest); }
+.table tbody tr.is-top .place { background: var(--gold); color: #fff; }
 
 /* --------------------------------------------------------------- toaster -- */
 .toaster { position: fixed; z-index: 300; left: 50%; bottom: 24px; transform: translateX(-50%); display: grid; gap: 10px; width: min(92vw, 440px); }

@@ -397,6 +397,145 @@ await t('회원을 관리자로 승격 가능', async () => {
   eq((await bob('/auth/members')).status, 200, '관리자 기능 사용 가능');
 });
 
+console.log('\n== 회원 삭제 ==');
+
+await t('일반 회원은 삭제 API 를 쓸 수 없음', async () => {
+  const r = await alice('/auth/members', { method: 'DELETE', body: { email: 'banned@example.com' } });
+  eq(r.status, 403, 'status');
+});
+
+await t('이용 정지되지 않은 회원은 지울 수 없음', async () => {
+  const r = await admin('/auth/members', { method: 'DELETE', body: { email: 'alice@example.com' } });
+  eq(r.status, 400, 'status');
+  const still = (await admin('/auth/members')).data.data.some((m) => m.email === 'alice@example.com');
+  eq(still, true, '아직 남아 있어야 함');
+});
+
+await t('자기 계정은 지울 수 없음', async () => {
+  const r = await admin('/auth/members', { method: 'DELETE', body: { email: ADMIN } });
+  eq(r.status, 400, 'status');
+});
+
+await t('관리자 계정은 권한을 내리기 전에는 못 지움', async () => {
+  const c = client();
+  await signup(c, 'exadmin@example.com', { name: '전관리자' });
+  await admin('/auth/members', { method: 'PATCH', body: { email: 'exadmin@example.com', role: 'admin' } });
+  await admin('/auth/members', { method: 'PATCH', body: { email: 'exadmin@example.com', status: 'blocked' } });
+
+  const blocked = await admin('/auth/members', { method: 'DELETE', body: { email: 'exadmin@example.com' } });
+  eq(blocked.status, 400, '관리자인 채로 삭제 시도');
+
+  await admin('/auth/members', { method: 'PATCH', body: { email: 'exadmin@example.com', role: 'member' } });
+  const after = await admin('/auth/members', { method: 'DELETE', body: { email: 'exadmin@example.com' } });
+  eq(after.status, 200, '권한을 내린 뒤');
+});
+
+await t('정지된 회원 삭제 — 제출물은 그대로 남김', async () => {
+  const c = client();
+  await signup(c, 'gone@example.com', { name: '떠난이' });
+  const sub = await c('/submissions', {
+    method: 'POST', body: { projectId, title: '떠나기 전 제출', body: '내용', files: [] },
+  });
+  eq(sub.status, 200, '제출');
+
+  await admin('/auth/members', { method: 'PATCH', body: { email: 'gone@example.com', status: 'blocked' } });
+  const r = await admin('/auth/members', { method: 'DELETE', body: { email: 'gone@example.com' } });
+  eq(r.status, 200, 'status');
+  eq(r.data.removedSubmissions, 0, '제출물은 건드리지 않음');
+
+  const roster = (await admin('/auth/members')).data.data;
+  eq(roster.some((m) => m.email === 'gone@example.com'), false, '명부에서 사라짐');
+  const subs = (await admin('/submissions')).data.data;
+  eq(subs.some((s) => s.id === sub.data.submission.id), true, '제출물은 남음');
+  eq((await c('/auth/me')).status, 401, '열려 있던 세션도 끊김');
+});
+
+await t('삭제한 이메일로 다시 가입할 수 있음', async () => {
+  const r = await signup(client(), 'gone@example.com', { name: '돌아온이' });
+  eq(r.status, 200, 'status');
+});
+
+await t('제출물까지 함께 지우면 첨부 원본도 정리됨', async () => {
+  const c = client();
+  await signup(c, 'purge@example.com', { name: '정리대상' });
+  const up = await c('/upload?name=purge.png', {
+    method: 'POST', raw: new Uint8Array([1, 2, 3]), headers: { 'X-File-Type': 'image/png' },
+  });
+  eq(up.status, 200, '업로드');
+  const sub = await c('/submissions', {
+    method: 'POST',
+    body: {
+      projectId,
+      title: '함께 지워질 제출',
+      body: '내용',
+      files: [{ id: 'f1', name: 'purge.png', size: 3, type: 'image/png', storage: 'r2', key: up.data.key }],
+    },
+  });
+  eq(sub.status, 200, '제출');
+  if (!bucket.objects.has(up.data.key)) throw new Error('사전 조건 실패');
+
+  await admin('/auth/members', { method: 'PATCH', body: { email: 'purge@example.com', status: 'blocked' } });
+  const r = await admin('/auth/members', {
+    method: 'DELETE', body: { email: 'purge@example.com', purgeSubmissions: true },
+  });
+  eq(r.status, 200, 'status');
+  eq(r.data.removedSubmissions, 1, '지운 제출물 수');
+
+  const subs = (await admin('/submissions')).data.data;
+  eq(subs.some((s) => s.id === sub.data.submission.id), false, '제출물');
+  if (bucket.objects.has(up.data.key)) throw new Error('첨부가 남음');
+});
+
+console.log('\n== 평가 투표 권한 ==');
+
+let evalSubId;
+await t('평가할 제출물 준비', async () => {
+  const r = await alice('/submissions', {
+    method: 'POST', body: { projectId, title: '평가용 제출', body: '내용', files: [] },
+  });
+  eq(r.status, 200, 'status');
+  evalSubId = r.data.submission.id;
+});
+
+await t('일반 회원은 평가 투표를 보지도 넣지도 못함', async () => {
+  eq((await alice('/evaluations')).status, 403, '조회');
+  const r = await alice('/evaluations', { method: 'POST', body: { projectId, picks: [] } });
+  eq(r.status, 403, '투표');
+});
+
+await t('관리자는 투표할 수 있고 없는 프로젝트는 거부', async () => {
+  eq((await admin('/evaluations')).status, 200, '조회');
+  const missing = await admin('/evaluations', { method: 'POST', body: { projectId: 'p_nope', picks: [] } });
+  eq(missing.status, 404, '없는 프로젝트');
+
+  const r = await admin('/evaluations', {
+    method: 'POST', body: { projectId, picks: [{ submissionId: evalSubId, rank: 1 }] },
+  });
+  eq(r.status, 200, '투표');
+  eq(r.data.ballot.picks[0].rank, 1, '순위');
+  eq(r.data.ballot.voter.email, ADMIN, '투표자는 세션에서 채움');
+});
+
+await t('회원을 지우면 그 사람이 넣은 표도 사라짐', async () => {
+  const c = client();
+  await signup(c, 'voter@example.com', { name: '투표자' });
+  await admin('/auth/members', { method: 'PATCH', body: { email: 'voter@example.com', role: 'admin' } });
+
+  const vote = await c('/evaluations', {
+    method: 'POST', body: { projectId, picks: [{ submissionId: evalSubId, rank: 2 }] },
+  });
+  eq(vote.status, 200, '투표');
+  const before = (await admin('/evaluations')).data.data;
+  eq(before.some((b) => b.voter.email === 'voter@example.com'), true, '사전 조건');
+
+  await admin('/auth/members', { method: 'PATCH', body: { email: 'voter@example.com', role: 'member' } });
+  await admin('/auth/members', { method: 'PATCH', body: { email: 'voter@example.com', status: 'blocked' } });
+  eq((await admin('/auth/members', { method: 'DELETE', body: { email: 'voter@example.com' } })).status, 200, '삭제');
+
+  const after = (await admin('/evaluations')).data.data;
+  eq(after.some((b) => b.voter.email === 'voter@example.com'), false, '표가 남아 있음');
+});
+
 console.log('\n== 파일 접근 ==');
 
 await t('비로그인은 파일을 받을 수 없음', async () => {

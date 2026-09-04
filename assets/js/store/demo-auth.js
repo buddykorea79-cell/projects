@@ -75,7 +75,9 @@ function publicMember(m) {
 }
 
 export class DemoAuth {
-  constructor() {
+  /** @param {object|null} store 회원을 지울 때 그 사람의 제출물·표까지 정리하기 위해 씁니다. */
+  constructor(store = null) {
+    this.store = store;
     this.supported = true;
     /** 화면에 "시연용" 이라고 표시하기 위한 표식입니다. */
     this.simulated = true;
@@ -189,6 +191,38 @@ export class DemoAuth {
     if (changes.status === 'active' || changes.status === 'blocked') m.status = changes.status;
     write(MEMBERS_KEY, list);
     return publicMember(m);
+  }
+
+  /**
+   * 회원 삭제 — R2 모드의 서버 규칙을 그대로 흉내냅니다.
+   * 이용 정지된 일반 회원만, 자기 자신은 제외.
+   */
+  async deleteMember(email, { purgeSubmissions = false } = {}) {
+    const e = normEmail(email);
+    if (e === normEmail(this._me?.email)) throw new Error('자기 계정은 삭제할 수 없습니다.');
+
+    const list = this.members();
+    const m = list.find((x) => normEmail(x.email) === e);
+    if (!m) throw new Error('해당 회원을 찾을 수 없습니다.');
+    if (adminEmails().has(e) || m.role === 'admin') {
+      throw new Error('관리자 계정은 삭제할 수 없습니다. 관리자 권한을 먼저 해제하세요.');
+    }
+    if ((m.status || 'active') !== 'blocked') {
+      throw new Error('이용 정지된 회원만 삭제할 수 있습니다. 먼저 이용을 정지하세요.');
+    }
+
+    let removedSubmissions = 0;
+    if (purgeSubmissions && this.store) {
+      const subs = await this.store.listSubmissions({ email: m.email });
+      for (const s of subs) await this.store.deleteSubmission(s.id);
+      removedSubmissions = subs.length;
+    }
+    // 계정이 없어졌으니 그 사람이 넣은 표도 남겨둘 이유가 없습니다.
+    await this.store?.dropVoter?.(e);
+
+    write(MEMBERS_KEY, list.filter((x) => normEmail(x.email) !== e));
+    if (read(SESSION_KEY, null) === e) write(SESSION_KEY, null);
+    return { ok: true, removedSubmissions };
   }
 
   async resetPassword(email) {

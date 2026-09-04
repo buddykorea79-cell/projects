@@ -30,6 +30,7 @@
  *   GET    /auth/me
  *   GET    /auth/members            (관리자)
  *   PATCH  /auth/members            (관리자) 역할·차단
+ *   DELETE /auth/members            (관리자) 정지된 회원 삭제
  *   POST   /auth/members/reset      (관리자) 임시 비밀번호 발급
  *   POST   /auth/reset/confirm      (공개) 재설정 링크(토큰)로 새 비밀번호 설정
  *   POST   /telegram/webhook        (텔레그램) 재설정 버튼 콜백 — Hermes
@@ -39,6 +40,10 @@
  *   PATCH  /submissions/:id         (본인·관리자)
  *   DELETE /submissions/:id         (본인·관리자)
  *   POST   /upload                  (로그인)
+ *   GET    /evaluations             (관리자) 평가 투표용지 전체
+ *   POST   /evaluations             (관리자) 내 투표용지 등록·수정
+ *   PUT    /evaluations             (관리자) 백업 복원
+ *   DELETE /evaluations/:projectId  (관리자) 내 투표 취소 (?scope=all 이면 전체 초기화)
  *   GET    /posts                   (로그인) 소통방 목록 — 공지가 맨 위
  *   POST   /posts                   (로그인) 글쓰기
  *   PATCH  /posts/:id               (본인 또는 관리자) — pinned 는 관리자만
@@ -150,6 +155,7 @@ async function route(request, env, url, path, cors, waitUntil) {
       return json({ data: list.map(publicMember) }, 200, cors);
     }
     if (method === 'PATCH') return patchMember(request, env, admin.member, cors);
+    if (method === 'DELETE') return removeMember(request, env, admin.member, cors);
     return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
   }
   if (path === '/auth/members/reset' && method === 'POST') {
@@ -201,6 +207,24 @@ async function route(request, env, url, path, cors, waitUntil) {
   if (subMatch) {
     if (method === 'PATCH') return patchSubmission(request, env, subMatch[1], cors);
     if (method === 'DELETE') return removeSubmission(request, env, subMatch[1], cors);
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
+
+  /* -------------------------------------------------------------- 평가 -- */
+
+  if (path === '/evaluations') {
+    const admin = await requireAdmin(request, env);
+    if (admin.error) return json({ message: admin.error }, admin.status, cors);
+    if (method === 'GET') return listEvaluations(env, cors);
+    if (method === 'POST') return castEvaluation(request, env, admin.member, cors);
+    if (method === 'PUT') return restoreEvaluations(request, env, cors);
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
+  const evalMatch = path.match(/^\/evaluations\/([A-Za-z0-9_-]{1,64})$/);
+  if (evalMatch) {
+    const admin = await requireAdmin(request, env);
+    if (admin.error) return json({ message: admin.error }, admin.status, cors);
+    if (method === 'DELETE') return removeEvaluation(env, url, evalMatch[1], admin.member, cors);
     return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
   }
 
@@ -452,6 +476,68 @@ async function patchMember(request, env, admin, cors) {
   });
   if (!result.ok) return json({ message: '해당 회원을 찾을 수 없습니다.' }, 404, cors);
   return json({ member: publicMember(withRole(updated, env)) }, 200, cors);
+}
+
+/**
+ * 회원 삭제 (관리자).
+ *
+ * 실수로 지우는 사고를 막기 위해 **이용 정지된 계정만** 지울 수 있습니다.
+ * 자기 자신과 관리자 계정은 대상이 아닙니다 — 관리자를 지우려면 먼저 권한을
+ * 해제하고 이용을 정지시켜야 합니다.
+ *
+ * 제출물은 기본적으로 남깁니다. 프로젝트의 기록이라 계정을 지웠다고 해서
+ * 함께 사라지면 곤란하기 때문입니다. `purgeSubmissions` 를 주면 제출물과
+ * 첨부 원본까지 함께 지웁니다. 그 사람이 넣은 평가 투표는 언제나 함께 지웁니다.
+ */
+async function removeMember(request, env, admin, cors) {
+  const body = await request.json().catch(() => null);
+  const email = normEmail(body?.email);
+  const purge = Boolean(body?.purgeSubmissions);
+  if (!email) return json({ message: '대상 이메일이 필요합니다.' }, 400, cors);
+  if (email === normEmail(admin.email)) {
+    return json({ message: '자기 계정은 삭제할 수 없습니다.' }, 400, cors);
+  }
+
+  const { list } = await readMembers(env);
+  const target = findMember(list, email);
+  if (!target) return json({ message: '해당 회원을 찾을 수 없습니다.' }, 404, cors);
+  if (withRole(target, env).role === 'admin') {
+    return json({ message: '관리자 계정은 삭제할 수 없습니다. 관리자 권한을 먼저 해제하세요.' }, 400, cors);
+  }
+  if ((target.status || 'active') !== 'blocked') {
+    return json({ message: '이용 정지된 회원만 삭제할 수 있습니다. 먼저 이용을 정지하세요.' }, 400, cors);
+  }
+
+  const result = await updateMembers(env, (l) => (
+    findMember(l, email) ? l.filter((m) => normEmail(m.email) !== email) : null
+  ));
+  if (!result.ok) return json({ message: '해당 회원을 찾을 수 없습니다.' }, 404, cors);
+
+  let removedSubmissions = 0;
+  if (purge) {
+    const { data: subs } = await readIndex(env, 'submissions');
+    const mine = subs.filter((s) => normEmail(s.author?.email) === email);
+    removedSubmissions = mine.length;
+    if (mine.length) {
+      const ids = new Set(mine.map((s) => s.id));
+      await mutateIndex(env, 'submissions', (l) => l.filter((s) => !ids.has(s.id)));
+      for (const s of mine) {
+        for (const f of s.files || []) {
+          if (f.key) await env.BUCKET.delete(f.key).catch(() => {});
+        }
+      }
+      await dropPicks(env, ids);
+    }
+  }
+
+  // 계정이 없어졌으니 그 사람이 넣은 표도 남겨둘 이유가 없습니다.
+  await mutateIndex(env, 'evaluations', (l) => (
+    l.some((b) => normEmail(b.voter?.email) === email)
+      ? l.filter((b) => normEmail(b.voter?.email) !== email)
+      : null
+  ));
+
+  return json({ ok: true, removedSubmissions }, 200, cors);
 }
 
 /**
@@ -781,7 +867,142 @@ async function removeSubmission(request, env, id, cors) {
   for (const f of existing.files || []) {
     if (f.key) await env.BUCKET.delete(f.key).catch(() => {});
   }
+  // 사라진 제출물에 찍힌 표가 결과 화면에 유령으로 남지 않게 함께 걷어냅니다.
+  await dropPicks(env, new Set([id]));
   return json({ ok: true }, 200, cors);
+}
+
+/* ============================================================ 평가 == */
+
+/**
+ * 제출물 평가(투표).
+ *
+ * 관리자가 한 프로젝트의 제출물을 훑어보며 마음에 드는 것을 고르고, 원하면
+ * 순위(1~5위)까지 매기는 기능입니다. 투표용지는 **관리자 한 사람당 프로젝트마다
+ * 하나**이고, 다시 내면 앞의 것을 덮어씁니다. 집계는 화면에서 합니다 —
+ * 서버는 누가 무엇에 표를 줬는지만 정확히 보관합니다.
+ *
+ *   data/evaluations.json
+ *   [{ projectId, voter:{email,name,institution}, picks:[{submissionId, rank}], … }]
+ *
+ * 제출물과 마찬가지로 색인은 서버가 소유합니다. 브라우저는 자기 투표용지만
+ * 바꿀 수 있고, 남의 표를 고치거나 지울 수 없습니다.
+ */
+const MAX_RANK = 5;
+
+/**
+ * 투표용지 정리 — 그 프로젝트의 제출물만, 같은 제출물은 한 번만,
+ * 순위는 1~MAX_RANK 안에서 서로 겹치지 않게. 규칙을 벗어난 순위는 버리고
+ * "순위 없는 표"로 남깁니다(표 자체를 버리면 사용자가 이유를 알기 어렵습니다).
+ */
+function normalizePicks(picks, validIds) {
+  const out = [];
+  const seenId = new Set();
+  const seenRank = new Set();
+  for (const p of Array.isArray(picks) ? picks : []) {
+    const submissionId = String(p?.submissionId || '');
+    if (!validIds.has(submissionId) || seenId.has(submissionId)) continue;
+    seenId.add(submissionId);
+
+    const raw = Number(p?.rank);
+    const ok = Number.isInteger(raw) && raw >= 1 && raw <= MAX_RANK && !seenRank.has(raw);
+    if (ok) seenRank.add(raw);
+    out.push({ submissionId, rank: ok ? raw : null });
+  }
+  return out;
+}
+
+/** 지워진 제출물에 찍힌 표를 모든 투표용지에서 걷어냅니다. */
+async function dropPicks(env, ids) {
+  await mutateIndex(env, 'evaluations', (list) => {
+    if (!list.some((b) => (b.picks || []).some((p) => ids.has(p.submissionId)))) return null;
+    return list.map((b) => ({
+      ...b,
+      picks: (b.picks || []).filter((p) => !ids.has(p.submissionId)),
+    }));
+  });
+}
+
+async function listEvaluations(env, cors) {
+  const { data } = await readIndex(env, 'evaluations');
+  return json({ data }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+async function castEvaluation(request, env, me, cors) {
+  const body = await request.json().catch(() => null);
+  const projectId = String(body?.projectId || '');
+  if (!projectId) return json({ message: '프로젝트가 필요합니다.' }, 400, cors);
+
+  const [{ data: projects }, { data: subs }] = await Promise.all([
+    readIndex(env, 'projects'), readIndex(env, 'submissions'),
+  ]);
+  if (!projects.some((p) => p.id === projectId)) {
+    return json({ message: '프로젝트를 찾을 수 없습니다.' }, 404, cors);
+  }
+
+  const validIds = new Set(subs.filter((s) => s.projectId === projectId).map((s) => s.id));
+  const picks = normalizePicks(body?.picks, validIds);
+  const email = normEmail(me.email);
+  const now = new Date().toISOString();
+
+  let saved = null;
+  await mutateIndex(env, 'evaluations', (list) => {
+    const i = list.findIndex((b) => b.projectId === projectId && normEmail(b.voter?.email) === email);
+    saved = {
+      projectId,
+      voter: { email, name: me.name, institution: me.institution || '' },
+      picks,
+      createdAt: i >= 0 ? (list[i].createdAt || now) : now,
+      updatedAt: now,
+    };
+    if (i >= 0) list[i] = saved; else list.push(saved);
+    return list;
+  });
+
+  return json({ ballot: saved }, 200, cors);
+}
+
+/** 내 투표만 취소합니다. `?scope=all` 이면 그 프로젝트의 표를 전부 지웁니다. */
+async function removeEvaluation(env, url, projectId, me, cors) {
+  const all = url.searchParams.get('scope') === 'all';
+  const email = normEmail(me.email);
+  const gone = (b) => b.projectId === projectId && (all || normEmail(b.voter?.email) === email);
+
+  const result = await mutateIndex(env, 'evaluations', (list) => (
+    list.some(gone) ? list.filter((b) => !gone(b)) : null
+  ));
+  return json({ ok: true, removed: result.ok }, 200, cors);
+}
+
+/** 백업 복원 — 평가 색인을 통째로 바꿉니다(제출물 복원과 같은 원칙). */
+async function restoreEvaluations(request, env, cors) {
+  const body = await request.json().catch(() => null);
+  if (!body || !Array.isArray(body.data)) {
+    return json({ message: '잘못된 요청 형식입니다.' }, 400, cors);
+  }
+
+  const now = new Date().toISOString();
+  const clean = body.data
+    .filter((b) => b && typeof b === 'object' && typeof b.projectId === 'string' && b.voter?.email)
+    .map((b) => ({
+      projectId: String(b.projectId).slice(0, 64),
+      voter: {
+        email: normEmail(b.voter.email),
+        name: String(b.voter.name || '').slice(0, 60),
+        institution: String(b.voter.institution || '').slice(0, 120),
+      },
+      picks: (Array.isArray(b.picks) ? b.picks : [])
+        .filter((p) => p && typeof p.submissionId === 'string')
+        .map((p) => ({
+          submissionId: String(p.submissionId).slice(0, 64),
+          rank: Number.isInteger(p.rank) && p.rank >= 1 && p.rank <= MAX_RANK ? p.rank : null,
+        })),
+      createdAt: b.createdAt || now,
+      updatedAt: b.updatedAt || b.createdAt || now,
+    }));
+
+  await mutateIndex(env, 'evaluations', () => clean);
+  return json({ ok: true, count: clean.length }, 200, cors);
 }
 
 /* ========================================================== 소통방 == */

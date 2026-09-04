@@ -8,7 +8,7 @@
 import { createHash } from 'crypto';
 import { createServer } from 'http';
 import { readFile } from 'fs/promises';
-import { extname, join, normalize } from 'path';
+import { extname, join, normalize, sep } from 'path';
 import { handleApi } from '../shared/r2api.js';
 
 /* ------------------------------------------------------------- 버킷 스텁 -- */
@@ -128,7 +128,9 @@ export async function startServer({ root, env = {}, port = 0 }) {
 
     // 정적 파일
     const rel = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
-    const file = join(root, rel === '/' ? 'index.html' : rel);
+    // 윈도우에서는 normalize('/') 가 역슬래시라, 루트 판정을 구분자 양쪽으로 봅니다.
+    const isRoot = rel === '/' || rel === sep || rel === '';
+    const file = join(root, isRoot ? 'index.html' : rel);
     try {
       const data = await readFile(file);
       res.writeHead(200, { 'Content-Type': MIME[extname(file)] || 'application/octet-stream' });

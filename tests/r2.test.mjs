@@ -8,6 +8,7 @@
 import { MockBucket } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
 import { R2Store } from '../assets/js/store/r2.js';
+import { tally, pointsFor, MAX_RANK } from '../assets/js/views/evaluate.js';
 
 const ORIGIN = 'https://site.test';
 const ADMIN = 'aireader@mois.go.kr';
@@ -248,11 +249,147 @@ await t('강의자료와 제출물 색인이 분리됨', async () => {
   if (!(await store.listSubmissions()).length) throw new Error('제출물이 사라짐');
 });
 
-await t('백업 내보내기에 세 종류가 모두 포함', async () => {
+await t('백업 내보내기에 네 종류가 모두 포함', async () => {
   const dump = await store.exportAll();
-  for (const k of ['projects', 'submissions', 'materials']) {
+  for (const k of ['projects', 'submissions', 'materials', 'evaluations']) {
     if (!Array.isArray(dump[k])) throw new Error(`${k} 누락`);
   }
+});
+
+console.log('\n== 평가 투표 ==');
+
+let evalP = null;
+let evalA = null;
+let evalB = null;
+
+await t('투표를 저장하고 다시 읽음 — 순위까지', async () => {
+  evalP = await store.saveProject({ title: '평가 대상', status: 'open' });
+  evalA = await store.saveSubmission({ projectId: evalP.id, title: 'A안', body: '설명', files: [] });
+  evalB = await store.saveSubmission({ projectId: evalP.id, title: 'B안', body: '설명', files: [] });
+
+  await store.saveEvaluation(evalP.id, [
+    { submissionId: evalA.id, rank: 1 },
+    { submissionId: evalB.id, rank: null },
+  ]);
+  const ballots = await store.listEvaluations({ projectId: evalP.id });
+  eq(ballots.length, 1, '투표용지 수');
+  eq(ballots[0].picks.length, 2, '고른 수');
+  eq(ballots[0].picks.find((x) => x.submissionId === evalA.id).rank, 1, 'A 순위');
+  eq(ballots[0].voter.email, ADMIN, '투표자');
+});
+
+await t('같은 사람이 다시 내면 앞의 표를 덮어씀', async () => {
+  await store.saveEvaluation(evalP.id, [{ submissionId: evalB.id, rank: 2 }]);
+  const ballots = await store.listEvaluations({ projectId: evalP.id });
+  eq(ballots.length, 1, '투표용지는 한 장');
+  eq(ballots[0].picks.length, 1, '고른 수');
+  eq(ballots[0].picks[0].submissionId, evalB.id, '대상');
+});
+
+await t('다른 프로젝트의 제출물에 준 표는 버림', async () => {
+  const other = await store.listSubmissions({ projectId: project.id });
+  await store.saveEvaluation(evalP.id, [
+    { submissionId: evalA.id, rank: 1 },
+    { submissionId: other[0].id, rank: 2 },
+  ]);
+  const picks = (await store.listEvaluations({ projectId: evalP.id }))[0].picks;
+  eq(picks.length, 1, '남은 표');
+  eq(picks[0].submissionId, evalA.id, '대상');
+});
+
+await t('같은 순위를 두 번 쓰면 뒤엣것은 순위 없음으로', async () => {
+  await store.saveEvaluation(evalP.id, [
+    { submissionId: evalA.id, rank: 1 },
+    { submissionId: evalB.id, rank: 1 },
+  ]);
+  const picks = (await store.listEvaluations({ projectId: evalP.id }))[0].picks;
+  eq(picks.find((x) => x.submissionId === evalA.id).rank, 1, 'A');
+  eq(picks.find((x) => x.submissionId === evalB.id).rank, null, 'B');
+});
+
+await t('범위를 벗어난 순위는 순위 없음으로', async () => {
+  await store.saveEvaluation(evalP.id, [{ submissionId: evalA.id, rank: 99 }]);
+  const picks = (await store.listEvaluations({ projectId: evalP.id }))[0].picks;
+  eq(picks[0].rank, null, '순위');
+});
+
+await t('제출물을 지우면 거기 찍힌 표도 사라짐', async () => {
+  await store.saveEvaluation(evalP.id, [
+    { submissionId: evalA.id, rank: 1 },
+    { submissionId: evalB.id, rank: 2 },
+  ]);
+  await store.deleteSubmission(evalB.id);
+  const picks = (await store.listEvaluations({ projectId: evalP.id }))[0].picks;
+  eq(picks.length, 1, '남은 표');
+  eq(picks[0].submissionId, evalA.id, '대상');
+});
+
+await t('내 투표 취소', async () => {
+  await store.deleteEvaluation(evalP.id);
+  eq((await store.listEvaluations({ projectId: evalP.id })).length, 0, '투표용지');
+});
+
+await t('프로젝트를 지우면 투표용지도 사라짐', async () => {
+  await store.saveEvaluation(evalP.id, [{ submissionId: evalA.id, rank: 1 }]);
+  eq((await store.listEvaluations({ projectId: evalP.id })).length, 1, '사전 조건');
+  await store.deleteProject(evalP.id);
+  eq((await store.listEvaluations({ projectId: evalP.id })).length, 0, '투표용지');
+});
+
+console.log('\n== 평가 집계 ==');
+
+const fakeSubs = [
+  { id: 'a', createdAt: '1', title: 'A' },
+  { id: 'b', createdAt: '2', title: 'B' },
+  { id: 'c', createdAt: '3', title: 'C' },
+];
+
+await t('순위 점수는 1위가 가장 높고 순위 없는 표는 0점', () => {
+  eq(pointsFor(1), MAX_RANK, '1위');
+  eq(pointsFor(MAX_RANK), 1, '꼴찌 순위');
+  eq(pointsFor(null), 0, '순위 없음');
+  eq(pointsFor(MAX_RANK + 1), 0, '범위 밖');
+});
+
+await t('순위를 매긴 표가 있으면 순위점수로 줄을 세움', () => {
+  const { rows, ranked } = tally(fakeSubs, [
+    { voter: { name: '갑' }, picks: [{ submissionId: 'a', rank: 1 }, { submissionId: 'b', rank: 2 }] },
+    { voter: { name: '을' }, picks: [{ submissionId: 'b', rank: 1 }] },
+  ]);
+  eq(ranked, true, '순위 모드');
+  eq(rows[0].sub.id, 'b', '1위');
+  eq(rows[0].points, MAX_RANK + (MAX_RANK - 1), 'B 점수');
+  eq(rows[0].place, 1, 'B 등수');
+  eq(rows[1].sub.id, 'a', '2위');
+  eq(rows[2].place, null, '무득표는 등수 없음');
+});
+
+await t('아무도 순위를 안 매기면 득표수로만 줄을 세움', () => {
+  const { rows, ranked } = tally(fakeSubs, [
+    { voter: { name: '갑' }, picks: [{ submissionId: 'c', rank: null }] },
+    { voter: { name: '을' }, picks: [{ submissionId: 'c', rank: null }, { submissionId: 'a', rank: null }] },
+  ]);
+  eq(ranked, false, '득표 모드');
+  eq(rows[0].sub.id, 'c', '최다 득표');
+  eq(rows[0].votes, 2, '득표수');
+  eq(rows[1].place, 2, '동점 아닌 2위');
+});
+
+await t('성적이 같으면 같은 등수', () => {
+  const { rows } = tally(fakeSubs, [
+    { voter: { name: '갑' }, picks: [{ submissionId: 'a', rank: null }, { submissionId: 'b', rank: null }] },
+  ]);
+  eq(rows[0].place, 1, '첫째');
+  eq(rows[1].place, 1, '둘째도 공동 1위');
+});
+
+await t('지워진 제출물에 남은 표는 집계에서 무시', () => {
+  const { rows } = tally(fakeSubs, [
+    { voter: { name: '갑' }, picks: [{ submissionId: 'sold', rank: 1 }, { submissionId: 'a', rank: 2 }] },
+  ]);
+  eq(rows.length, 3, '줄 수');
+  eq(rows[0].sub.id, 'a', '살아있는 표만');
+  eq(rows.reduce((n, r) => n + r.votes, 0), 1, '총 득표');
 });
 
 console.log('\n== CORS ==');

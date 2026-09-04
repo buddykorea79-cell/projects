@@ -3,6 +3,7 @@
  *
  *   data/projects.json      프로젝트 목록
  *   data/submissions.json   제출물 색인(메타데이터)
+ *   data/evaluations.json   평가 투표용지
  *   uploads/<제출ID>/<파일명>  첨부 파일 원본
  *
  * 읽기 : raw.githubusercontent.com — 인증 없이 누구나. (공개 레포 기준)
@@ -25,7 +26,7 @@ export class GitHubStore {
     this.cfg = cfg;
     this.shaCache = new Map();
     // GitHub 모드에도 서버가 없어 회원 기능은 흉내입니다(시연용).
-    this.auth = new DemoAuth();
+    this.auth = new DemoAuth(this);
   }
 
   /* ---------------------------------------------------------- 토큰 관리 */
@@ -199,6 +200,7 @@ export class GitHubStore {
   get submissionsPath() { return `${this.cfg.dataDir}/submissions.json`; }
   get materialsPath()   { return `${this.cfg.dataDir}/materials.json`; }
   get postsPath()       { return `${this.cfg.dataDir}/posts.json`; }
+  get evaluationsPath() { return `${this.cfg.dataDir}/evaluations.json`; }
 
   /**
    * 새 파일들을 uploads/ 아래에 커밋하고 레코드의 files 배열을 채웁니다.
@@ -341,6 +343,7 @@ export class GitHubStore {
   async deleteProject(id) {
     const subs = await this.listSubmissions({ projectId: id });
     for (const s of subs) await this.deleteSubmission(s.id);
+    await this.deleteEvaluation(id, { all: true });
     await this.mutateJSON(this.projectsPath, [], (list) =>
       (Array.isArray(list) ? list : []).filter((p) => p.id !== id),
     `chore(projects): remove ${id}`);
@@ -393,6 +396,74 @@ export class GitHubStore {
     await this.mutateJSON(this.submissionsPath, [], (list) =>
       (Array.isArray(list) ? list : []).filter((s) => s.id !== id),
     `chore(submissions): remove ${id}`);
+    // 사라진 제출물에 찍힌 표는 결과 화면에 유령으로 남지 않도록 걷어냅니다.
+    await this.dropPicks(new Set([id]));
+  }
+
+  /* -------------------------------------------------------------- 평가 -- */
+
+  async listEvaluations({ projectId = null } = {}) {
+    const rows = await this.readJSON(this.evaluationsPath, []);
+    const out = Array.isArray(rows) ? rows : [];
+    return projectId ? out.filter((b) => b.projectId === projectId) : out;
+  }
+
+  async saveEvaluation(projectId, picks) {
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+    const now = new Date().toISOString();
+    const email = String(me.email || '').toLowerCase();
+
+    let saved = null;
+    await this.mutateJSON(this.evaluationsPath, [], (list) => {
+      const arr = Array.isArray(list) ? list : [];
+      const i = arr.findIndex((b) => b.projectId === projectId
+        && String(b.voter?.email || '').toLowerCase() === email);
+      saved = {
+        projectId,
+        voter: { email, name: me.name, institution: me.institution || '' },
+        picks: Array.isArray(picks) ? picks : [],
+        createdAt: i >= 0 ? (arr[i].createdAt || now) : now,
+        updatedAt: now,
+      };
+      if (i >= 0) arr[i] = saved; else arr.push(saved);
+      return arr;
+    }, `chore(evaluations): vote on ${projectId}`);
+
+    return saved;
+  }
+
+  async deleteEvaluation(projectId, { all = false } = {}) {
+    const email = String(this.auth?.me()?.email || '').toLowerCase();
+    const gone = (b) => b.projectId === projectId
+      && (all || String(b.voter?.email || '').toLowerCase() === email);
+
+    await this.mutateJSON(this.evaluationsPath, [], (list) =>
+      (Array.isArray(list) ? list : []).filter((b) => !gone(b)),
+    `chore(evaluations): clear ${projectId}`);
+  }
+
+  /** 지워진 제출물에 찍힌 표를 모든 투표용지에서 걷어냅니다. */
+  async dropPicks(ids) {
+    const rows = await this.listEvaluations();
+    if (!rows.some((b) => (b.picks || []).some((p) => ids.has(p.submissionId)))) return;
+    await this.mutateJSON(this.evaluationsPath, [], (list) =>
+      (Array.isArray(list) ? list : []).map((b) => ({
+        ...b,
+        picks: (b.picks || []).filter((p) => !ids.has(p.submissionId)),
+      })),
+    'chore(evaluations): drop removed submissions');
+  }
+
+  /** 탈퇴·삭제된 회원이 넣은 투표용지를 지웁니다. */
+  async dropVoter(email) {
+    const e = String(email || '').toLowerCase();
+    const rows = await this.listEvaluations();
+    if (!rows.some((b) => String(b.voter?.email || '').toLowerCase() === e)) return;
+    await this.mutateJSON(this.evaluationsPath, [], (list) =>
+      (Array.isArray(list) ? list : [])
+        .filter((b) => String(b.voter?.email || '').toLowerCase() !== e),
+    'chore(evaluations): drop removed member');
   }
 
   /* --------------------------------------------------------- materials */
@@ -461,6 +532,7 @@ export class GitHubStore {
       submissions: await this.listSubmissions(),
       materials: await this.listMaterials(),
       posts: await this.listPosts(),
+      evaluations: await this.listEvaluations(),
     };
   }
 
@@ -476,6 +548,10 @@ export class GitHubStore {
     }
     if (dump.posts) {
       await this.mutateJSON(this.postsPath, [], () => dump.posts, 'chore(posts): import');
+    }
+    if (dump.evaluations) {
+      await this.mutateJSON(this.evaluationsPath, [], () => dump.evaluations,
+        'chore(evaluations): import');
     }
   }
 }
