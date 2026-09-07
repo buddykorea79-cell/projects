@@ -15,7 +15,7 @@ import { boardView, postView, postFormView } from './views/board.js';
 import { voteHomeView, voteProjectView } from './views/vote.js';
 import { loginView, signupView, accountView, forgotView, resetView } from './views/account.js';
 import {
-  adminView, projectFormView, adminSubmissionsView, materialFormView, membersView,
+  adminView, projectFormView, adminSubmissionsView, materialFormView, membersView, rosterView,
 } from './views/admin.js';
 
 const main = $('#main');
@@ -195,6 +195,7 @@ function registerRoutes() {
   R.route('/admin/project/:id', view((m, p) => projectFormView(m, p), { admin: true }));
   R.route('/admin/material/:id', view((m, p) => materialFormView(m, p), { admin: true }));
   R.route('/admin/submissions/:projectId', view((m, p) => adminSubmissionsView(m, p), { admin: true }));
+  R.route('/admin/roster/:projectId', view((m, p) => rosterView(m, p), { admin: true }));
 
   R.setNotFound(view((m) => {
     m.innerHTML = `<section class="section"><div class="wrap">${emptyState({

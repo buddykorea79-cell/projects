@@ -3,6 +3,7 @@
  *
  *   data/projects.json      프로젝트 목록
  *   data/submissions.json   제출물 색인(메타데이터)
+ *   data/votes.json         상호 투표 (표 한 줄씩)
  *   uploads/<제출ID>/<파일명>  첨부 파일 원본
  *
  * 읽기 : raw.githubusercontent.com — 인증 없이 누구나. (공개 레포 기준)
@@ -26,7 +27,7 @@ export class GitHubStore {
     this.cfg = cfg;
     this.shaCache = new Map();
     // GitHub 모드에도 서버가 없어 회원 기능은 흉내입니다(시연용).
-    this.auth = new DemoAuth();
+    this.auth = new DemoAuth(this);
   }
 
   /* ---------------------------------------------------------- 토큰 관리 */
@@ -343,6 +344,12 @@ export class GitHubStore {
   async deleteProject(id) {
     const subs = await this.listSubmissions({ projectId: id });
     for (const s of subs) await this.deleteSubmission(s.id);
+    // 제출물이 하나도 없던 프로젝트라도 표가 남지 않게 한 번 더 훑습니다.
+    if ((await this.listVotes()).some((v) => v.projectId === id)) {
+      await this.mutateJSON(this.votesPath, [], (list) =>
+        (Array.isArray(list) ? list : []).filter((v) => v.projectId !== id),
+      `chore(votes): remove votes for project ${id}`);
+    }
     await this.mutateJSON(this.projectsPath, [], (list) =>
       (Array.isArray(list) ? list : []).filter((p) => p.id !== id),
     `chore(projects): remove ${id}`);
@@ -441,6 +448,17 @@ export class GitHubStore {
     }, `${on ? 'feat' : 'chore'}(votes): ${on ? 'add' : 'remove'} vote on ${submissionId}`);
 
     return summarizeVotes(project, next, me);
+  }
+
+  /** 삭제된 회원이 넣은 표를 걷어냅니다 (DemoAuth.deleteMember 가 부릅니다). */
+  async dropVoter(email) {
+    const e = String(email || '').trim().toLowerCase();
+    const rows = await this.listVotes();
+    if (!rows.some((v) => String(v.voter || '').toLowerCase() === e)) return;
+    await this.mutateJSON(this.votesPath, [], (list) =>
+      (Array.isArray(list) ? list : [])
+        .filter((v) => String(v.voter || '').toLowerCase() !== e),
+    'chore(votes): drop votes by removed member');
   }
 
   /* --------------------------------------------------------- materials */

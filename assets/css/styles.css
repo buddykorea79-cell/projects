@@ -271,6 +271,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .badge--gold   { background: transparent; border-color: var(--gold); color: var(--gold); }
 .badge--soft   { background: var(--neutral-cool); color: var(--text-black-soft); border-color: var(--hairline); }
 .badge--due    { background: var(--red-tint); color: var(--red); }
+/* display 를 직접 정해 뒀으므로 hidden 을 다시 눌러 줘야 실제로 숨겨집니다. */
+.badge[hidden] { display: none; }
 
 /* ------------------------------------------------------------ hero band -- */
 .hero { background: var(--neutral-warm); padding-block: var(--space-6) var(--space-7); }

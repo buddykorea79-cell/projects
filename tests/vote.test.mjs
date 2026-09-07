@@ -260,47 +260,27 @@ await t('제출물을 지우면 거기 들어간 표도 함께 사라짐', async
 });
 
 console.log('\n== 회원 삭제 ==');
+// 삭제 권한 규칙(관리자만·정지된 일반 회원만·자기 계정 불가)은 auth.test.mjs 가 봅니다.
+// 여기서는 지워진 회원의 표가 집계에서 함께 빠지는지만 확인합니다.
 
-await t('일반 회원은 회원을 지울 수 없음', async () => {
-  const r = await alice('/auth/members', { method: 'DELETE', body: { email: 'bob@example.com' } });
-  eq(r.status, 403, 'status');
-});
+await t('회원을 지우면 그 사람이 넣은 표도 집계에서 사라짐', async () => {
+  const aliceSub = await subId('alice');
+  const before = (await admin(`/votes?projectId=p_vote`)).data.summary;
+  const had = before.counts[aliceSub] || 0;
 
-await t('이용중인 회원은 지울 수 없음', async () => {
-  const r = await admin('/auth/members', { method: 'DELETE', body: { email: 'bob@example.com' } });
-  eq(r.status, 400, 'status');
-  eq(r.data.message.includes('정지'), true, '문구');
-});
+  eq((await carol('/votes', { method: 'POST', body: { submissionId: aliceSub } })).status, 200, '캐롤 투표');
+  const mid = (await admin('/votes?projectId=p_vote')).data.summary;
+  eq(mid.counts[aliceSub], had + 1, '투표 반영');
 
-await t('자기 계정은 지울 수 없음', async () => {
-  const r = await admin('/auth/members', { method: 'DELETE', body: { email: ADMIN } });
-  eq(r.status, 400, 'status');
-});
-
-await t('정지시킨 회원은 지워지고 명부에서 사라짐', async () => {
   eq((await admin('/auth/members', {
-    method: 'PATCH', body: { email: 'bob@example.com', status: 'blocked' },
+    method: 'PATCH', body: { email: 'carol@example.com', status: 'blocked' },
   })).status, 200, '정지');
+  eq((await admin('/auth/members', {
+    method: 'DELETE', body: { email: 'carol@example.com' },
+  })).status, 200, '삭제');
 
-  const r = await admin('/auth/members', { method: 'DELETE', body: { email: 'bob@example.com' } });
-  eq(r.status, 200, '삭제');
-
-  const list = (await admin('/auth/members')).data.data;
-  eq(list.some((m) => m.email === 'bob@example.com'), false, '명부에 남음');
-});
-
-await t('지워진 계정으로는 로그인할 수 없고, 다시 가입할 수 있음', async () => {
-  const ghost = client();
-  const login = await ghost('/auth/login', {
-    method: 'POST', body: { email: 'bob@example.com', password: 'hunter2!hunter2' },
-  });
-  eq(login.status, 401, '로그인');
-  eq((await signup(client(), 'bob@example.com')).status, 200, '재가입');
-});
-
-await t('없는 회원을 지우면 404', async () => {
-  const r = await admin('/auth/members', { method: 'DELETE', body: { email: 'nobody@example.com' } });
-  eq(r.status, 404, 'status');
+  const after = (await admin('/votes?projectId=p_vote')).data.summary;
+  eq(after.counts[aliceSub] || 0, had, '표가 남아 있음');
 });
 
 console.log('\n================ 결과 ================');

@@ -467,33 +467,68 @@ async function patchMember(request, env, admin, cors) {
 }
 
 /**
- * 회원 삭제 — **이용 정지된 계정만** 지울 수 있습니다.
+ * 회원 삭제 (관리자).
  *
- * 정지를 먼저 거치게 해서, 활동 중인 회원이 클릭 한 번에 사라지는 일을 막습니다.
- * 제출물·소통방 글은 기록이므로 남습니다 — 필요하면 관리자가 따로 지웁니다.
+ * 실수로 지우는 사고를 막기 위해 **이용 정지된 계정만** 지울 수 있습니다.
+ * 자기 자신과 관리자 계정은 대상이 아닙니다 — 관리자를 지우려면 먼저 권한을
+ * 해제하고 이용을 정지시켜야 합니다.
+ *
+ * 제출물은 기본적으로 남깁니다. 프로젝트의 기록이라 계정을 지웠다고 해서
+ * 함께 사라지면 곤란하기 때문입니다. `purgeSubmissions` 를 주면 제출물과
+ * 첨부 원본까지 함께 지웁니다. 그 사람이 넣은 표는 언제나 함께 지웁니다.
  */
 async function removeMember(request, env, admin, cors) {
   const body = await request.json().catch(() => null);
   const email = normEmail(body?.email);
+  const purge = Boolean(body?.purgeSubmissions);
   if (!email) return json({ message: '대상 이메일이 필요합니다.' }, 400, cors);
   if (email === normEmail(admin.email)) {
     return json({ message: '자기 계정은 삭제할 수 없습니다.' }, 400, cors);
   }
 
-  let denied = null;
-  const result = await updateMembers(env, (l) => {
-    const m = findMember(l, email);
-    if (!m) return null;
-    if ((m.status || 'active') !== 'blocked') {
-      denied = '이용 정지된 회원만 삭제할 수 있습니다. 먼저 이용을 정지하세요.';
-      return null;
+  const { list } = await readMembers(env);
+  const target = findMember(list, email);
+  if (!target) return json({ message: '해당 회원을 찾을 수 없습니다.' }, 404, cors);
+  if (withRole(target, env).role === 'admin') {
+    return json({ message: '관리자 계정은 삭제할 수 없습니다. 관리자 권한을 먼저 해제하세요.' }, 400, cors);
+  }
+  if ((target.status || 'active') !== 'blocked') {
+    return json({ message: '이용 정지된 회원만 삭제할 수 있습니다. 먼저 이용을 정지하세요.' }, 400, cors);
+  }
+
+  const result = await updateMembers(env, (l) => (
+    findMember(l, email) ? l.filter((m) => normEmail(m.email) !== email) : null
+  ));
+  if (!result.ok) return json({ message: '해당 회원을 찾을 수 없습니다.' }, 404, cors);
+
+  let removedSubmissions = 0;
+  if (purge) {
+    const { data: subs } = await readIndex(env, 'submissions');
+    const mine = subs.filter((s) => normEmail(s.author?.email) === email);
+    removedSubmissions = mine.length;
+    if (mine.length) {
+      const ids = new Set(mine.map((s) => s.id));
+      await mutateIndex(env, 'submissions', (l) => l.filter((s) => !ids.has(s.id)));
+      for (const s of mine) {
+        for (const f of s.files || []) {
+          if (f.key) await env.BUCKET.delete(f.key).catch(() => {});
+        }
+      }
+      // 사라진 제출물에 들어간 표는 집계에 유령으로 남지 않도록 걷어냅니다.
+      await mutateIndex(env, 'votes', (l) => {
+        const kept = l.filter((v) => !ids.has(v.submissionId));
+        return kept.length === l.length ? null : kept;
+      });
     }
-    return l.filter((x) => normEmail(x.email) !== email);
+  }
+
+  // 계정이 없어졌으니 그 사람이 넣은 표도 남겨둘 이유가 없습니다.
+  await mutateIndex(env, 'votes', (l) => {
+    const kept = l.filter((v) => normEmail(v.voter) !== email);
+    return kept.length === l.length ? null : kept;
   });
 
-  if (denied) return json({ message: denied }, 400, cors);
-  if (!result.ok) return json({ message: '해당 회원을 찾을 수 없습니다.' }, 404, cors);
-  return json({ ok: true }, 200, cors);
+  return json({ ok: true, removedSubmissions }, 200, cors);
 }
 
 /**
@@ -623,6 +658,15 @@ async function writeIndexRequest(request, env, name, cors) {
   if (!put) {
     const { etag, data } = await readIndex(env, name);
     return json({ message: '동시 수정 충돌이 발생했습니다.', current: { etag, data } }, 409, cors);
+  }
+
+  // 프로젝트가 사라졌다면 그 프로젝트에 들어간 표도 갈 곳이 없습니다.
+  if (name === 'projects') {
+    const alive = new Set(body.data.map((p) => p?.id).filter(Boolean));
+    await mutateIndex(env, 'votes', (list) => {
+      const kept = list.filter((v) => alive.has(v.projectId));
+      return kept.length === list.length ? null : kept;
+    });
   }
   return json({ etag: put.etag }, 200, cors);
 }

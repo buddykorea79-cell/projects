@@ -3,6 +3,7 @@
  *
  *   data/projects.json / materials.json   색인 (관리자만 쓰기)
  *   data/submissions.json                 제출물 — 서버만 고칩니다
+ *   data/votes.json                       상호 투표 — 서버만 고칩니다
  *   data/members.json                     회원 명부 — 브라우저로 절대 안 내려옵니다
  *   uploads/m_<회원키>/…                   과제 첨부
  *   uploads/materials/<자료ID>/…           강의자료
@@ -446,12 +447,15 @@ class R2Auth {
     return member;
   }
 
-  /** 이용 정지된 회원 삭제. 서버가 정지 상태인지 다시 확인합니다. */
-  async deleteMember(email) {
-    await this.store.json('/auth/members', {
+  /**
+   * 회원 삭제 — 서버가 "이용 정지된 일반 회원"인지 다시 확인합니다.
+   * @param {{purgeSubmissions?: boolean}} opts 제출물·첨부까지 함께 지울지
+   */
+  async deleteMember(email, { purgeSubmissions = false } = {}) {
+    return this.store.json('/auth/members', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email, purgeSubmissions }),
     });
   }
 

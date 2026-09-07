@@ -248,7 +248,7 @@ await t('강의자료와 제출물 색인이 분리됨', async () => {
   if (!(await store.listSubmissions()).length) throw new Error('제출물이 사라짐');
 });
 
-await t('백업 내보내기에 세 종류가 모두 포함', async () => {
+await t('백업 내보내기에 네 종류가 모두 포함', async () => {
   const dump = await store.exportAll();
   for (const k of ['projects', 'submissions', 'materials']) {
     if (!Array.isArray(dump[k])) throw new Error(`${k} 누락`);

@@ -73,7 +73,7 @@ export class LocalStore {
     this.kind = 'local';
     this.urlCache = new Map();
     // 서버가 없으므로 회원 기능은 브라우저 안에서 흉내만 냅니다(시연용).
-    this.auth = new DemoAuth();
+    this.auth = new DemoAuth(this);
   }
 
   /** 이 저장소가 지금 쓰기 가능한지. 로컬은 항상 가능. */
@@ -109,6 +109,11 @@ export class LocalStore {
   async deleteProject(id) {
     const subs = await this.listSubmissions({ projectId: id });
     for (const s of subs) await this.deleteSubmission(s.id);
+    // 제출물이 하나도 없던 프로젝트라도 표가 남지 않게 한 번 더 훑습니다.
+    const stray = (await this.listVotes()).filter((v) => v.projectId === id);
+    if (stray.length) {
+      await tx('votes', 'readwrite', (os) => { for (const v of stray) os.delete(v.id); });
+    }
     await tx('projects', 'readwrite', (os) => os.delete(id));
   }
 
@@ -287,6 +292,14 @@ export class LocalStore {
     const project = await this.getProject(projectId);
     if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
     return summarizeVotes(project, await this.listVotes(), this.auth?.me() || {});
+  }
+
+  /** 삭제된 회원이 넣은 표를 걷어냅니다 (DemoAuth.deleteMember 가 부릅니다). */
+  async dropVoter(email) {
+    const e = String(email || '').trim().toLowerCase();
+    const gone = (await this.listVotes()).filter((v) => String(v.voter || '').toLowerCase() === e);
+    if (!gone.length) return;
+    await tx('votes', 'readwrite', (os) => { for (const v of gone) os.delete(v.id); });
   }
 
   async castVote(submissionId, on = true) {
