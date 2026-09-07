@@ -1,5 +1,5 @@
 /** 내 제출물 — 로그인한 회원의 제출물 목록·상세·수정. */
-import { store, submissionOpen } from '../store/index.js';
+import { store, submissionOpen, votingOf, votingPhase, VOTE_PHASE_LABEL } from '../store/index.js';
 import { esc, attr, fmtDate } from '../utils.js';
 import {
   spinner, emptyState, toastOk, toastErr, confirmModal, FilePicker,
@@ -97,6 +97,7 @@ export async function submissionView(mount, { id }) {
   const mine = isMine(sub);
   const canEdit = mine || isAdmin();
   const editable = canEdit && (isAdmin() || submissionOpen(project));
+  const vote = votingOf(project);
 
   mount.innerHTML = `
     <section class="section">
@@ -123,6 +124,12 @@ export async function submissionView(mount, { id }) {
 
         ${canEdit && !editable ? `
         <div class="notice notice--warn">제출이 마감되어 더 이상 수정·삭제할 수 없습니다. 관리자에게 문의하세요.</div>` : ''}
+
+        ${vote ? `
+        <div class="notice notice--info">
+          이 과제는 회원 상호 투표를 받습니다 (${esc(VOTE_PHASE_LABEL[votingPhase(project)])}) —
+          <a href="#/vote/${attr(project.id)}">투표 화면에서 다른 제출물 보기</a>
+        </div>` : ''}
 
         <div class="card">
           <div class="kv" style="margin-bottom:var(--space-4)">

@@ -12,6 +12,7 @@ import { myView, submissionView, editSubmissionView } from './views/my.js';
 import { guideView } from './views/guide.js';
 import { materialsView } from './views/materials.js';
 import { boardView, postView, postFormView } from './views/board.js';
+import { voteHomeView, voteProjectView } from './views/vote.js';
 import { loginView, signupView, accountView, forgotView, resetView } from './views/account.js';
 import {
   adminView, projectFormView, adminSubmissionsView, materialFormView, membersView,
@@ -55,7 +56,7 @@ function renderNavLinks() {
   const signed = isSignedIn();
   document.querySelectorAll('.gnav__links a, .gnav__drawer a').forEach((a) => {
     const href = a.getAttribute('href') || '';
-    const memberOnly = ['#/materials', '#/board', '#/my'].includes(href);
+    const memberOnly = ['#/materials', '#/vote', '#/board', '#/my'].includes(href);
     a.hidden = memberOnly && !signed;
   });
 }
@@ -66,6 +67,7 @@ function markActiveNav(path) {
     const nav = a.dataset.nav;
     const active = (nav === 'home' && (key === 'home' || key === 'p'))
       || (nav === 'materials' && key === 'materials')
+      || (nav === 'vote' && key === 'vote')
       || (nav === 'board' && key === 'board')
       || (nav === 'my' && (key === 'my' || key === 's'))
       || (nav === 'guide' && key === 'guide');
@@ -95,7 +97,7 @@ function setupDrawer() {
 async function updateFrap(path) {
   const frap = $('#frap');
   if (!isSignedIn() || path.startsWith('/admin') || path.startsWith('/materials')
-      || path.startsWith('/board')
+      || path.startsWith('/board') || path.startsWith('/vote')
       || path.includes('/submit') || PUBLIC_PATHS.has(path)) {
     frap.hidden = true;
     return;
@@ -172,6 +174,9 @@ function registerRoutes() {
   R.route('/board/:id', view((m, p) => postView(m, p)));
   R.route('/board/:id/edit', view((m, p) => postFormView(m, p)));
   R.route('/my', view((m) => myView(m)));
+
+  R.route('/vote', view((m) => voteHomeView(m)));
+  R.route('/vote/:id', view((m, p) => voteProjectView(m, p)));
 
   R.route('/login', view((m) => loginView(m)));
   R.route('/signup', view((m) => signupView(m)));

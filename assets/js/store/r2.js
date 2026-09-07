@@ -313,6 +313,25 @@ export class R2Store {
     return post;
   }
 
+  /* -------------------------------------------------------------- 투표 -- */
+
+  /**
+   * 프로젝트 투표 집계 + 내가 넣은 표. 남의 표는 서버가 내려주지 않습니다.
+   * @returns {Promise<object>} shared/r2api.js 의 voteSummary 와 같은 모양
+   */
+  async voteSummary(projectId) {
+    const { summary } = await this.json(
+      `/votes?projectId=${encodeURIComponent(projectId)}`, { cache: 'no-store' },
+    );
+    return summary;
+  }
+
+  /** 표 넣기(on=true) · 빼기(on=false). 갱신된 집계를 돌려줍니다. */
+  async castVote(submissionId, on = true) {
+    const { summary } = await this.post('/votes', { submissionId, on: Boolean(on) });
+    return summary;
+  }
+
   /* ------------------------------------------------------------- files */
 
   /** 관리자만 직접 지울 수 있습니다. 제출물 첨부는 서버가 함께 정리합니다. */
@@ -425,6 +444,15 @@ class R2Auth {
       body: JSON.stringify({ email, ...changes }),
     });
     return member;
+  }
+
+  /** 이용 정지된 회원 삭제. 서버가 정지 상태인지 다시 확인합니다. */
+  async deleteMember(email) {
+    await this.store.json('/auth/members', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
   }
 
   /** "비밀번호를 잊었습니다" 접수. 계정이 있든 없든 응답은 같습니다. */

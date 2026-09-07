@@ -12,6 +12,7 @@
 import { CONFIG } from '../config.js';
 import { uid, safeName, fileToBase64, utf8ToBase64 } from '../utils.js';
 import { DemoAuth } from './demo-auth.js';
+import { summarizeVotes, applyVote } from './voting.js';
 
 const TOKEN_KEY = 'ah.gh.token';
 const API = 'https://api.github.com';
@@ -199,6 +200,7 @@ export class GitHubStore {
   get submissionsPath() { return `${this.cfg.dataDir}/submissions.json`; }
   get materialsPath()   { return `${this.cfg.dataDir}/materials.json`; }
   get postsPath()       { return `${this.cfg.dataDir}/posts.json`; }
+  get votesPath()       { return `${this.cfg.dataDir}/votes.json`; }
 
   /**
    * 새 파일들을 uploads/ 아래에 커밋하고 레코드의 files 배열을 채웁니다.
@@ -393,6 +395,52 @@ export class GitHubStore {
     await this.mutateJSON(this.submissionsPath, [], (list) =>
       (Array.isArray(list) ? list : []).filter((s) => s.id !== id),
     `chore(submissions): remove ${id}`);
+    // 지워진 제출물에 들어간 표도 함께 거둡니다 (서버 모드와 같은 규칙).
+    const votes = await this.listVotes();
+    if (votes.some((v) => v.submissionId === id)) {
+      await this.mutateJSON(this.votesPath, [], (list) =>
+        (Array.isArray(list) ? list : []).filter((v) => v.submissionId !== id),
+      `chore(votes): remove votes for ${id}`);
+    }
+  }
+
+  /* -------------------------------------------------------------- 투표 -- */
+
+  async listVotes() {
+    const rows = await this.readJSON(this.votesPath, []);
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  async voteSummary(projectId) {
+    const project = await this.getProject(projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+    return summarizeVotes(project, await this.listVotes(), this.auth?.me() || {});
+  }
+
+  async castVote(submissionId, on = true) {
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+    const sub = await this.getSubmission(submissionId);
+    if (!sub) throw new Error('제출물을 찾을 수 없습니다.');
+    const project = await this.getProject(sub.projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+
+    const rows = await this.listVotes();
+    // 바뀌는 것이 없으면(이미 넣은 표를 또 누름) 커밋을 만들지 않습니다.
+    if (!applyVote(project, rows, me, submissionId, on, sub)) {
+      return summarizeVotes(project, rows, me);
+    }
+
+    let next = rows;
+    await this.mutateJSON(this.votesPath, [], (list) => {
+      // 읽고 나서 다른 사람의 표가 들어왔을 수 있어 최신 목록 위에 다시 적용합니다.
+      const cur = Array.isArray(list) ? list : [];
+      next = (applyVote(project, cur, me, submissionId, on, sub) || cur)
+        .map((v) => (v.id ? v : { ...v, id: uid('v_') }));
+      return next;
+    }, `${on ? 'feat' : 'chore'}(votes): ${on ? 'add' : 'remove'} vote on ${submissionId}`);
+
+    return summarizeVotes(project, next, me);
   }
 
   /* --------------------------------------------------------- materials */

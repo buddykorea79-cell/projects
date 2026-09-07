@@ -5,9 +5,10 @@
  */
 import { uid } from '../utils.js';
 import { DemoAuth } from './demo-auth.js';
+import { summarizeVotes, applyVote } from './voting.js';
 
 const DB_NAME = 'assignment-hub';
-const DB_VER = 3;
+const DB_VER = 4;
 
 let dbPromise = null;
 
@@ -33,6 +34,10 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains('posts')) {
         db.createObjectStore('posts', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('votes')) {
+        const v = db.createObjectStore('votes', { keyPath: 'id' });
+        v.createIndex('projectId', 'projectId');
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -161,6 +166,11 @@ export class LocalStore {
       for (const f of sub.files || []) await this.deleteFile(f);
     }
     await tx('submissions', 'readwrite', (os) => os.delete(id));
+    // 지워진 제출물에 들어간 표도 함께 거둡니다 (서버 모드와 같은 규칙).
+    const stale = (await this.listVotes()).filter((v) => v.submissionId === id);
+    if (stale.length) {
+      await tx('votes', 'readwrite', (os) => { for (const v of stale) os.delete(v.id); });
+    }
   }
 
   /* ----------------------------------------------------------- materials */
@@ -264,6 +274,41 @@ export class LocalStore {
     rec.comments = (rec.comments || []).filter((c) => c.id !== commentId);
     await tx('posts', 'readwrite', (os) => os.put(rec));
     return rec;
+  }
+
+  /* --------------------------------------------------------------- 투표 */
+
+  async listVotes() {
+    const rows = await tx('votes', 'readonly', (os) => wrap(os.getAll()));
+    return rows || [];
+  }
+
+  async voteSummary(projectId) {
+    const project = await this.getProject(projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+    return summarizeVotes(project, await this.listVotes(), this.auth?.me() || {});
+  }
+
+  async castVote(submissionId, on = true) {
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+    const sub = await this.getSubmission(submissionId);
+    if (!sub) throw new Error('제출물을 찾을 수 없습니다.');
+    const project = await this.getProject(sub.projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+
+    const rows = await this.listVotes();
+    const next = applyVote(project, rows, me, submissionId, on, sub);
+    if (next) {
+      const before = new Map(rows.map((v) => [v.id, v]));
+      for (const v of next) if (!v.id) v.id = uid('v_');
+      const keep = new Set(next.map((v) => v.id));
+      await tx('votes', 'readwrite', (os) => {
+        for (const id of before.keys()) if (!keep.has(id)) os.delete(id);
+        for (const v of next) os.put(v);
+      });
+    }
+    return summarizeVotes(project, next || rows, me);
   }
 
   /* --------------------------------------------------------------- files */

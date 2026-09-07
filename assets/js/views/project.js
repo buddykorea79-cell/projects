@@ -1,5 +1,7 @@
 /** 프로젝트 상세 · 과제 제출 · 첨부 렌더. */
-import { store, submissionOpen, closedReason } from '../store/index.js';
+import {
+  store, submissionOpen, closedReason, votingOf, votingPhase, VOTE_PHASE_LABEL,
+} from '../store/index.js';
 import { CONFIG } from '../config.js';
 import { esc, attr, fmtDate, fmtBytes, kindOf, downloadLink } from '../utils.js';
 import {
@@ -26,6 +28,8 @@ export async function projectView(mount, { id }) {
 
   const open = submissionOpen(project);
   const reason = closedReason(project);
+  const vote = votingOf(project);
+  const votePhase = votingPhase(project);
 
   mount.innerHTML = `
     <section class="band" style="padding-block:var(--space-6)">
@@ -36,6 +40,7 @@ export async function projectView(mount, { id }) {
         <div class="row" style="gap:6px;margin-bottom:var(--space-3)">
           <span class="badge ${open ? 'badge--open' : 'badge--closed'}">${open ? '접수중' : '마감'}</span>
           ${project.visibility === 'public' ? '<span class="badge badge--gold">제출물 공개</span>' : ''}
+          ${vote ? `<span class="badge badge--gold">${esc(VOTE_PHASE_LABEL[votePhase])}</span>` : ''}
         </div>
         <h1 style="font-size:3.2rem;color:#fff;font-weight:600">${esc(project.title)}</h1>
         <p style="color:var(--text-white-soft);margin-top:var(--space-2);font-size:1.6rem">
@@ -45,6 +50,8 @@ export async function projectView(mount, { id }) {
           ${open
             ? `<a class="btn btn--onDark btn--lg" href="#/p/${attr(project.id)}/submit">과제 제출하기</a>`
             : `<span class="btn btn--ghostDark btn--lg" aria-disabled="true">${esc(reason)}</span>`}
+          ${vote ? `<a class="btn btn--onDark btn--lg" href="#/vote/${attr(project.id)}">
+            ${votePhase === 'open' ? '투표하기' : '투표 결과 보기'}</a>` : ''}
           <a class="btn btn--ghostDark btn--lg" href="#/my">내 제출물</a>
         </div>
       </div>
@@ -68,10 +75,15 @@ export async function projectView(mount, { id }) {
             }</div></div>
             <div class="kv__row"><div class="kv__k">수정·삭제</div><div class="kv__v">마감 전까지 본인이 언제든</div></div>
             <div class="kv__row"><div class="kv__k">제출물 공개</div><div class="kv__v">${
-              project.visibility === 'public'
+              project.visibility === 'public' || vote
                 ? '다른 회원도 목록을 볼 수 있습니다 (이메일은 비공개)'
                 : '관리자와 본인만 볼 수 있습니다'
             }</div></div>
+            ${vote ? `
+            <div class="kv__row"><div class="kv__k">상호 투표</div><div class="kv__v">
+              ${esc(VOTE_PHASE_LABEL[votePhase])} · 1인당 ${esc(vote.perMember)}표 —
+              <a href="#/vote/${attr(project.id)}">투표 화면으로</a>
+            </div></div>` : ''}
           </div>
         </div>
 
@@ -80,7 +92,8 @@ export async function projectView(mount, { id }) {
     </section>`;
 
   const gallery = mount.querySelector('#gallery');
-  if (project.visibility === 'public' || isAdmin()) {
+  // 투표를 받는 프로젝트는 서로의 제출물을 봐야 하므로 공개 프로젝트와 같이 목록을 폅니다.
+  if (project.visibility === 'public' || vote || isAdmin()) {
     await renderGallery(gallery, project);
   }
 }

@@ -377,6 +377,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .table { width: 100%; border-collapse: collapse; background: var(--white); min-width: 720px; }
 .table th, .table td { text-align: left; padding: 14px 16px; border-bottom: 1px solid var(--hairline); font-size: 1.4rem; vertical-align: top; }
 .table th { font-weight: 700; color: var(--text-black); background: var(--neutral-cool); white-space: nowrap; }
+/* 이용이 정지된 회원 줄 — 맨 아래로 내려간 것이 눈에 들어오게 한 톤 낮춥니다. */
+.table tbody tr.is-blocked { background: var(--neutral-warm); color: var(--text-black-soft); }
 .table tbody tr:hover { background: var(--gold-lightest); }
 .table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
@@ -443,6 +445,41 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   text-underline-offset: 2px; word-break: break-all;
 }
 .material__desc a:hover { color: var(--sb-green); }
+
+/* --------------------------------------------------------------- 투표 -- */
+
+.votegrid { display: grid; gap: var(--space-4); grid-template-columns: 1fr; }
+@media (min-width: 620px) { .votegrid { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1100px) { .votegrid { grid-template-columns: repeat(3, 1fr); } }
+
+.votecard {
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--white); border-radius: var(--radius-card); box-shadow: var(--shadow-card);
+  /* 투표한 카드에 테두리가 생겨도 칸 크기가 흔들리지 않도록 늘 자리를 잡아둡니다. */
+  border: 2px solid transparent;
+  transition: box-shadow var(--duration) ease, border-color var(--duration) ease;
+}
+.votecard--picked { border-color: var(--green-accent); box-shadow: var(--shadow-card-hover); }
+.votecard__thumb {
+  aspect-ratio: 16/9; background: var(--ceramic);
+  display: grid; place-content: center; overflow: hidden;
+}
+.votecard__thumb img, .votecard__thumb video { width: 100%; height: 100%; object-fit: cover; }
+.votecard__body {
+  padding: var(--space-3) var(--space-4);
+  display: flex; flex-direction: column; gap: 6px; flex: 1 1 auto;
+}
+.votecard__title { font-size: 1.8rem; font-weight: 600; color: var(--sb-green); word-break: break-word; }
+.votecard__title a { text-decoration: none; }
+.votecard__title a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.votecard__meta { font-size: 1.4rem; color: var(--text-black-soft); word-break: break-word; }
+.votecard__foot {
+  padding: var(--space-3) var(--space-4); border-top: 1px solid var(--hairline);
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+}
+.votecard__count {
+  font-size: 1.6rem; font-weight: 700; color: var(--sb-green); font-variant-numeric: tabular-nums;
+}
 
 /* ------------------------------------------------------------- 소통방 -- */
 

@@ -191,6 +191,20 @@ export class DemoAuth {
     return publicMember(m);
   }
 
+  /** 이용 정지된 회원 삭제 (서버 모드와 같은 규칙 — 정지가 먼저입니다). */
+  async deleteMember(email) {
+    if (normEmail(email) === normEmail(this._me?.email)) {
+      throw new Error('자기 계정은 삭제할 수 없습니다.');
+    }
+    const list = this.members();
+    const m = list.find((x) => normEmail(x.email) === normEmail(email));
+    if (!m) throw new Error('해당 회원을 찾을 수 없습니다.');
+    if ((m.status || 'active') !== 'blocked') {
+      throw new Error('이용 정지된 회원만 삭제할 수 있습니다. 먼저 이용을 정지하세요.');
+    }
+    write(MEMBERS_KEY, list.filter((x) => normEmail(x.email) !== normEmail(email)));
+  }
+
   async resetPassword(email) {
     const list = this.members();
     const m = list.find((x) => normEmail(x.email) === normEmail(email));

@@ -30,6 +30,7 @@
  *   GET    /auth/me
  *   GET    /auth/members            (관리자)
  *   PATCH  /auth/members            (관리자) 역할·차단
+ *   DELETE /auth/members            (관리자) 정지된 회원 삭제
  *   POST   /auth/members/reset      (관리자) 임시 비밀번호 발급
  *   POST   /auth/reset/confirm      (공개) 재설정 링크(토큰)로 새 비밀번호 설정
  *   POST   /telegram/webhook        (텔레그램) 재설정 버튼 콜백 — Hermes
@@ -45,6 +46,8 @@
  *   DELETE /posts/:id               (본인 또는 관리자)
  *   POST   /posts/:id/comments      (로그인) 댓글
  *   DELETE /posts/:id/comments/:cid (본인 또는 관리자)
+ *   GET    /votes?projectId=…       (로그인) 상호 투표 집계 + 내가 넣은 표
+ *   POST   /votes                   (로그인) 표 넣기·빼기
  *   GET    /file/<key>              (로그인)
  *   DELETE /file/<key>              (관리자)
  */
@@ -150,6 +153,7 @@ async function route(request, env, url, path, cors, waitUntil) {
       return json({ data: list.map(publicMember) }, 200, cors);
     }
     if (method === 'PATCH') return patchMember(request, env, admin.member, cors);
+    if (method === 'DELETE') return removeMember(request, env, admin.member, cors);
     return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
   }
   if (path === '/auth/members/reset' && method === 'POST') {
@@ -224,6 +228,14 @@ async function route(request, env, url, path, cors, waitUntil) {
   const oneComment = path.match(/^\/posts\/([A-Za-z0-9_-]{1,64})\/comments\/([A-Za-z0-9_-]{1,64})$/);
   if (oneComment && method === 'DELETE') {
     return removeComment(request, env, oneComment[1], oneComment[2], cors);
+  }
+
+  /* -------------------------------------------------------------- 투표 -- */
+
+  if (path === '/votes') {
+    if (method === 'GET') return voteSummaryRequest(request, env, url, cors);
+    if (method === 'POST') return castVote(request, env, cors);
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
   }
 
   /* ------------------------------------------------------- 파일 -- */
@@ -455,6 +467,36 @@ async function patchMember(request, env, admin, cors) {
 }
 
 /**
+ * 회원 삭제 — **이용 정지된 계정만** 지울 수 있습니다.
+ *
+ * 정지를 먼저 거치게 해서, 활동 중인 회원이 클릭 한 번에 사라지는 일을 막습니다.
+ * 제출물·소통방 글은 기록이므로 남습니다 — 필요하면 관리자가 따로 지웁니다.
+ */
+async function removeMember(request, env, admin, cors) {
+  const body = await request.json().catch(() => null);
+  const email = normEmail(body?.email);
+  if (!email) return json({ message: '대상 이메일이 필요합니다.' }, 400, cors);
+  if (email === normEmail(admin.email)) {
+    return json({ message: '자기 계정은 삭제할 수 없습니다.' }, 400, cors);
+  }
+
+  let denied = null;
+  const result = await updateMembers(env, (l) => {
+    const m = findMember(l, email);
+    if (!m) return null;
+    if ((m.status || 'active') !== 'blocked') {
+      denied = '이용 정지된 회원만 삭제할 수 있습니다. 먼저 이용을 정지하세요.';
+      return null;
+    }
+    return l.filter((x) => normEmail(x.email) !== email);
+  });
+
+  if (denied) return json({ message: denied }, 400, cors);
+  if (!result.ok) return json({ message: '해당 회원을 찾을 수 없습니다.' }, 404, cors);
+  return json({ ok: true }, 200, cors);
+}
+
+/**
  * "비밀번호를 잊었습니다" 접수.
  *
  * 메일을 보낼 수단이 없으므로, 본인이 남긴 요청을 관리자 화면에 대기 목록으로
@@ -652,9 +694,12 @@ async function listSubmissions(request, env, cors) {
 
   if (me.role === 'admin') return json({ data: subs }, 200, { ...cors, 'Cache-Control': 'no-store' });
 
-  const publicIds = new Set(projects.filter((p) => p.visibility === 'public').map((p) => p.id));
+  // 투표를 받는 프로젝트는 서로의 제출물을 봐야 표를 줄 수 있으므로 함께 열립니다.
+  const openIds = new Set(projects
+    .filter((p) => p.visibility === 'public' || votingOf(p))
+    .map((p) => p.id));
   const visible = subs
-    .filter((s) => normEmail(s.author?.email) === normEmail(me.email) || publicIds.has(s.projectId))
+    .filter((s) => normEmail(s.author?.email) === normEmail(me.email) || openIds.has(s.projectId))
     .map((s) => viewSubmission(s, me));
 
   return json({ data: visible }, 200, { ...cors, 'Cache-Control': 'no-store' });
@@ -778,6 +823,11 @@ async function removeSubmission(request, env, id, cors) {
   }
 
   await mutateIndex(env, 'submissions', (list) => list.filter((s) => s.id !== id));
+  // 지워진 제출물에 들어간 표도 함께 거둡니다 — 남겨두면 투표자의 표 수만 축냅니다.
+  await mutateIndex(env, 'votes', (list) => {
+    const kept = list.filter((v) => v.submissionId !== id);
+    return kept.length === list.length ? null : kept;
+  });
   for (const f of existing.files || []) {
     if (f.key) await env.BUCKET.delete(f.key).catch(() => {});
   }
@@ -966,7 +1016,163 @@ async function removeComment(request, env, postId, commentId, cors) {
   return json({ post: viewPost(updated, me) }, 200, cors);
 }
 
-/* ============================================================ 업로드 == */
+/* ============================================================ 투표 == */
+
+/**
+ * 회원 상호 투표.
+ *
+ * 표는 `data/votes.json` 에 한 줄씩 쌓입니다 — {projectId, submissionId, voter}.
+ * **누가 어디에 넣었는지는 서버만 압니다.** 브라우저로는 집계와 "내가 넣은 표"만
+ * 내려가고, 남의 표는 어떤 경로로도 나가지 않습니다.
+ * 기간·1인당 표 수·본인 제출물 허용 여부는 프로젝트의 voting 설정을 따릅니다.
+ *
+ * (화면용 사본은 assets/js/store/index.js 의 votingOf·votingPhase — 함께 고치세요.)
+ */
+const VOTE_MAX_PER_MEMBER = 50;
+const VOTE_DEFAULT_PER_MEMBER = 3;
+
+/** 프로젝트의 투표 설정을 정규화합니다. 투표를 안 받으면 null. */
+function votingOf(project) {
+  const v = project?.voting;
+  if (!v || typeof v !== 'object' || !v.enabled) return null;
+  const per = Math.round(Number(v.perMember));
+  return {
+    enabled: true,
+    startAt: v.startAt || null,
+    endAt: v.endAt || null,
+    perMember: Number.isFinite(per)
+      ? Math.min(Math.max(per, 1), VOTE_MAX_PER_MEMBER)
+      : VOTE_DEFAULT_PER_MEMBER,
+    allowSelf: Boolean(v.allowSelf),
+    showCounts: v.showCounts !== false,
+  };
+}
+
+/** 'off'(투표 없음) | 'before'(시작 전) | 'open'(진행중) | 'closed'(마감) */
+function votingPhase(project, now = Date.now()) {
+  const cfg = votingOf(project);
+  if (!cfg) return 'off';
+  const start = cfg.startAt ? new Date(cfg.startAt).getTime() : null;
+  const end = cfg.endAt ? new Date(cfg.endAt).getTime() : null;
+  if (Number.isFinite(start) && start > now) return 'before';
+  if (Number.isFinite(end) && end < now) return 'closed';
+  return 'open';
+}
+
+/**
+ * 브라우저로 내려보낼 집계. 득표수를 숨기도록 설정했다면 투표가 끝나기 전까지
+ * counts 를 아예 내리지 않습니다 — 화면에서 가리는 것으로는 부족하기 때문입니다.
+ */
+function voteSummary(project, votes, me) {
+  const cfg = votingOf(project);
+  const phase = votingPhase(project);
+  const rows = votes.filter((v) => v.projectId === project.id);
+  const mine = rows
+    .filter((v) => normEmail(v.voter) === normEmail(me.email))
+    .map((v) => v.submissionId);
+
+  const showCounts = me.role === 'admin'
+    || phase === 'closed' || phase === 'off'
+    || (phase === 'open' && cfg?.showCounts !== false);
+
+  const counts = {};
+  if (showCounts) for (const v of rows) counts[v.submissionId] = (counts[v.submissionId] || 0) + 1;
+
+  return {
+    projectId: project.id,
+    phase,
+    limit: cfg ? cfg.perMember : 0,
+    allowSelf: Boolean(cfg?.allowSelf),
+    startAt: cfg?.startAt || null,
+    endAt: cfg?.endAt || null,
+    // 지금 집계를 볼 수 있는지. 설정값이 아니라 "이 사람에게 지금 보이는가" 입니다.
+    showCounts,
+    used: mine.length,
+    mine,
+    counts: showCounts ? counts : null,
+    voters: showCounts ? new Set(rows.map((v) => normEmail(v.voter))).size : null,
+    total: showCounts ? rows.length : null,
+  };
+}
+
+async function voteSummaryRequest(request, env, url, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+
+  const projectId = String(url.searchParams.get('projectId') || '');
+  const { data: projects } = await readIndex(env, 'projects');
+  const project = projects.find((p) => p.id === projectId);
+  if (!project) return json({ message: '프로젝트를 찾을 수 없습니다.' }, 404, cors);
+
+  const { data: votes } = await readIndex(env, 'votes');
+  return json({ summary: voteSummary(project, votes, got.member) }, 200,
+    { ...cors, 'Cache-Control': 'no-store' });
+}
+
+/** 표 넣기(on:true) · 빼기(on:false). 같은 요청을 두 번 보내도 결과는 같습니다. */
+async function castVote(request, env, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  const body = await request.json().catch(() => null);
+  const submissionId = String(body?.submissionId || '');
+  const on = body?.on !== false;
+  if (!submissionId) return json({ message: '대상 제출물이 필요합니다.' }, 400, cors);
+
+  const [{ data: projects }, { data: subs }] = await Promise.all([
+    readIndex(env, 'projects'), readIndex(env, 'submissions'),
+  ]);
+  const sub = subs.find((x) => x.id === submissionId);
+  if (!sub) return json({ message: '제출물을 찾을 수 없습니다.' }, 404, cors);
+  const project = projects.find((p) => p.id === sub.projectId);
+  if (!project) return json({ message: '프로젝트를 찾을 수 없습니다.' }, 404, cors);
+
+  const cfg = votingOf(project);
+  if (!cfg) return json({ message: '이 프로젝트는 투표를 받지 않습니다.' }, 400, cors);
+
+  // 관리자도 마감 뒤에는 넣지 못합니다 — 집계가 나중에 바뀌면 결과를 믿을 수 없습니다.
+  const phase = votingPhase(project);
+  if (phase !== 'open') {
+    return json({
+      message: phase === 'before' ? '아직 투표 기간이 아닙니다.' : '투표가 마감되었습니다.',
+    }, 400, cors);
+  }
+  if (on && !cfg.allowSelf && normEmail(sub.author?.email) === normEmail(me.email)) {
+    return json({ message: '본인 제출물에는 투표할 수 없습니다.' }, 400, cors);
+  }
+
+  let denied = null;
+  // 표 수 확인과 저장을 같은 mutator 안에서 합니다 — 겹쳐 들어와도 한도를 넘지 않습니다.
+  const result = await mutateIndex(env, 'votes', (list) => {
+    const mineHere = list.filter((v) => v.projectId === project.id
+      && normEmail(v.voter) === normEmail(me.email));
+    const already = mineHere.find((v) => v.submissionId === submissionId);
+
+    if (!on) {
+      if (!already) return null;                 // 이미 없음 — 저장할 것이 없습니다
+      return list.filter((v) => v !== already);
+    }
+    if (already) return null;                    // 이미 넣은 표 — 그대로 둡니다
+    if (mineHere.length >= cfg.perMember) {
+      denied = `투표는 1인당 ${cfg.perMember}표까지 할 수 있습니다.`;
+      return null;
+    }
+    list.push({
+      id: uid('v_'),
+      projectId: project.id,
+      submissionId,
+      voter: normEmail(me.email),
+      createdAt: new Date().toISOString(),
+    });
+    return list;
+  });
+
+  if (denied) return json({ message: denied }, 400, cors);
+  return json({ summary: voteSummary(project, result.data, me) }, 200, cors);
+}
+
+/* ============================================================== 업로드 == */
 
 function maxUploadMB(env) {
   const n = Number(env.MAX_UPLOAD_MB);
