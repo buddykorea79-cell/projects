@@ -5,6 +5,7 @@
  */
 import { uid } from '../utils.js';
 import { DemoAuth } from './demo-auth.js';
+import { summarizeVotes, applyVote } from './voting.js';
 
 const DB_NAME = 'assignment-hub';
 const DB_VER = 4;
@@ -34,10 +35,9 @@ function openDB() {
       if (!db.objectStoreNames.contains('posts')) {
         db.createObjectStore('posts', { keyPath: 'id' });
       }
-      if (!db.objectStoreNames.contains('evaluations')) {
-        // id 는 "프로젝트::투표자" — 한 사람이 한 프로젝트에 한 장만 냅니다.
-        const e = db.createObjectStore('evaluations', { keyPath: 'id' });
-        e.createIndex('projectId', 'projectId');
+      if (!db.objectStoreNames.contains('votes')) {
+        const v = db.createObjectStore('votes', { keyPath: 'id' });
+        v.createIndex('projectId', 'projectId');
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -59,9 +59,6 @@ function tx(store, mode, fn) {
 }
 
 const wrap = (req) => ({ __req: req });
-
-/** 투표용지 하나를 가리키는 키 — 한 사람이 한 프로젝트에 한 장만 냅니다. */
-const ballotId = (projectId, email) => `${projectId}::${String(email || '').toLowerCase()}`;
 
 /** 공지를 맨 위로, 그 안에서는 최신순 — 서버(R2) 와 같은 규칙입니다. */
 function sortPosts(list) {
@@ -112,7 +109,11 @@ export class LocalStore {
   async deleteProject(id) {
     const subs = await this.listSubmissions({ projectId: id });
     for (const s of subs) await this.deleteSubmission(s.id);
-    await this.deleteEvaluation(id, { all: true });
+    // 제출물이 하나도 없던 프로젝트라도 표가 남지 않게 한 번 더 훑습니다.
+    const stray = (await this.listVotes()).filter((v) => v.projectId === id);
+    if (stray.length) {
+      await tx('votes', 'readwrite', (os) => { for (const v of stray) os.delete(v.id); });
+    }
     await tx('projects', 'readwrite', (os) => os.delete(id));
   }
 
@@ -170,60 +171,10 @@ export class LocalStore {
       for (const f of sub.files || []) await this.deleteFile(f);
     }
     await tx('submissions', 'readwrite', (os) => os.delete(id));
-    // 사라진 제출물에 찍힌 표는 결과 화면에 유령으로 남지 않도록 걷어냅니다.
-    await this.dropPicks(new Set([id]));
-  }
-
-  /* ------------------------------------------------------------- 평가 -- */
-
-  async listEvaluations({ projectId = null } = {}) {
-    const rows = await tx('evaluations', 'readonly', (os) => wrap(os.getAll()));
-    const out = rows || [];
-    return projectId ? out.filter((b) => b.projectId === projectId) : out;
-  }
-
-  async saveEvaluation(projectId, picks) {
-    const me = this.auth?.me();
-    if (!me) throw new Error('로그인이 필요합니다.');
-    const now = new Date().toISOString();
-    const id = ballotId(projectId, me.email);
-    const before = await tx('evaluations', 'readonly', (os) => wrap(os.get(id)));
-    const rec = {
-      id,
-      projectId,
-      voter: { email: me.email, name: me.name, institution: me.institution || '' },
-      picks: Array.isArray(picks) ? picks : [],
-      createdAt: before?.createdAt || now,
-      updatedAt: now,
-    };
-    await tx('evaluations', 'readwrite', (os) => os.put(rec));
-    return rec;
-  }
-
-  async deleteEvaluation(projectId, { all = false } = {}) {
-    const me = this.auth?.me();
-    const rows = await this.listEvaluations({ projectId });
-    const gone = all ? rows : rows.filter((b) => b.voter?.email === me?.email);
-    for (const b of gone) await tx('evaluations', 'readwrite', (os) => os.delete(b.id));
-  }
-
-  /** 지워진 제출물에 찍힌 표를 모든 투표용지에서 걷어냅니다. */
-  async dropPicks(ids) {
-    const rows = await this.listEvaluations();
-    for (const b of rows) {
-      if (!(b.picks || []).some((p) => ids.has(p.submissionId))) continue;
-      const next = { ...b, picks: (b.picks || []).filter((p) => !ids.has(p.submissionId)) };
-      await tx('evaluations', 'readwrite', (os) => os.put(next));
-    }
-  }
-
-  /** 탈퇴·삭제된 회원이 넣은 투표용지를 지웁니다. */
-  async dropVoter(email) {
-    const e = String(email || '').toLowerCase();
-    const rows = await this.listEvaluations();
-    for (const b of rows) {
-      if (String(b.voter?.email || '').toLowerCase() !== e) continue;
-      await tx('evaluations', 'readwrite', (os) => os.delete(b.id));
+    // 지워진 제출물에 들어간 표도 함께 거둡니다 (서버 모드와 같은 규칙).
+    const stale = (await this.listVotes()).filter((v) => v.submissionId === id);
+    if (stale.length) {
+      await tx('votes', 'readwrite', (os) => { for (const v of stale) os.delete(v.id); });
     }
   }
 
@@ -330,6 +281,49 @@ export class LocalStore {
     return rec;
   }
 
+  /* --------------------------------------------------------------- 투표 */
+
+  async listVotes() {
+    const rows = await tx('votes', 'readonly', (os) => wrap(os.getAll()));
+    return rows || [];
+  }
+
+  async voteSummary(projectId) {
+    const project = await this.getProject(projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+    return summarizeVotes(project, await this.listVotes(), this.auth?.me() || {});
+  }
+
+  /** 삭제된 회원이 넣은 표를 걷어냅니다 (DemoAuth.deleteMember 가 부릅니다). */
+  async dropVoter(email) {
+    const e = String(email || '').trim().toLowerCase();
+    const gone = (await this.listVotes()).filter((v) => String(v.voter || '').toLowerCase() === e);
+    if (!gone.length) return;
+    await tx('votes', 'readwrite', (os) => { for (const v of gone) os.delete(v.id); });
+  }
+
+  async castVote(submissionId, on = true) {
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+    const sub = await this.getSubmission(submissionId);
+    if (!sub) throw new Error('제출물을 찾을 수 없습니다.');
+    const project = await this.getProject(sub.projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+
+    const rows = await this.listVotes();
+    const next = applyVote(project, rows, me, submissionId, on, sub);
+    if (next) {
+      const before = new Map(rows.map((v) => [v.id, v]));
+      for (const v of next) if (!v.id) v.id = uid('v_');
+      const keep = new Set(next.map((v) => v.id));
+      await tx('votes', 'readwrite', (os) => {
+        for (const id of before.keys()) if (!keep.has(id)) os.delete(id);
+        for (const v of next) os.put(v);
+      });
+    }
+    return summarizeVotes(project, next || rows, me);
+  }
+
   /* --------------------------------------------------------------- files */
 
   async deleteFile(fileRef) {
@@ -363,7 +357,6 @@ export class LocalStore {
       submissions: await this.listSubmissions(),
       materials: await this.listMaterials(),
       posts: await this.listPosts(),
-      evaluations: await this.listEvaluations(),
     };
   }
 
@@ -380,10 +373,6 @@ export class LocalStore {
     }
     for (const b of dump.posts || []) {
       await tx('posts', 'readwrite', (os) => os.put(b));
-    }
-    for (const b of dump.evaluations || []) {
-      const rec = b.id ? b : { ...b, id: ballotId(b.projectId, b.voter?.email) };
-      await tx('evaluations', 'readwrite', (os) => os.put(rec));
     }
   }
 }

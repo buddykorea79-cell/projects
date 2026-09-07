@@ -8,6 +8,12 @@ import { GitHubStore } from './github.js';
 import { R2Store } from './r2.js';
 import { isPastDue } from '../utils.js';
 
+// 투표 규칙은 저장소 구현과 함께 쓰므로 별도 모듈에 두고 여기서 다시 내보냅니다.
+export {
+  votingOf, votingPhase, votingOpen, summarizeVotes,
+  VOTE_PHASE_LABEL, VOTE_MAX_PER_MEMBER, VOTE_DEFAULT_PER_MEMBER,
+} from './voting.js';
+
 const MODE_KEY = 'ah.storageMode';
 const MODES = ['local', 'github', 'r2'];
 

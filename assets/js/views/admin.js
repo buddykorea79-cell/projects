@@ -1,5 +1,8 @@
 /** 관리자 — 대시보드, 프로젝트·강의자료·제출물·회원 관리. */
-import { store, currentMode, setMode } from '../store/index.js';
+import {
+  store, currentMode, setMode, votingOf, votingPhase,
+  VOTE_PHASE_LABEL, VOTE_MAX_PER_MEMBER, VOTE_DEFAULT_PER_MEMBER,
+} from '../store/index.js';
 import { CONFIG, STORAGE_LABEL } from '../config.js';
 import { currentUser, isAdmin, isSimulated } from '../auth.js';
 import {
@@ -110,6 +113,9 @@ export async function adminView(mount) {
     const openCount = projects.filter((p) => p.status === 'open' && !isPastDue(p.dueAt)).length;
     const fileCount = submissions.reduce((n, s) => n + (s.files || []).length, 0);
     const people = new Set(submissions.map((s) => s.author?.email)).size;
+    // 이용이 정지된 계정은 회원 수에서 뺍니다 — 실제로 이용중인 인원만 셉니다.
+    const active = members.filter((m) => (m.status || 'active') !== 'blocked');
+    const blocked = members.length - active.length;
 
     mount.querySelector('#stats').innerHTML = `
       ${stat(projects.length, '전체 프로젝트')}
@@ -118,7 +124,7 @@ export async function adminView(mount) {
       ${stat(people, '제출 인원')}
       ${stat(fileCount, '첨부 파일')}
       ${stat(materials.length, '강의자료')}
-      ${stat(members.length, '회원')}`;
+      ${stat(active.length, '회원')}`;
 
     const counts = new Map();
     submissions.forEach((s) => counts.set(s.projectId, (counts.get(s.projectId) || 0) + 1));
@@ -134,7 +140,7 @@ export async function adminView(mount) {
       holder.innerHTML = `
         <div class="tablewrap">
           <table class="table">
-            <thead><tr><th>제목</th><th>상태</th><th>마감</th><th>제출</th><th>공개</th><th></th></tr></thead>
+            <thead><tr><th>제목</th><th>상태</th><th>마감</th><th>제출</th><th>공개</th><th>투표</th><th></th></tr></thead>
             <tbody>
               ${projects.map((p) => {
                 const open = p.status === 'open' && !isPastDue(p.dueAt);
@@ -145,11 +151,14 @@ export async function adminView(mount) {
                   <td>${esc(fmtDate(p.dueAt, true))}</td>
                   <td class="num"><a href="#/admin/submissions/${attr(p.id)}">${counts.get(p.id) || 0}</a></td>
                   <td>${p.visibility === 'public' ? '공개' : '비공개'}</td>
+                  <td>${votingOf(p)
+                    ? `<a href="#/vote/${attr(p.id)}">${esc(VOTE_PHASE_LABEL[votingPhase(p)])}</a>`
+                    : '—'}</td>
                   <td style="white-space:nowrap">
                     <a class="btn btn--outline btn--sm" href="#/admin/project/${attr(p.id)}">편집</a>
                     <a class="btn btn--quiet btn--sm" href="#/admin/submissions/${attr(p.id)}">제출물</a>
                     <a class="btn btn--quiet btn--sm" href="#/admin/roster/${attr(p.id)}">현황</a>
-                    <a class="btn btn--quiet btn--sm" href="#/admin/evaluate/${attr(p.id)}">평가하기</a>
+                    ${votingOf(p) ? `<a class="btn btn--quiet btn--sm" href="#/vote/${attr(p.id)}">투표</a>` : ''}
                   </td>
                 </tr>`;
               }).join('')}
@@ -159,8 +168,7 @@ export async function adminView(mount) {
     }
 
     const memberHolder = mount.querySelector('#adminMembers');
-    const active = members.filter((m) => m.status !== 'blocked');
-    const admins = members.filter((m) => m.role === 'admin');
+    const admins = active.filter((m) => m.role === 'admin');
     const waiting = members.filter((m) => m.resetRequestedAt);
     memberHolder.innerHTML = members.length
       ? `${waiting.length ? `
@@ -170,12 +178,13 @@ export async function adminView(mount) {
            <a href="#/admin/members">회원 관리</a>에서 임시 비밀번호를 발급해 전달하세요.
          </div>` : ''}
          <div class="kv">
-           <div class="kv__row"><div class="kv__k">전체</div><div class="kv__v">${members.length}명</div></div>
            <div class="kv__row"><div class="kv__k">이용중</div><div class="kv__v">${active.length}명</div></div>
+           <div class="kv__row"><div class="kv__k">이용 정지</div><div class="kv__v">${blocked}명${
+             blocked ? ' — <a href="#/admin/members">회원 관리</a> 맨 아래에서 삭제할 수 있습니다' : ''}</div></div>
            <div class="kv__row"><div class="kv__k">관리자</div><div class="kv__v">${
              admins.map((m) => esc(m.name)).join(', ') || '—'}</div></div>
            <div class="kv__row"><div class="kv__k">최근 가입</div><div class="kv__v">${
-             esc(fmtDate([...members].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0]?.createdAt))
+             esc(fmtDate([...active].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0]?.createdAt))
            }</div></div>
          </div>`
       : emptyState({ title: '아직 회원이 없습니다', body: '교육생이 가입하면 이곳에 표시됩니다.' });
@@ -448,10 +457,20 @@ function renderStoragePanel(mount) {
 
 /* --------------------------------------------------- 프로젝트 개설/편집 -- */
 
+/** 1인당 표 수 입력값을 규칙 안으로 다듬습니다 — 비어 있거나 이상하면 기본값. */
+function perMember(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return VOTE_DEFAULT_PER_MEMBER;
+  const n = Math.round(Number(raw));
+  if (!Number.isFinite(n)) return VOTE_DEFAULT_PER_MEMBER;
+  return Math.min(Math.max(n, 1), VOTE_MAX_PER_MEMBER);
+}
+
 export async function projectFormView(mount, { id }) {
   const isNew = !id || id === 'new';
   const p = isNew ? null : await store.getProject(id);
   if (!isNew && !p) { toastErr('프로젝트를 찾을 수 없습니다.'); go('/admin'); return; }
+  const vote = votingOf(p);
 
   mount.innerHTML = `
     <section class="section">
@@ -507,6 +526,52 @@ export async function projectFormView(mount, { id }) {
             <span>파일 첨부를 허용합니다 (이미지·동영상·문서)</span>
           </label>
 
+          <fieldset style="border:0;padding:0;margin-top:var(--space-4)">
+            <legend class="field__label" style="margin-bottom:var(--space-2)">회원 상호 투표</legend>
+
+            <label class="check">
+              <input type="checkbox" name="voteEnabled" ${vote ? 'checked' : ''} />
+              <span>제출된 과제를 회원끼리 투표하게 합니다</span>
+            </label>
+            <p class="field__hint" style="margin-bottom:var(--space-3)">
+              켜면 상단 메뉴 <strong>과제 투표</strong> 에 이 프로젝트가 올라오고,
+              <strong>회원이 서로의 제출물을 볼 수 있게 됩니다</strong>
+              (공개 범위를 비공개로 두어도 마찬가지입니다. 이메일은 계속 가려집니다).
+            </p>
+
+            <div class="field-row field-row--2">
+              <label class="field">
+                <span class="field__label">투표 시작</span>
+                <input class="input" name="voteStartAt" type="datetime-local"
+                       value="${attr(toLocalInput(vote?.startAt))}" />
+                <span class="field__hint">비워두면 켜는 즉시 시작합니다.</span>
+              </label>
+              <label class="field">
+                <span class="field__label">투표 마감</span>
+                <input class="input" name="voteEndAt" type="datetime-local"
+                       value="${attr(toLocalInput(vote?.endAt))}" />
+                <span class="field__hint">비워두면 마감 없이 계속 받습니다.</span>
+              </label>
+            </div>
+
+            <label class="field">
+              <span class="field__label">1인당 표 수</span>
+              <input class="input" name="votePerMember" type="number" min="1"
+                     max="${attr(VOTE_MAX_PER_MEMBER)}"
+                     value="${attr(vote?.perMember ?? VOTE_DEFAULT_PER_MEMBER)}" />
+              <span class="field__hint">한 사람이 서로 다른 제출물에 줄 수 있는 표의 개수입니다.</span>
+            </label>
+
+            <label class="check">
+              <input type="checkbox" name="voteAllowSelf" ${vote?.allowSelf ? 'checked' : ''} />
+              <span>본인 제출물에도 투표할 수 있게 합니다</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" name="voteShowCounts" ${vote?.showCounts !== false ? 'checked' : ''} />
+              <span>투표 중에도 득표수를 공개합니다 (끄면 마감 뒤에 공개)</span>
+            </label>
+          </fieldset>
+
           <div class="row row--between" style="margin-top:var(--space-4)">
             ${isNew ? '<a class="btn btn--quiet" href="#/admin">← 취소</a>'
               : '<button type="button" class="btn btn--danger" data-delete>프로젝트 삭제</button>'}
@@ -526,6 +591,13 @@ export async function projectFormView(mount, { id }) {
     let ok = true;
     if (!form.title.value.trim()) { fieldError(form.title, '제목을 입력하세요.'); ok = false; }
     if (!form.description.value.trim()) { fieldError(form.description, '과제 안내를 입력하세요.'); ok = false; }
+
+    const voteStart = fromLocalInput(form.voteStartAt.value);
+    const voteEnd = fromLocalInput(form.voteEndAt.value);
+    if (form.voteEnabled.checked && voteStart && voteEnd && voteEnd <= voteStart) {
+      fieldError(form.voteEndAt, '투표 마감은 시작보다 뒤여야 합니다.');
+      ok = false;
+    }
     if (!ok) { focusFirstError(form); return; }
 
     const btn = form.querySelector('button[type="submit"]');
@@ -540,6 +612,14 @@ export async function projectFormView(mount, { id }) {
         visibility: form.visibility.value,
         requireInstitution: form.requireInstitution.checked,
         allowFiles: form.allowFiles.checked,
+        voting: {
+          enabled: form.voteEnabled.checked,
+          startAt: fromLocalInput(form.voteStartAt.value),
+          endAt: fromLocalInput(form.voteEndAt.value),
+          perMember: perMember(form.votePerMember.value),
+          allowSelf: form.voteAllowSelf.checked,
+          showCounts: form.voteShowCounts.checked,
+        },
       });
       toastOk(isNew ? '프로젝트가 개설되었습니다.' : '저장되었습니다.');
       go(`/p/${saved.id}`);
@@ -581,6 +661,13 @@ export async function adminSubmissionsView(mount, { projectId }) {
   if (!project) { toastErr('프로젝트를 찾을 수 없습니다.'); go('/admin'); return; }
 
   const all = await store.listSubmissions({ projectId });
+  // 투표를 받는 프로젝트라면 득표수를 함께 보여줍니다 (관리자는 언제나 볼 수 있습니다).
+  const voteCfg = votingOf(project);
+  const summary = voteCfg
+    ? await store.voteSummary(project.id).catch(() => null)
+    : null;
+  const counts = summary?.counts || null;
+  const votesOf = (s) => (counts ? counts[s.id] || 0 : 0);
 
   mount.innerHTML = `
     <section class="section">
@@ -592,10 +679,11 @@ export async function adminSubmissionsView(mount, { projectId }) {
         <div class="page-head">
           <div>
             <h1 class="page-title">제출물 관리</h1>
-            <p class="page-sub">${esc(project.title)} · 총 ${all.length}건</p>
+            <p class="page-sub">${esc(project.title)} · 총 ${all.length}건${
+              voteCfg ? ` · 투표 ${esc(VOTE_PHASE_LABEL[votingPhase(project)])}` : ''}</p>
           </div>
           <div class="row">
-            <a class="btn btn--primary" href="#/admin/evaluate/${attr(project.id)}">평가하기</a>
+            ${voteCfg ? `<a class="btn btn--primary" href="#/vote/${attr(project.id)}">투표 화면</a>` : ''}
             <a class="btn btn--outline" href="#/admin/roster/${attr(project.id)}">제출 현황</a>
             <button class="btn btn--outline" data-csv>CSV 내려받기</button>
             <a class="btn btn--quiet" href="#/admin/project/${attr(project.id)}">프로젝트 편집</a>
@@ -609,6 +697,7 @@ export async function adminSubmissionsView(mount, { projectId }) {
             <option value="old">오래된순</option>
             <option value="name">성명순</option>
             <option value="inst">기관순</option>
+            ${counts ? '<option value="votes">득표순</option>' : ''}
           </select>
         </div>
 
@@ -633,6 +722,8 @@ export async function adminSubmissionsView(mount, { projectId }) {
       old:  (a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''),
       name: (a, b) => (a.author?.name || '').localeCompare(b.author?.name || '', 'ko'),
       inst: (a, b) => (a.author?.institution || '').localeCompare(b.author?.institution || '', 'ko'),
+      votes: (a, b) => votesOf(b) - votesOf(a)
+        || (a.createdAt || '').localeCompare(b.createdAt || ''),
     };
     rows = rows.sort(sorters[sortEl.value]);
 
@@ -649,6 +740,7 @@ export async function adminSubmissionsView(mount, { projectId }) {
         <table class="table">
           <thead>
             <tr><th>#</th><th>기관명</th><th>성명</th><th>이메일</th><th>제목</th>
+                ${counts ? '<th>득표</th>' : ''}
                 <th>첨부</th><th>용량</th><th>제출일</th><th></th></tr>
           </thead>
           <tbody>
@@ -661,6 +753,7 @@ export async function adminSubmissionsView(mount, { projectId }) {
                 <td>${esc(s.author?.name || '—')}</td>
                 <td><a href="mailto:${attr(s.author?.email || '')}">${esc(s.author?.email || '—')}</a></td>
                 <td><a href="#/s/${attr(s.id)}">${esc(s.title)}</a></td>
+                ${counts ? `<td class="num">${esc(votesOf(s))}</td>` : ''}
                 <td class="num">${(s.files || []).length}</td>
                 <td class="num">${esc(bytes ? fmtBytes(bytes) : '—')}</td>
                 <td>${esc(fmtDate(s.createdAt, true))}</td>
@@ -699,7 +792,8 @@ export async function adminSubmissionsView(mount, { projectId }) {
   draw();
 
   mount.querySelector('[data-csv]').addEventListener('click', () => {
-    const header = ['번호', '기관명', '성명', '이메일', '제목', '설명', '첨부수', '첨부목록', '제출일시', '수정일시', '제출ID'];
+    const header = ['번호', '기관명', '성명', '이메일', '제목', '설명',
+      ...(counts ? ['득표'] : []), '첨부수', '첨부목록', '제출일시', '수정일시', '제출ID'];
     const lines = [header.map(csvCell).join(',')];
     all.forEach((s, i) => {
       lines.push([
@@ -709,6 +803,7 @@ export async function adminSubmissionsView(mount, { projectId }) {
         s.author?.email || '',
         s.title || '',
         s.body || '',
+        ...(counts ? [votesOf(s)] : []),
         (s.files || []).length,
         (s.files || []).map((f) => f.name).join(' | '),
         fmtDate(s.createdAt, true),
@@ -776,7 +871,7 @@ export async function rosterView(mount, { projectId }) {
           </div>
           <div class="row">
             <a class="btn btn--outline" href="#/admin/submissions/${attr(project.id)}">제출물 관리</a>
-            <a class="btn btn--quiet" href="#/admin/evaluate/${attr(project.id)}">평가하기</a>
+            ${votingOf(project) ? `<a class="btn btn--quiet" href="#/vote/${attr(project.id)}">투표 화면</a>` : ''}
           </div>
         </div>
 
@@ -955,6 +1050,7 @@ export async function membersView(mount) {
             <h1 class="page-title">회원 관리</h1>
             <p class="page-sub">
               가입한 교육생을 확인하고 권한·이용 상태를 조정합니다.
+              이용이 정지된 회원은 목록 맨 아래로 내려갑니다.
               삭제는 <strong>이용 정지된 일반 회원</strong>만 가능합니다.
             </p>
           </div>
@@ -1004,7 +1100,10 @@ export async function membersView(mount) {
       if (!q) return true;
       return [m.institution, m.name, m.email].some((v) => String(v || '').toLowerCase().includes(q));
     }).sort((a, b) => {
-      // 처리할 일이 있는 사람(재설정 요청)을 맨 위로 올립니다.
+      // 이용이 정지된 회원은 무엇보다 먼저 맨 아래로 내립니다.
+      const stopped = (m) => (m.status === 'blocked' ? 1 : 0);
+      if (stopped(a) !== stopped(b)) return stopped(a) - stopped(b);
+      // 그 위에서, 처리할 일이 있는 사람(재설정 요청)을 맨 앞으로 올립니다.
       if (Boolean(b.resetRequestedAt) !== Boolean(a.resetRequestedAt)) return b.resetRequestedAt ? 1 : -1;
       return (b.createdAt || '').localeCompare(a.createdAt || '');
     });
@@ -1026,7 +1125,7 @@ export async function membersView(mount) {
             ${rows.map((m) => {
               const self = m.email === me.email;
               return `
-              <tr>
+              <tr class="${m.status === 'blocked' ? 'is-blocked' : ''}">
                 <td>${esc(m.institution || '—')}</td>
                 <td>${esc(m.name)}</td>
                 <td><a href="mailto:${attr(m.email)}">${esc(m.email)}</a></td>
@@ -1084,6 +1183,7 @@ export async function membersView(mount) {
       });
     });
 
+    // 삭제는 정지된 일반 회원에게만 붙습니다 — 서버도 같은 조건을 다시 봅니다.
     rowsEl.querySelectorAll('[data-remove]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const email = btn.dataset.remove;

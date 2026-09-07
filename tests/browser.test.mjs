@@ -199,7 +199,7 @@ await step('로그인 성공', async () => {
   await page.waitForSelector('.hero__title', { timeout: 8000 });
 });
 await step('로그인하면 회원 메뉴가 나타남', async () => {
-  for (const nav of ['materials', 'board', 'my']) {
+  for (const nav of ['materials', 'board', 'vote', 'my']) {
     if (!(await page.locator(`.gnav__links a[data-nav="${nav}"]`).isVisible())) {
       throw new Error(`${nav} 메뉴가 안 보임`);
     }
@@ -209,6 +209,12 @@ await step('소통방 메뉴가 강의자료 바로 다음', async () => {
   const order = await page.locator('.gnav__links a').evaluateAll(
     (els) => els.map((e) => e.dataset.nav));
   if (order.indexOf('board') !== order.indexOf('materials') + 1) throw new Error(order.join(' > '));
+});
+await step('과제 투표 메뉴가 소통방 다음, 내 제출물 앞', async () => {
+  const order = await page.locator('.gnav__links a').evaluateAll(
+    (els) => els.map((e) => e.dataset.nav));
+  if (order.indexOf('vote') !== order.indexOf('board') + 1) throw new Error(order.join(' > '));
+  if (order.indexOf('my') !== order.indexOf('vote') + 1) throw new Error(order.join(' > '));
 });
 await step('로그인 뒤 next 경로로 돌아감', async () => {
   await logout();
@@ -814,6 +820,105 @@ await step('일반 회원으로 돌아오면 공지 버튼이 사라짐', async 
   await page.locator('.post').first().click();
   await page.waitForSelector('.prose', { timeout: 5000 });
   if (await page.locator('[data-pin]').count()) throw new Error('회원에게 공지 버튼이 보임');
+});
+
+/* ====================================================== 9-3. 상호 투표 == */
+
+log('\n== 9-3. 상호 투표 ==');
+
+let voteProjectId;
+
+await step('투표를 켠 과제가 없으면 투표 화면이 비어 있음', async () => {
+  await page.goto(`${BASE}#/vote`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#voteList .empty h3', { timeout: 6000 });
+  const t = await page.locator('#voteList .empty h3').innerText();
+  if (!t.includes('진행중인 투표가 없습니다')) throw new Error(t);
+});
+
+await step('관리자가 투표를 켠 과제를 개설하고 시안을 냄', async () => {
+  await logout();
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: ADMIN.email, password: ADMIN.password });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
+
+  await page.goto(`${BASE}#/admin/project/new`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#projForm', { timeout: 5000 });
+  await page.fill('#projForm [name="title"]', '4주차 · 우수작 투표');
+  await page.fill('#projForm [name="description"]', '시안을 올리고 서로 투표합니다.');
+  await page.check('#projForm [name="voteEnabled"]');
+  await page.fill('#projForm [name="votePerMember"]', '1');
+  await page.locator('#projForm button[type="submit"]').click();
+  await page.waitForURL(/#\/p\//, { timeout: 6000 });
+  voteProjectId = page.url().split('#/p/')[1];
+
+  await page.goto(`${BASE}#/p/${voteProjectId}/submit`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#submitForm', { timeout: 5000 });
+  await submitForm('#submitForm', { title: '관리자 시안', body: '예시로 올린 시안입니다.', agree: true });
+  await page.waitForURL(/#\/s\//, { timeout: 8000 });
+});
+
+await step('정지된 회원은 맨 아래로 내려가고 그 자리에서 삭제됨', async () => {
+  await page.goto(`${BASE}#/admin/members`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.table tbody tr', { timeout: 6000 });
+
+  const rows = page.locator('.table tbody tr');
+  const last = await rows.nth((await rows.count()) - 1).innerText();
+  if (!last.includes('kim@example.com')) throw new Error(`맨 아래: ${last}`);
+
+  const kim = () => page.locator('.table tbody tr', { hasText: 'kim@example.com' });
+  if (!(await kim().locator('[data-remove]').count())) throw new Error('정지 회원에 삭제 버튼이 없음');
+  if (await page.locator('.table tbody tr', { hasText: USER.email })
+    .locator('[data-remove]').count()) throw new Error('이용중 회원에 삭제 버튼이 붙음');
+
+  await kim().locator('[data-remove]').click();
+  await page.waitForSelector('.modal [data-require]', { timeout: 5000 });
+  await page.fill('.modal [data-require]', '삭제');
+  await page.locator('.modal [data-ok]').click();
+  await page.waitForTimeout(700);
+  if (await kim().count()) throw new Error('명부에 남아 있음');
+});
+
+await step('회원이 상단 메뉴에서 투표 화면을 찾음', async () => {
+  await logout();
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#loginForm', { timeout: 5000 });
+  await submitForm('#loginForm', { email: USER.email, password: USER.password });
+  await page.waitForSelector('.hero__title', { timeout: 8000 });
+
+  await page.locator('.gnav__links a[data-nav="vote"]').click();
+  await page.waitForSelector('#voteList .tile', { timeout: 6000 });
+  const t = await page.locator('#voteList').innerText();
+  if (!t.includes('4주차')) throw new Error(t);
+  if (!t.includes('투표중')) throw new Error(t);
+});
+
+await step('회원이 시안을 내고 남의 시안에 표를 줌', async () => {
+  await page.goto(`${BASE}#/p/${voteProjectId}/submit`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#submitForm', { timeout: 5000 });
+  await submitForm('#submitForm', { title: '회원 시안', body: '제 시안입니다.', agree: true });
+  await page.waitForURL(/#\/s\//, { timeout: 8000 });
+
+  await page.goto(`${BASE}#/vote/${voteProjectId}`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.votecard', { timeout: 6000 });
+  const n = await page.locator('.votecard').count();
+  if (n !== 2) throw new Error(`카드 ${n}장`);
+
+  if (await page.locator('.votecard', { hasText: '회원 시안' }).locator('[data-vote]').count()) {
+    throw new Error('본인 시안에 투표 버튼이 있음');
+  }
+  await page.locator('.votecard', { hasText: '관리자 시안' })
+    .locator('[data-vote][data-on="1"]').click();
+  await page.waitForSelector('.votecard--picked', { timeout: 6000 });
+  const card = await page.locator('.votecard', { hasText: '관리자 시안' }).innerText();
+  if (!card.includes('1표')) throw new Error(card);
+});
+
+await step('새로고침해도 표가 그대로 남아 있음', async () => {
+  await page.goto(`${BASE}#/vote/${voteProjectId}`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.votecard--picked', { timeout: 6000 });
+  const status = await page.locator('#voteStatus').innerText();
+  if (!/내가 쓴 표/.test(status)) throw new Error(status);
 });
 
 /* ======================================================= 10. 내 계정 == */

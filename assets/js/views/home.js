@@ -1,5 +1,5 @@
 /** 홈 — 히어로 + 진행중 프로젝트 그리드. */
-import { store, submissionOpen } from '../store/index.js';
+import { store, submissionOpen, votingOf, votingPhase, VOTE_PHASE_LABEL } from '../store/index.js';
 import { CONFIG } from '../config.js';
 import { esc, attr, fmtDate, isPastDue } from '../utils.js';
 import { spinner, emptyState } from '../ui.js';
@@ -7,6 +7,7 @@ import { isAdmin, isSignedIn, currentUser } from '../auth.js';
 
 export function projectCard(p) {
   const open = submissionOpen(p);
+  const vote = votingOf(p);
   const due = p.dueAt
     ? `<span class="badge ${isPastDue(p.dueAt) ? 'badge--due' : 'badge--soft'}">마감 ${esc(fmtDate(p.dueAt, true))}</span>`
     : '<span class="badge badge--soft">마감일 없음</span>';
@@ -18,6 +19,7 @@ export function projectCard(p) {
         <div class="row" style="gap:6px">
           <span class="badge ${open ? 'badge--open' : 'badge--closed'}">${open ? '접수중' : '마감'}</span>
           ${p.visibility === 'public' ? '<span class="badge badge--gold">제출물 공개</span>' : ''}
+          ${vote ? `<span class="badge badge--gold">${esc(VOTE_PHASE_LABEL[votingPhase(p)])}</span>` : ''}
         </div>
         <h3 class="tile__title">${esc(p.title)}</h3>
         <p class="tile__desc">${esc(p.description || '설명이 없습니다.')}</p>

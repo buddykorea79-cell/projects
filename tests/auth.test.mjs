@@ -486,56 +486,6 @@ await t('제출물까지 함께 지우면 첨부 원본도 정리됨', async () 
   if (bucket.objects.has(up.data.key)) throw new Error('첨부가 남음');
 });
 
-console.log('\n== 평가 투표 권한 ==');
-
-let evalSubId;
-await t('평가할 제출물 준비', async () => {
-  const r = await alice('/submissions', {
-    method: 'POST', body: { projectId, title: '평가용 제출', body: '내용', files: [] },
-  });
-  eq(r.status, 200, 'status');
-  evalSubId = r.data.submission.id;
-});
-
-await t('일반 회원은 평가 투표를 보지도 넣지도 못함', async () => {
-  eq((await alice('/evaluations')).status, 403, '조회');
-  const r = await alice('/evaluations', { method: 'POST', body: { projectId, picks: [] } });
-  eq(r.status, 403, '투표');
-});
-
-await t('관리자는 투표할 수 있고 없는 프로젝트는 거부', async () => {
-  eq((await admin('/evaluations')).status, 200, '조회');
-  const missing = await admin('/evaluations', { method: 'POST', body: { projectId: 'p_nope', picks: [] } });
-  eq(missing.status, 404, '없는 프로젝트');
-
-  const r = await admin('/evaluations', {
-    method: 'POST', body: { projectId, picks: [{ submissionId: evalSubId, rank: 1 }] },
-  });
-  eq(r.status, 200, '투표');
-  eq(r.data.ballot.picks[0].rank, 1, '순위');
-  eq(r.data.ballot.voter.email, ADMIN, '투표자는 세션에서 채움');
-});
-
-await t('회원을 지우면 그 사람이 넣은 표도 사라짐', async () => {
-  const c = client();
-  await signup(c, 'voter@example.com', { name: '투표자' });
-  await admin('/auth/members', { method: 'PATCH', body: { email: 'voter@example.com', role: 'admin' } });
-
-  const vote = await c('/evaluations', {
-    method: 'POST', body: { projectId, picks: [{ submissionId: evalSubId, rank: 2 }] },
-  });
-  eq(vote.status, 200, '투표');
-  const before = (await admin('/evaluations')).data.data;
-  eq(before.some((b) => b.voter.email === 'voter@example.com'), true, '사전 조건');
-
-  await admin('/auth/members', { method: 'PATCH', body: { email: 'voter@example.com', role: 'member' } });
-  await admin('/auth/members', { method: 'PATCH', body: { email: 'voter@example.com', status: 'blocked' } });
-  eq((await admin('/auth/members', { method: 'DELETE', body: { email: 'voter@example.com' } })).status, 200, '삭제');
-
-  const after = (await admin('/evaluations')).data.data;
-  eq(after.some((b) => b.voter.email === 'voter@example.com'), false, '표가 남아 있음');
-});
-
 console.log('\n== 파일 접근 ==');
 
 await t('비로그인은 파일을 받을 수 없음', async () => {

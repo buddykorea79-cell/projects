@@ -3,7 +3,7 @@
  *
  *   data/projects.json      프로젝트 목록
  *   data/submissions.json   제출물 색인(메타데이터)
- *   data/evaluations.json   평가 투표용지
+ *   data/votes.json         상호 투표 (표 한 줄씩)
  *   uploads/<제출ID>/<파일명>  첨부 파일 원본
  *
  * 읽기 : raw.githubusercontent.com — 인증 없이 누구나. (공개 레포 기준)
@@ -13,6 +13,7 @@
 import { CONFIG } from '../config.js';
 import { uid, safeName, fileToBase64, utf8ToBase64 } from '../utils.js';
 import { DemoAuth } from './demo-auth.js';
+import { summarizeVotes, applyVote } from './voting.js';
 
 const TOKEN_KEY = 'ah.gh.token';
 const API = 'https://api.github.com';
@@ -200,7 +201,7 @@ export class GitHubStore {
   get submissionsPath() { return `${this.cfg.dataDir}/submissions.json`; }
   get materialsPath()   { return `${this.cfg.dataDir}/materials.json`; }
   get postsPath()       { return `${this.cfg.dataDir}/posts.json`; }
-  get evaluationsPath() { return `${this.cfg.dataDir}/evaluations.json`; }
+  get votesPath()       { return `${this.cfg.dataDir}/votes.json`; }
 
   /**
    * 새 파일들을 uploads/ 아래에 커밋하고 레코드의 files 배열을 채웁니다.
@@ -343,7 +344,12 @@ export class GitHubStore {
   async deleteProject(id) {
     const subs = await this.listSubmissions({ projectId: id });
     for (const s of subs) await this.deleteSubmission(s.id);
-    await this.deleteEvaluation(id, { all: true });
+    // 제출물이 하나도 없던 프로젝트라도 표가 남지 않게 한 번 더 훑습니다.
+    if ((await this.listVotes()).some((v) => v.projectId === id)) {
+      await this.mutateJSON(this.votesPath, [], (list) =>
+        (Array.isArray(list) ? list : []).filter((v) => v.projectId !== id),
+      `chore(votes): remove votes for project ${id}`);
+    }
     await this.mutateJSON(this.projectsPath, [], (list) =>
       (Array.isArray(list) ? list : []).filter((p) => p.id !== id),
     `chore(projects): remove ${id}`);
@@ -396,74 +402,63 @@ export class GitHubStore {
     await this.mutateJSON(this.submissionsPath, [], (list) =>
       (Array.isArray(list) ? list : []).filter((s) => s.id !== id),
     `chore(submissions): remove ${id}`);
-    // 사라진 제출물에 찍힌 표는 결과 화면에 유령으로 남지 않도록 걷어냅니다.
-    await this.dropPicks(new Set([id]));
+    // 지워진 제출물에 들어간 표도 함께 거둡니다 (서버 모드와 같은 규칙).
+    const votes = await this.listVotes();
+    if (votes.some((v) => v.submissionId === id)) {
+      await this.mutateJSON(this.votesPath, [], (list) =>
+        (Array.isArray(list) ? list : []).filter((v) => v.submissionId !== id),
+      `chore(votes): remove votes for ${id}`);
+    }
   }
 
-  /* -------------------------------------------------------------- 평가 -- */
+  /* -------------------------------------------------------------- 투표 -- */
 
-  async listEvaluations({ projectId = null } = {}) {
-    const rows = await this.readJSON(this.evaluationsPath, []);
-    const out = Array.isArray(rows) ? rows : [];
-    return projectId ? out.filter((b) => b.projectId === projectId) : out;
+  async listVotes() {
+    const rows = await this.readJSON(this.votesPath, []);
+    return Array.isArray(rows) ? rows : [];
   }
 
-  async saveEvaluation(projectId, picks) {
+  async voteSummary(projectId) {
+    const project = await this.getProject(projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+    return summarizeVotes(project, await this.listVotes(), this.auth?.me() || {});
+  }
+
+  async castVote(submissionId, on = true) {
     const me = this.auth?.me();
     if (!me) throw new Error('로그인이 필요합니다.');
-    const now = new Date().toISOString();
-    const email = String(me.email || '').toLowerCase();
+    const sub = await this.getSubmission(submissionId);
+    if (!sub) throw new Error('제출물을 찾을 수 없습니다.');
+    const project = await this.getProject(sub.projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
 
-    let saved = null;
-    await this.mutateJSON(this.evaluationsPath, [], (list) => {
-      const arr = Array.isArray(list) ? list : [];
-      const i = arr.findIndex((b) => b.projectId === projectId
-        && String(b.voter?.email || '').toLowerCase() === email);
-      saved = {
-        projectId,
-        voter: { email, name: me.name, institution: me.institution || '' },
-        picks: Array.isArray(picks) ? picks : [],
-        createdAt: i >= 0 ? (arr[i].createdAt || now) : now,
-        updatedAt: now,
-      };
-      if (i >= 0) arr[i] = saved; else arr.push(saved);
-      return arr;
-    }, `chore(evaluations): vote on ${projectId}`);
+    const rows = await this.listVotes();
+    // 바뀌는 것이 없으면(이미 넣은 표를 또 누름) 커밋을 만들지 않습니다.
+    if (!applyVote(project, rows, me, submissionId, on, sub)) {
+      return summarizeVotes(project, rows, me);
+    }
 
-    return saved;
+    let next = rows;
+    await this.mutateJSON(this.votesPath, [], (list) => {
+      // 읽고 나서 다른 사람의 표가 들어왔을 수 있어 최신 목록 위에 다시 적용합니다.
+      const cur = Array.isArray(list) ? list : [];
+      next = (applyVote(project, cur, me, submissionId, on, sub) || cur)
+        .map((v) => (v.id ? v : { ...v, id: uid('v_') }));
+      return next;
+    }, `${on ? 'feat' : 'chore'}(votes): ${on ? 'add' : 'remove'} vote on ${submissionId}`);
+
+    return summarizeVotes(project, next, me);
   }
 
-  async deleteEvaluation(projectId, { all = false } = {}) {
-    const email = String(this.auth?.me()?.email || '').toLowerCase();
-    const gone = (b) => b.projectId === projectId
-      && (all || String(b.voter?.email || '').toLowerCase() === email);
-
-    await this.mutateJSON(this.evaluationsPath, [], (list) =>
-      (Array.isArray(list) ? list : []).filter((b) => !gone(b)),
-    `chore(evaluations): clear ${projectId}`);
-  }
-
-  /** 지워진 제출물에 찍힌 표를 모든 투표용지에서 걷어냅니다. */
-  async dropPicks(ids) {
-    const rows = await this.listEvaluations();
-    if (!rows.some((b) => (b.picks || []).some((p) => ids.has(p.submissionId)))) return;
-    await this.mutateJSON(this.evaluationsPath, [], (list) =>
-      (Array.isArray(list) ? list : []).map((b) => ({
-        ...b,
-        picks: (b.picks || []).filter((p) => !ids.has(p.submissionId)),
-      })),
-    'chore(evaluations): drop removed submissions');
-  }
-
-  /** 탈퇴·삭제된 회원이 넣은 투표용지를 지웁니다. */
+  /** 삭제된 회원이 넣은 표를 걷어냅니다 (DemoAuth.deleteMember 가 부릅니다). */
   async dropVoter(email) {
-    const e = String(email || '').toLowerCase();
-    const rows = await this.listEvaluations();
-    if (!rows.some((b) => String(b.voter?.email || '').toLowerCase() === e)) return;
-    await this.mutateJSON(this.evaluationsPath, [], (list) =>
+    const e = String(email || '').trim().toLowerCase();
+    const rows = await this.listVotes();
+    if (!rows.some((v) => String(v.voter || '').toLowerCase() === e)) return;
+    await this.mutateJSON(this.votesPath, [], (list) =>
       (Array.isArray(list) ? list : [])
-        .filter((b) => String(b.voter?.email || '').toLowerCase() !== e),
-    'chore(evaluations): drop removed member');
+        .filter((v) => String(v.voter || '').toLowerCase() !== e),
+    'chore(votes): drop votes by removed member');
   }
 
   /* --------------------------------------------------------- materials */
@@ -532,7 +527,6 @@ export class GitHubStore {
       submissions: await this.listSubmissions(),
       materials: await this.listMaterials(),
       posts: await this.listPosts(),
-      evaluations: await this.listEvaluations(),
     };
   }
 
@@ -548,10 +542,6 @@ export class GitHubStore {
     }
     if (dump.posts) {
       await this.mutateJSON(this.postsPath, [], () => dump.posts, 'chore(posts): import');
-    }
-    if (dump.evaluations) {
-      await this.mutateJSON(this.evaluationsPath, [], () => dump.evaluations,
-        'chore(evaluations): import');
     }
   }
 }

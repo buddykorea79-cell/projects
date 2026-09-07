@@ -337,6 +337,113 @@ await step('관리자가 공지로 지정하면 맨 위로', async () => {
   if (!(await bob.locator('.post--pinned').count())) throw new Error('공지 표시 없음');
 });
 
+log('\n== 6-3. 상호 투표 ==');
+
+let voteProjectId;
+
+await step('관리자가 투표를 켠 프로젝트를 개설', async () => {
+  await admin.goto(`${origin}/#/admin/project/new`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('#projForm', { timeout: 8000 });
+  await admin.fill('#projForm [name="title"]', '2주차 · 랜딩 페이지 시안');
+  await admin.fill('#projForm [name="description"]', '시안을 올리고 서로 투표합니다.');
+  await admin.check('#projForm [name="voteEnabled"]');
+  await admin.fill('#projForm [name="votePerMember"]', '1');
+  await admin.locator('#projForm button[type="submit"]').click();
+  await admin.waitForURL(/#\/p\//, { timeout: 12000 });
+  voteProjectId = admin.url().split('#/p/')[1];
+
+  const saved = JSON.parse(new TextDecoder().decode(bucket.objects.get('data/projects.json').bytes))
+    .find((p) => p.id === voteProjectId);
+  if (!saved?.voting?.enabled) throw new Error('투표 설정이 저장되지 않음');
+  if (saved.voting.perMember !== 1) throw new Error(`1인당 표 ${saved.voting.perMember}`);
+});
+
+await step('상단 메뉴의 과제 투표 링크로 목록이 열림', async () => {
+  await alice.goto(`${origin}/#/`, { waitUntil: 'networkidle' });
+  const link = alice.locator('.gnav__links a[href="#/vote"]');
+  if (!(await link.count())) throw new Error('메뉴에 투표 링크가 없음');
+  if (await link.first().isHidden()) throw new Error('회원인데 투표 메뉴가 숨겨짐');
+  await link.first().click();
+  await alice.waitForSelector('#voteList .tile', { timeout: 10000 });
+  const text = await alice.locator('#voteList').innerText();
+  if (!text.includes('2주차')) throw new Error(text);
+  if (!text.includes('투표중')) throw new Error(text);
+});
+
+await step('세 사람이 시안을 제출', async () => {
+  for (const [page, title] of [[alice, '앨리스 시안'], [bob, '밥 시안'], [admin, '관리자 시안']]) {
+    await page.goto(`${origin}/#/p/${voteProjectId}/submit`, { waitUntil: 'networkidle' });
+    await page.waitForSelector('#submitForm', { timeout: 8000 });
+    await page.fill('#submitForm [name="title"]', title);
+    await page.fill('#submitForm [name="body"]', '설명입니다.');
+    await page.check('#submitForm [name="agree"]');
+    await page.locator('#submitForm button[type="submit"]').click();
+    await page.waitForURL(/#\/s\//, { timeout: 15000 });
+  }
+});
+
+await step('투표를 받는 프로젝트는 비공개여도 서로의 시안이 보임', async () => {
+  await alice.goto(`${origin}/#/vote/${voteProjectId}`, { waitUntil: 'networkidle' });
+  await alice.waitForSelector('.votecard', { timeout: 10000 });
+  const count = await alice.locator('.votecard').count();
+  if (count !== 3) throw new Error(`카드 ${count}장`);
+  const text = await alice.locator('#voteBoard').innerText();
+  if (!text.includes('밥 시안')) throw new Error('남의 시안이 안 보임');
+});
+
+await step('본인 시안에는 투표 버튼이 없음', async () => {
+  const own = alice.locator('.votecard', { hasText: '앨리스 시안' });
+  if (await own.locator('[data-vote]').count()) throw new Error('본인 카드에 투표 버튼이 있음');
+});
+
+await step('표를 넣으면 득표가 오르고 R2 에 남음', async () => {
+  await alice.locator('.votecard', { hasText: '밥 시안' })
+    .locator('[data-vote][data-on="1"]').click();
+  await alice.waitForSelector('.votecard--picked', { timeout: 10000 });
+
+  const card = await alice.locator('.votecard', { hasText: '밥 시안' }).innerText();
+  if (!card.includes('1표')) throw new Error(card);
+
+  const raw = new TextDecoder().decode(bucket.objects.get('data/votes.json').bytes);
+  if (!raw.includes('alice@example.com')) throw new Error('R2 에 표가 남지 않음');
+});
+
+await step('남은 표를 다 쓰면 다른 카드의 버튼이 잠김', async () => {
+  const btn = alice.locator('.votecard', { hasText: '관리자 시안' })
+    .locator('[data-vote][data-on="1"]');
+  if (!(await btn.count())) throw new Error('투표 버튼이 없음');
+  if (!(await btn.isDisabled())) throw new Error('표가 없는데 버튼이 열려 있음');
+});
+
+await step('투표를 취소하면 표가 되돌아옴', async () => {
+  await alice.locator('.votecard', { hasText: '밥 시안' })
+    .locator('[data-vote][data-on="0"]').click();
+  await alice.waitForFunction(() => !document.querySelector('.votecard--picked'), null,
+    { timeout: 10000 });
+  const btn = alice.locator('.votecard', { hasText: '관리자 시안' })
+    .locator('[data-vote][data-on="1"]');
+  if (await btn.isDisabled()) throw new Error('표를 뺐는데 버튼이 잠겨 있음');
+
+  // 결과 확인을 위해 다시 한 표 넣어 둡니다.
+  await alice.locator('.votecard', { hasText: '밥 시안' })
+    .locator('[data-vote][data-on="1"]').click();
+  await alice.waitForSelector('.votecard--picked', { timeout: 10000 });
+});
+
+await step('다른 회원의 표는 브라우저로 내려오지 않음', async () => {
+  const res = await bob.request.get(`${origin}/api/votes?projectId=${voteProjectId}`);
+  const body = await res.json();
+  if (JSON.stringify(body).includes('alice@example.com')) throw new Error('투표자 이메일이 새어 나감');
+  if (body.summary.used !== 0) throw new Error(`밥이 쓴 표 ${body.summary.used}`);
+});
+
+await step('관리자 제출물 화면에 득표 열이 생김', async () => {
+  await admin.goto(`${origin}/#/admin/submissions/${voteProjectId}`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('.table tbody tr', { timeout: 10000 });
+  const head = await admin.locator('.table thead').innerText();
+  if (!head.includes('득표')) throw new Error(head);
+});
+
 log('\n== 7. 회원 관리 ==');
 
 await step('관리자만 회원 목록을 볼 수 있음', async () => {
@@ -363,15 +470,15 @@ await step('이용 정지하면 그 회원의 세션이 끊김', async () => {
   if (!title.includes('로그인')) throw new Error(title);
 });
 
-log('\n== 7-2. 제출 현황 · 평가 · 회원 삭제 ==');
+log('\n== 7-2. 제출 현황 · 회원 삭제 ==');
 
-await step('평가할 제출물을 다시 하나 준비', async () => {
+await step('제출 현황 확인용으로 제출물을 하나 준비', async () => {
   await alice.goto(`${origin}/#/p/${projectId}/submit`, { waitUntil: 'networkidle' });
   await alice.waitForSelector('#submitForm', { timeout: 8000 });
-  await alice.fill('[name="title"]', '평가용 시안');
+  await alice.fill('[name="title"]', '현황 확인용 시안');
   await alice.fill('[name="body"]', '참고 사이트는 https://example.com 입니다.');
   await alice.setInputFiles('[data-input]', {
-    name: '평가시안.png',
+    name: '현황시안.png',
     mimeType: 'image/png',
     buffer: Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489'
       + '0000000a49444154789c6360000002000100ffff03000006000557bfabd40000000049454e44ae426082', 'hex'),
@@ -406,33 +513,6 @@ await step('미제출자만 걸러서 볼 수 있음', async () => {
   if (!text.includes('bob@example.com')) throw new Error('미제출자가 없음');
 });
 
-await step('평가 화면이 제출물과 첨부를 한 화면에 보여줌', async () => {
-  await admin.goto(`${origin}/#/admin/evaluate/${projectId}`, { waitUntil: 'networkidle' });
-  await admin.waitForSelector('.eval-card', { timeout: 10000 });
-  await admin.waitForSelector('.eval-card__media img', { timeout: 10000 });
-  const ok = await admin.locator('.eval-card__media img').first()
-    .evaluate((img) => img.complete && img.naturalWidth > 0);
-  if (!ok) throw new Error('미리보기 이미지가 로드되지 않음');
-  // 본문에 적힌 주소는 새 창으로 열 수 있게 버튼으로 나옵니다.
-  const links = await admin.locator('.eval-card__links').first().innerText();
-  if (!links.includes('사이트 열기')) throw new Error(links);
-});
-
-await step('순위를 매겨 투표하면 결과에 순위표가 나옴', async () => {
-  await admin.locator('.eval-card [data-rank]').first().selectOption('1');
-  await admin.locator('[data-submit]').click();
-  await admin.waitForSelector('.result-bar', { timeout: 10000 });
-
-  const text = await admin.locator('#evalBody').innerText();
-  if (!text.includes('순위점수')) throw new Error('순위표가 아님');
-
-  const ballots = JSON.parse(new TextDecoder().decode(
-    bucket.objects.get('data/evaluations.json').bytes));
-  if (ballots.length !== 1) throw new Error(`투표용지 ${ballots.length}장`);
-  if (ballots[0].picks[0].rank !== 1) throw new Error(`순위 ${ballots[0].picks[0].rank}`);
-  if (ballots[0].voter.email !== 'aireader@mois.go.kr') throw new Error(ballots[0].voter.email);
-});
-
 await step('삭제 버튼은 정지된 회원에게만 보임', async () => {
   await admin.goto(`${origin}/#/admin/members`, { waitUntil: 'networkidle' });
   await admin.waitForSelector('#memberRows .table tbody tr', { timeout: 10000 });
@@ -448,6 +528,11 @@ await step('정지된 회원을 삭제하면 명부에서 사라짐', async () =
   await bobRow.locator('[data-remove]').click();
   await admin.fill('.modal [data-require]', '삭제');
   await admin.locator('.modal [data-ok]').click();
+
+  // 밥은 투표 과제에 시안을 냈으므로 "제출물도 함께 지울까요?" 를 한 번 더 묻습니다.
+  // 여기서는 기록으로 남기는 쪽(취소)을 고릅니다.
+  await admin.waitForSelector('.modal [data-cancel]', { timeout: 8000 });
+  await admin.locator('.modal [data-cancel]').click();
   await admin.waitForTimeout(2500);
 
   const members = JSON.parse(new TextDecoder().decode(bucket.objects.get('data/members.json').bytes));
@@ -455,6 +540,14 @@ await step('정지된 회원을 삭제하면 명부에서 사라짐', async () =
   if (await admin.locator('#memberRows tr', { hasText: 'bob@example.com' }).count()) {
     throw new Error('표에 남아 있음');
   }
+});
+
+await step('대시보드 회원 수는 이용중 인원만 셈', async () => {
+  await admin.goto(`${origin}/#/admin`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('#stats .stat', { timeout: 10000 });
+  // 관리자 + 앨리스 = 2명 (밥은 삭제됨)
+  const stats = (await admin.locator('#stats').innerText()).replace(/\n/g, ' ');
+  if (!/2\s*회원/.test(stats)) throw new Error(stats);
 });
 
 log('\n== 8. 계정 ==');

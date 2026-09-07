@@ -40,16 +40,14 @@
  *   PATCH  /submissions/:id         (본인·관리자)
  *   DELETE /submissions/:id         (본인·관리자)
  *   POST   /upload                  (로그인)
- *   GET    /evaluations             (관리자) 평가 투표용지 전체
- *   POST   /evaluations             (관리자) 내 투표용지 등록·수정
- *   PUT    /evaluations             (관리자) 백업 복원
- *   DELETE /evaluations/:projectId  (관리자) 내 투표 취소 (?scope=all 이면 전체 초기화)
  *   GET    /posts                   (로그인) 소통방 목록 — 공지가 맨 위
  *   POST   /posts                   (로그인) 글쓰기
  *   PATCH  /posts/:id               (본인 또는 관리자) — pinned 는 관리자만
  *   DELETE /posts/:id               (본인 또는 관리자)
  *   POST   /posts/:id/comments      (로그인) 댓글
  *   DELETE /posts/:id/comments/:cid (본인 또는 관리자)
+ *   GET    /votes?projectId=…       (로그인) 상호 투표 집계 + 내가 넣은 표
+ *   POST   /votes                   (로그인) 표 넣기·빼기
  *   GET    /file/<key>              (로그인)
  *   DELETE /file/<key>              (관리자)
  */
@@ -210,24 +208,6 @@ async function route(request, env, url, path, cors, waitUntil) {
     return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
   }
 
-  /* -------------------------------------------------------------- 평가 -- */
-
-  if (path === '/evaluations') {
-    const admin = await requireAdmin(request, env);
-    if (admin.error) return json({ message: admin.error }, admin.status, cors);
-    if (method === 'GET') return listEvaluations(env, cors);
-    if (method === 'POST') return castEvaluation(request, env, admin.member, cors);
-    if (method === 'PUT') return restoreEvaluations(request, env, cors);
-    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
-  }
-  const evalMatch = path.match(/^\/evaluations\/([A-Za-z0-9_-]{1,64})$/);
-  if (evalMatch) {
-    const admin = await requireAdmin(request, env);
-    if (admin.error) return json({ message: admin.error }, admin.status, cors);
-    if (method === 'DELETE') return removeEvaluation(env, url, evalMatch[1], admin.member, cors);
-    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
-  }
-
   /* ------------------------------------------------------------ 소통방 -- */
 
   if (path === '/posts') {
@@ -248,6 +228,14 @@ async function route(request, env, url, path, cors, waitUntil) {
   const oneComment = path.match(/^\/posts\/([A-Za-z0-9_-]{1,64})\/comments\/([A-Za-z0-9_-]{1,64})$/);
   if (oneComment && method === 'DELETE') {
     return removeComment(request, env, oneComment[1], oneComment[2], cors);
+  }
+
+  /* -------------------------------------------------------------- 투표 -- */
+
+  if (path === '/votes') {
+    if (method === 'GET') return voteSummaryRequest(request, env, url, cors);
+    if (method === 'POST') return castVote(request, env, cors);
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
   }
 
   /* ------------------------------------------------------- 파일 -- */
@@ -487,7 +475,7 @@ async function patchMember(request, env, admin, cors) {
  *
  * 제출물은 기본적으로 남깁니다. 프로젝트의 기록이라 계정을 지웠다고 해서
  * 함께 사라지면 곤란하기 때문입니다. `purgeSubmissions` 를 주면 제출물과
- * 첨부 원본까지 함께 지웁니다. 그 사람이 넣은 평가 투표는 언제나 함께 지웁니다.
+ * 첨부 원본까지 함께 지웁니다. 그 사람이 넣은 표는 언제나 함께 지웁니다.
  */
 async function removeMember(request, env, admin, cors) {
   const body = await request.json().catch(() => null);
@@ -526,16 +514,19 @@ async function removeMember(request, env, admin, cors) {
           if (f.key) await env.BUCKET.delete(f.key).catch(() => {});
         }
       }
-      await dropPicks(env, ids);
+      // 사라진 제출물에 들어간 표는 집계에 유령으로 남지 않도록 걷어냅니다.
+      await mutateIndex(env, 'votes', (l) => {
+        const kept = l.filter((v) => !ids.has(v.submissionId));
+        return kept.length === l.length ? null : kept;
+      });
     }
   }
 
   // 계정이 없어졌으니 그 사람이 넣은 표도 남겨둘 이유가 없습니다.
-  await mutateIndex(env, 'evaluations', (l) => (
-    l.some((b) => normEmail(b.voter?.email) === email)
-      ? l.filter((b) => normEmail(b.voter?.email) !== email)
-      : null
-  ));
+  await mutateIndex(env, 'votes', (l) => {
+    const kept = l.filter((v) => normEmail(v.voter) !== email);
+    return kept.length === l.length ? null : kept;
+  });
 
   return json({ ok: true, removedSubmissions }, 200, cors);
 }
@@ -668,6 +659,15 @@ async function writeIndexRequest(request, env, name, cors) {
     const { etag, data } = await readIndex(env, name);
     return json({ message: '동시 수정 충돌이 발생했습니다.', current: { etag, data } }, 409, cors);
   }
+
+  // 프로젝트가 사라졌다면 그 프로젝트에 들어간 표도 갈 곳이 없습니다.
+  if (name === 'projects') {
+    const alive = new Set(body.data.map((p) => p?.id).filter(Boolean));
+    await mutateIndex(env, 'votes', (list) => {
+      const kept = list.filter((v) => alive.has(v.projectId));
+      return kept.length === list.length ? null : kept;
+    });
+  }
   return json({ etag: put.etag }, 200, cors);
 }
 
@@ -738,9 +738,12 @@ async function listSubmissions(request, env, cors) {
 
   if (me.role === 'admin') return json({ data: subs }, 200, { ...cors, 'Cache-Control': 'no-store' });
 
-  const publicIds = new Set(projects.filter((p) => p.visibility === 'public').map((p) => p.id));
+  // 투표를 받는 프로젝트는 서로의 제출물을 봐야 표를 줄 수 있으므로 함께 열립니다.
+  const openIds = new Set(projects
+    .filter((p) => p.visibility === 'public' || votingOf(p))
+    .map((p) => p.id));
   const visible = subs
-    .filter((s) => normEmail(s.author?.email) === normEmail(me.email) || publicIds.has(s.projectId))
+    .filter((s) => normEmail(s.author?.email) === normEmail(me.email) || openIds.has(s.projectId))
     .map((s) => viewSubmission(s, me));
 
   return json({ data: visible }, 200, { ...cors, 'Cache-Control': 'no-store' });
@@ -864,145 +867,15 @@ async function removeSubmission(request, env, id, cors) {
   }
 
   await mutateIndex(env, 'submissions', (list) => list.filter((s) => s.id !== id));
+  // 지워진 제출물에 들어간 표도 함께 거둡니다 — 남겨두면 투표자의 표 수만 축냅니다.
+  await mutateIndex(env, 'votes', (list) => {
+    const kept = list.filter((v) => v.submissionId !== id);
+    return kept.length === list.length ? null : kept;
+  });
   for (const f of existing.files || []) {
     if (f.key) await env.BUCKET.delete(f.key).catch(() => {});
   }
-  // 사라진 제출물에 찍힌 표가 결과 화면에 유령으로 남지 않게 함께 걷어냅니다.
-  await dropPicks(env, new Set([id]));
   return json({ ok: true }, 200, cors);
-}
-
-/* ============================================================ 평가 == */
-
-/**
- * 제출물 평가(투표).
- *
- * 관리자가 한 프로젝트의 제출물을 훑어보며 마음에 드는 것을 고르고, 원하면
- * 순위(1~5위)까지 매기는 기능입니다. 투표용지는 **관리자 한 사람당 프로젝트마다
- * 하나**이고, 다시 내면 앞의 것을 덮어씁니다. 집계는 화면에서 합니다 —
- * 서버는 누가 무엇에 표를 줬는지만 정확히 보관합니다.
- *
- *   data/evaluations.json
- *   [{ projectId, voter:{email,name,institution}, picks:[{submissionId, rank}], … }]
- *
- * 제출물과 마찬가지로 색인은 서버가 소유합니다. 브라우저는 자기 투표용지만
- * 바꿀 수 있고, 남의 표를 고치거나 지울 수 없습니다.
- */
-const MAX_RANK = 5;
-
-/**
- * 투표용지 정리 — 그 프로젝트의 제출물만, 같은 제출물은 한 번만,
- * 순위는 1~MAX_RANK 안에서 서로 겹치지 않게. 규칙을 벗어난 순위는 버리고
- * "순위 없는 표"로 남깁니다(표 자체를 버리면 사용자가 이유를 알기 어렵습니다).
- */
-function normalizePicks(picks, validIds) {
-  const out = [];
-  const seenId = new Set();
-  const seenRank = new Set();
-  for (const p of Array.isArray(picks) ? picks : []) {
-    const submissionId = String(p?.submissionId || '');
-    if (!validIds.has(submissionId) || seenId.has(submissionId)) continue;
-    seenId.add(submissionId);
-
-    const raw = Number(p?.rank);
-    const ok = Number.isInteger(raw) && raw >= 1 && raw <= MAX_RANK && !seenRank.has(raw);
-    if (ok) seenRank.add(raw);
-    out.push({ submissionId, rank: ok ? raw : null });
-  }
-  return out;
-}
-
-/** 지워진 제출물에 찍힌 표를 모든 투표용지에서 걷어냅니다. */
-async function dropPicks(env, ids) {
-  await mutateIndex(env, 'evaluations', (list) => {
-    if (!list.some((b) => (b.picks || []).some((p) => ids.has(p.submissionId)))) return null;
-    return list.map((b) => ({
-      ...b,
-      picks: (b.picks || []).filter((p) => !ids.has(p.submissionId)),
-    }));
-  });
-}
-
-async function listEvaluations(env, cors) {
-  const { data } = await readIndex(env, 'evaluations');
-  return json({ data }, 200, { ...cors, 'Cache-Control': 'no-store' });
-}
-
-async function castEvaluation(request, env, me, cors) {
-  const body = await request.json().catch(() => null);
-  const projectId = String(body?.projectId || '');
-  if (!projectId) return json({ message: '프로젝트가 필요합니다.' }, 400, cors);
-
-  const [{ data: projects }, { data: subs }] = await Promise.all([
-    readIndex(env, 'projects'), readIndex(env, 'submissions'),
-  ]);
-  if (!projects.some((p) => p.id === projectId)) {
-    return json({ message: '프로젝트를 찾을 수 없습니다.' }, 404, cors);
-  }
-
-  const validIds = new Set(subs.filter((s) => s.projectId === projectId).map((s) => s.id));
-  const picks = normalizePicks(body?.picks, validIds);
-  const email = normEmail(me.email);
-  const now = new Date().toISOString();
-
-  let saved = null;
-  await mutateIndex(env, 'evaluations', (list) => {
-    const i = list.findIndex((b) => b.projectId === projectId && normEmail(b.voter?.email) === email);
-    saved = {
-      projectId,
-      voter: { email, name: me.name, institution: me.institution || '' },
-      picks,
-      createdAt: i >= 0 ? (list[i].createdAt || now) : now,
-      updatedAt: now,
-    };
-    if (i >= 0) list[i] = saved; else list.push(saved);
-    return list;
-  });
-
-  return json({ ballot: saved }, 200, cors);
-}
-
-/** 내 투표만 취소합니다. `?scope=all` 이면 그 프로젝트의 표를 전부 지웁니다. */
-async function removeEvaluation(env, url, projectId, me, cors) {
-  const all = url.searchParams.get('scope') === 'all';
-  const email = normEmail(me.email);
-  const gone = (b) => b.projectId === projectId && (all || normEmail(b.voter?.email) === email);
-
-  const result = await mutateIndex(env, 'evaluations', (list) => (
-    list.some(gone) ? list.filter((b) => !gone(b)) : null
-  ));
-  return json({ ok: true, removed: result.ok }, 200, cors);
-}
-
-/** 백업 복원 — 평가 색인을 통째로 바꿉니다(제출물 복원과 같은 원칙). */
-async function restoreEvaluations(request, env, cors) {
-  const body = await request.json().catch(() => null);
-  if (!body || !Array.isArray(body.data)) {
-    return json({ message: '잘못된 요청 형식입니다.' }, 400, cors);
-  }
-
-  const now = new Date().toISOString();
-  const clean = body.data
-    .filter((b) => b && typeof b === 'object' && typeof b.projectId === 'string' && b.voter?.email)
-    .map((b) => ({
-      projectId: String(b.projectId).slice(0, 64),
-      voter: {
-        email: normEmail(b.voter.email),
-        name: String(b.voter.name || '').slice(0, 60),
-        institution: String(b.voter.institution || '').slice(0, 120),
-      },
-      picks: (Array.isArray(b.picks) ? b.picks : [])
-        .filter((p) => p && typeof p.submissionId === 'string')
-        .map((p) => ({
-          submissionId: String(p.submissionId).slice(0, 64),
-          rank: Number.isInteger(p.rank) && p.rank >= 1 && p.rank <= MAX_RANK ? p.rank : null,
-        })),
-      createdAt: b.createdAt || now,
-      updatedAt: b.updatedAt || b.createdAt || now,
-    }));
-
-  await mutateIndex(env, 'evaluations', () => clean);
-  return json({ ok: true, count: clean.length }, 200, cors);
 }
 
 /* ========================================================== 소통방 == */
@@ -1187,7 +1060,163 @@ async function removeComment(request, env, postId, commentId, cors) {
   return json({ post: viewPost(updated, me) }, 200, cors);
 }
 
-/* ============================================================ 업로드 == */
+/* ============================================================ 투표 == */
+
+/**
+ * 회원 상호 투표.
+ *
+ * 표는 `data/votes.json` 에 한 줄씩 쌓입니다 — {projectId, submissionId, voter}.
+ * **누가 어디에 넣었는지는 서버만 압니다.** 브라우저로는 집계와 "내가 넣은 표"만
+ * 내려가고, 남의 표는 어떤 경로로도 나가지 않습니다.
+ * 기간·1인당 표 수·본인 제출물 허용 여부는 프로젝트의 voting 설정을 따릅니다.
+ *
+ * (화면용 사본은 assets/js/store/index.js 의 votingOf·votingPhase — 함께 고치세요.)
+ */
+const VOTE_MAX_PER_MEMBER = 50;
+const VOTE_DEFAULT_PER_MEMBER = 3;
+
+/** 프로젝트의 투표 설정을 정규화합니다. 투표를 안 받으면 null. */
+function votingOf(project) {
+  const v = project?.voting;
+  if (!v || typeof v !== 'object' || !v.enabled) return null;
+  const per = Math.round(Number(v.perMember));
+  return {
+    enabled: true,
+    startAt: v.startAt || null,
+    endAt: v.endAt || null,
+    perMember: Number.isFinite(per)
+      ? Math.min(Math.max(per, 1), VOTE_MAX_PER_MEMBER)
+      : VOTE_DEFAULT_PER_MEMBER,
+    allowSelf: Boolean(v.allowSelf),
+    showCounts: v.showCounts !== false,
+  };
+}
+
+/** 'off'(투표 없음) | 'before'(시작 전) | 'open'(진행중) | 'closed'(마감) */
+function votingPhase(project, now = Date.now()) {
+  const cfg = votingOf(project);
+  if (!cfg) return 'off';
+  const start = cfg.startAt ? new Date(cfg.startAt).getTime() : null;
+  const end = cfg.endAt ? new Date(cfg.endAt).getTime() : null;
+  if (Number.isFinite(start) && start > now) return 'before';
+  if (Number.isFinite(end) && end < now) return 'closed';
+  return 'open';
+}
+
+/**
+ * 브라우저로 내려보낼 집계. 득표수를 숨기도록 설정했다면 투표가 끝나기 전까지
+ * counts 를 아예 내리지 않습니다 — 화면에서 가리는 것으로는 부족하기 때문입니다.
+ */
+function voteSummary(project, votes, me) {
+  const cfg = votingOf(project);
+  const phase = votingPhase(project);
+  const rows = votes.filter((v) => v.projectId === project.id);
+  const mine = rows
+    .filter((v) => normEmail(v.voter) === normEmail(me.email))
+    .map((v) => v.submissionId);
+
+  const showCounts = me.role === 'admin'
+    || phase === 'closed' || phase === 'off'
+    || (phase === 'open' && cfg?.showCounts !== false);
+
+  const counts = {};
+  if (showCounts) for (const v of rows) counts[v.submissionId] = (counts[v.submissionId] || 0) + 1;
+
+  return {
+    projectId: project.id,
+    phase,
+    limit: cfg ? cfg.perMember : 0,
+    allowSelf: Boolean(cfg?.allowSelf),
+    startAt: cfg?.startAt || null,
+    endAt: cfg?.endAt || null,
+    // 지금 집계를 볼 수 있는지. 설정값이 아니라 "이 사람에게 지금 보이는가" 입니다.
+    showCounts,
+    used: mine.length,
+    mine,
+    counts: showCounts ? counts : null,
+    voters: showCounts ? new Set(rows.map((v) => normEmail(v.voter))).size : null,
+    total: showCounts ? rows.length : null,
+  };
+}
+
+async function voteSummaryRequest(request, env, url, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+
+  const projectId = String(url.searchParams.get('projectId') || '');
+  const { data: projects } = await readIndex(env, 'projects');
+  const project = projects.find((p) => p.id === projectId);
+  if (!project) return json({ message: '프로젝트를 찾을 수 없습니다.' }, 404, cors);
+
+  const { data: votes } = await readIndex(env, 'votes');
+  return json({ summary: voteSummary(project, votes, got.member) }, 200,
+    { ...cors, 'Cache-Control': 'no-store' });
+}
+
+/** 표 넣기(on:true) · 빼기(on:false). 같은 요청을 두 번 보내도 결과는 같습니다. */
+async function castVote(request, env, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  const body = await request.json().catch(() => null);
+  const submissionId = String(body?.submissionId || '');
+  const on = body?.on !== false;
+  if (!submissionId) return json({ message: '대상 제출물이 필요합니다.' }, 400, cors);
+
+  const [{ data: projects }, { data: subs }] = await Promise.all([
+    readIndex(env, 'projects'), readIndex(env, 'submissions'),
+  ]);
+  const sub = subs.find((x) => x.id === submissionId);
+  if (!sub) return json({ message: '제출물을 찾을 수 없습니다.' }, 404, cors);
+  const project = projects.find((p) => p.id === sub.projectId);
+  if (!project) return json({ message: '프로젝트를 찾을 수 없습니다.' }, 404, cors);
+
+  const cfg = votingOf(project);
+  if (!cfg) return json({ message: '이 프로젝트는 투표를 받지 않습니다.' }, 400, cors);
+
+  // 관리자도 마감 뒤에는 넣지 못합니다 — 집계가 나중에 바뀌면 결과를 믿을 수 없습니다.
+  const phase = votingPhase(project);
+  if (phase !== 'open') {
+    return json({
+      message: phase === 'before' ? '아직 투표 기간이 아닙니다.' : '투표가 마감되었습니다.',
+    }, 400, cors);
+  }
+  if (on && !cfg.allowSelf && normEmail(sub.author?.email) === normEmail(me.email)) {
+    return json({ message: '본인 제출물에는 투표할 수 없습니다.' }, 400, cors);
+  }
+
+  let denied = null;
+  // 표 수 확인과 저장을 같은 mutator 안에서 합니다 — 겹쳐 들어와도 한도를 넘지 않습니다.
+  const result = await mutateIndex(env, 'votes', (list) => {
+    const mineHere = list.filter((v) => v.projectId === project.id
+      && normEmail(v.voter) === normEmail(me.email));
+    const already = mineHere.find((v) => v.submissionId === submissionId);
+
+    if (!on) {
+      if (!already) return null;                 // 이미 없음 — 저장할 것이 없습니다
+      return list.filter((v) => v !== already);
+    }
+    if (already) return null;                    // 이미 넣은 표 — 그대로 둡니다
+    if (mineHere.length >= cfg.perMember) {
+      denied = `투표는 1인당 ${cfg.perMember}표까지 할 수 있습니다.`;
+      return null;
+    }
+    list.push({
+      id: uid('v_'),
+      projectId: project.id,
+      submissionId,
+      voter: normEmail(me.email),
+      createdAt: new Date().toISOString(),
+    });
+    return list;
+  });
+
+  if (denied) return json({ message: denied }, 400, cors);
+  return json({ summary: voteSummary(project, result.data, me) }, 200, cors);
+}
+
+/* ============================================================== 업로드 == */
 
 function maxUploadMB(env) {
   const n = Number(env.MAX_UPLOAD_MB);

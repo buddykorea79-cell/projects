@@ -3,7 +3,7 @@
  *
  *   data/projects.json / materials.json   색인 (관리자만 쓰기)
  *   data/submissions.json                 제출물 — 서버만 고칩니다
- *   data/evaluations.json                 평가 투표용지 — 서버만 고칩니다
+ *   data/votes.json                       상호 투표 — 서버만 고칩니다
  *   data/members.json                     회원 명부 — 브라우저로 절대 안 내려옵니다
  *   uploads/m_<회원키>/…                   과제 첨부
  *   uploads/materials/<자료ID>/…           강의자료
@@ -178,8 +178,6 @@ export class R2Store {
     for (const s of await this.listSubmissions({ projectId: id })) {
       await this.deleteSubmission(s.id);
     }
-    // 프로젝트가 사라지면 그 프로젝트의 평가 결과도 볼 곳이 없습니다.
-    await this.deleteEvaluation(id, { all: true }).catch(() => {});
     await this.mutateIndex('projects', (list) => list.filter((p) => p.id !== id));
   }
 
@@ -264,27 +262,6 @@ export class R2Store {
     await this.mutateIndex('materials', (list) => list.filter((x) => x.id !== id));
   }
 
-  /* -------------------------------------------------------------- 평가 -- */
-
-  /** 평가 투표용지 전체(관리자). 프로젝트별 집계는 화면에서 합니다. */
-  async listEvaluations({ projectId = null } = {}) {
-    const { data } = await this.json('/evaluations', { cache: 'no-store' });
-    const out = Array.isArray(data) ? data : [];
-    return projectId ? out.filter((b) => b.projectId === projectId) : out;
-  }
-
-  /** 내 투표용지를 등록·수정합니다. 같은 프로젝트에 다시 내면 덮어씁니다. */
-  async saveEvaluation(projectId, picks) {
-    const { ballot } = await this.post('/evaluations', { projectId, picks });
-    return ballot;
-  }
-
-  /** 내 투표 취소. all 이면 그 프로젝트의 표를 전부 지웁니다(관리자 초기화). */
-  async deleteEvaluation(projectId, { all = false } = {}) {
-    const qs = all ? '?scope=all' : '';
-    await this.json(`/evaluations/${encodeURIComponent(projectId)}${qs}`, { method: 'DELETE' });
-  }
-
   /* ----------------------------------------------------------- 소통방 -- */
 
   /** 서버가 공지를 맨 위로 정렬해 줍니다. */
@@ -337,6 +314,25 @@ export class R2Store {
     return post;
   }
 
+  /* -------------------------------------------------------------- 투표 -- */
+
+  /**
+   * 프로젝트 투표 집계 + 내가 넣은 표. 남의 표는 서버가 내려주지 않습니다.
+   * @returns {Promise<object>} shared/r2api.js 의 voteSummary 와 같은 모양
+   */
+  async voteSummary(projectId) {
+    const { summary } = await this.json(
+      `/votes?projectId=${encodeURIComponent(projectId)}`, { cache: 'no-store' },
+    );
+    return summary;
+  }
+
+  /** 표 넣기(on=true) · 빼기(on=false). 갱신된 집계를 돌려줍니다. */
+  async castVote(submissionId, on = true) {
+    const { summary } = await this.post('/votes', { submissionId, on: Boolean(on) });
+    return summary;
+  }
+
   /* ------------------------------------------------------------- files */
 
   /** 관리자만 직접 지울 수 있습니다. 제출물 첨부는 서버가 함께 정리합니다. */
@@ -366,7 +362,6 @@ export class R2Store {
       submissions: await this.listSubmissions(),
       materials: await this.listMaterials(),
       posts: await this.listPosts(),
-      evaluations: await this.listEvaluations(),
     };
   }
 
@@ -374,19 +369,12 @@ export class R2Store {
     for (const name of ['projects', 'materials']) {
       if (Array.isArray(dump[name])) await this.mutateIndex(name, () => dump[name]);
     }
-    // 제출물·평가 색인은 평소 서버만 고칩니다. 복원은 관리자 전용 경로로 따로 요청합니다.
+    // 제출물 색인은 평소 서버만 고칩니다. 복원은 관리자 전용 경로로 따로 요청합니다.
     if (Array.isArray(dump.submissions)) {
       await this.json('/submissions', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data: dump.submissions }),
-      });
-    }
-    if (Array.isArray(dump.evaluations)) {
-      await this.json('/evaluations', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: dump.evaluations }),
       });
     }
   }
