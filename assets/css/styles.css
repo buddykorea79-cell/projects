@@ -254,10 +254,24 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   color: var(--text-black-soft); font-size: 1.5rem;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
-.tile__foot { margin-top: auto; padding-top: var(--space-3); border-top: 1px solid var(--hairline); display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.tile__foot {
+  margin-top: auto; padding-top: var(--space-3); border-top: 1px solid var(--hairline);
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);
+  /* 좁은 칸에서 마감 배지와 '제출하기 →' 가 겹치지 않도록 줄바꿈을 허용합니다. */
+  flex-wrap: wrap;
+}
 
-.grid { display: grid; gap: var(--space-4); grid-template-columns: 1fr; }
-@media (min-width: 620px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+/* 한 줄에 두 칸. 창을 반쯤 줄여 쓰거나 태블릿에서도 2열이 유지되도록
+   480px 부터 나눕니다(그 아래 — 휴대폰 — 에서는 한 칸이 읽기 좋습니다). */
+.grid { display: grid; gap: var(--space-3); grid-template-columns: 1fr; }
+@media (min-width: 480px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 768px) { .grid { gap: var(--space-4); } }
+
+/* 2열이 되는 폭에서는 칸이 좁으므로 카드 안쪽 여백을 조금 줄입니다. */
+@media (min-width: 480px) and (max-width: 767px) {
+  .tile__body { padding: var(--space-3); }
+  .tile__title { font-size: 1.7rem; }
+}
 
 /* --------------------------------------------------------------- badges -- */
 .badge {
