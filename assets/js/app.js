@@ -17,6 +17,9 @@ import { loginView, signupView, accountView, forgotView, resetView } from './vie
 import {
   adminView, projectFormView, adminSubmissionsView, materialFormView, membersView, rosterView,
 } from './views/admin.js';
+import {
+  attendanceView, attendanceRosterView, attendanceSessionsView, attendanceStudentsView,
+} from './views/attendance.js';
 
 const main = $('#main');
 
@@ -196,6 +199,11 @@ function registerRoutes() {
   R.route('/admin/material/:id', view((m, p) => materialFormView(m, p), { admin: true }));
   R.route('/admin/submissions/:projectId', view((m, p) => adminSubmissionsView(m, p), { admin: true }));
   R.route('/admin/roster/:projectId', view((m, p) => rosterView(m, p), { admin: true }));
+
+  R.route('/admin/attendance', view((m) => attendanceView(m), { admin: true }));
+  R.route('/admin/attendance/roster', view((m) => attendanceRosterView(m), { admin: true }));
+  R.route('/admin/attendance/sessions', view((m, p, q) => attendanceSessionsView(m, p, q), { admin: true }));
+  R.route('/admin/attendance/students', view((m, p, q) => attendanceStudentsView(m, p, q), { admin: true }));
 
   R.setNotFound(view((m) => {
     m.innerHTML = `<section class="section"><div class="wrap">${emptyState({

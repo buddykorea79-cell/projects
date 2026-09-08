@@ -35,6 +35,7 @@
  *   POST   /auth/reset/confirm      (공개) 재설정 링크(토큰)로 새 비밀번호 설정
  *   POST   /telegram/webhook        (텔레그램) 재설정 버튼 콜백 — Hermes
  *   GET    /data/projects|materials (로그인)   PUT (관리자)
+ *   GET    /data/roster|attendance  (관리자)   PUT (관리자) — 수강 현황
  *   GET    /submissions             (로그인, 권한에 따라 필터)
  *   POST   /submissions             (로그인)
  *   PATCH  /submissions/:id         (본인·관리자)
@@ -66,7 +67,13 @@ import { sendResetEmail } from './email.js';
 /** 이 이메일로 가입하면 자동으로 관리자 권한이 붙습니다. */
 const DEFAULT_ADMIN_EMAILS = ['aireader@mois.go.kr'];
 
-const DATA_NAMES = new Set(['projects', 'materials']);
+const DATA_NAMES = new Set(['projects', 'materials', 'roster', 'attendance']);
+
+/**
+ * 수강 현황(전체 명단·회차별 출결)은 교육생 전원의 이름과 소속이 한자리에 모인
+ * 자료라 관리자만 **읽을** 수 있습니다. 프로젝트·강의자료는 회원이면 읽습니다.
+ */
+const ADMIN_READ_NAMES = new Set(['roster', 'attendance']);
 
 const DEFAULT_EXT = [
   'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'heic',
@@ -176,8 +183,13 @@ async function route(request, env, url, path, cors, waitUntil) {
     if (!DATA_NAMES.has(name)) return json({ message: '알 수 없는 데이터입니다.' }, 404, cors);
 
     if (method === 'GET') {
-      const me = await currentMember(request, env);
-      if (!me) return json({ message: '로그인이 필요합니다.' }, 401, cors);
+      if (ADMIN_READ_NAMES.has(name)) {
+        const admin = await requireAdmin(request, env);
+        if (admin.error) return json({ message: admin.error }, admin.status, cors);
+      } else {
+        const me = await currentMember(request, env);
+        if (!me) return json({ message: '로그인이 필요합니다.' }, 401, cors);
+      }
       const { etag, data } = await readIndex(env, name);
       return json({ etag, data }, 200, { ...cors, 'Cache-Control': 'no-store' });
     }

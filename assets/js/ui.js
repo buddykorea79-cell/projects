@@ -269,6 +269,10 @@ export class FilePicker {
 
 export function spinner() { return '<div class="spinner" role="status" aria-label="불러오는 중"></div>'; }
 
+/** 숫자 하나를 크게 보여주는 카드. `.stat-row` 안에 넣어 씁니다. */
+export const stat = (v, k) =>
+  `<div class="stat"><div class="stat__v">${esc(v)}</div><div class="stat__k">${esc(k)}</div></div>`;
+
 export function emptyState({ title, body, action = '' }) {
   return `
     <div class="empty">

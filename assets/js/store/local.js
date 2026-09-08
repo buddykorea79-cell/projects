@@ -8,7 +8,7 @@ import { DemoAuth } from './demo-auth.js';
 import { summarizeVotes, applyVote } from './voting.js';
 
 const DB_NAME = 'assignment-hub';
-const DB_VER = 4;
+const DB_VER = 5;
 
 let dbPromise = null;
 
@@ -38,6 +38,13 @@ function openDB() {
       if (!db.objectStoreNames.contains('votes')) {
         const v = db.createObjectStore('votes', { keyPath: 'id' });
         v.createIndex('projectId', 'projectId');
+      }
+      // 수강 현황 — 전체 명단과 회차별 출결.
+      if (!db.objectStoreNames.contains('roster')) {
+        db.createObjectStore('roster', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('attendance')) {
+        db.createObjectStore('attendance', { keyPath: 'id' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -213,6 +220,31 @@ export class LocalStore {
     await tx('materials', 'readwrite', (os) => os.delete(id));
   }
 
+  /* ----------------------------------------------------------- 수강 현황 */
+
+  async listStudents() {
+    return (await tx('roster', 'readonly', (os) => wrap(os.getAll()))) || [];
+  }
+
+  /** 명단 전체를 화면이 들고 있는 상태로 맞춥니다 — 빠진 사람은 지웁니다. */
+  async saveStudents(list) {
+    await tx('roster', 'readwrite', (os) => {
+      os.clear();
+      for (const e of list) os.put(e);
+    });
+    return list;
+  }
+
+  async listAttendance() {
+    return (await tx('attendance', 'readonly', (os) => wrap(os.getAll()))) || [];
+  }
+
+  async saveAttendance(records) {
+    const incoming = Array.isArray(records) ? records : [records];
+    await tx('attendance', 'readwrite', (os) => { for (const r of incoming) os.put(r); });
+    return incoming;
+  }
+
   /* --------------------------------------------------------------- 소통방 */
 
   async listPosts() {
@@ -357,6 +389,8 @@ export class LocalStore {
       submissions: await this.listSubmissions(),
       materials: await this.listMaterials(),
       posts: await this.listPosts(),
+      roster: await this.listStudents(),
+      attendance: await this.listAttendance(),
     };
   }
 
@@ -373,6 +407,12 @@ export class LocalStore {
     }
     for (const b of dump.posts || []) {
       await tx('posts', 'readwrite', (os) => os.put(b));
+    }
+    for (const e of dump.roster || []) {
+      await tx('roster', 'readwrite', (os) => os.put(e));
+    }
+    for (const a of dump.attendance || []) {
+      await tx('attendance', 'readwrite', (os) => os.put(a));
     }
   }
 }

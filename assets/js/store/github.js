@@ -202,6 +202,8 @@ export class GitHubStore {
   get materialsPath()   { return `${this.cfg.dataDir}/materials.json`; }
   get postsPath()       { return `${this.cfg.dataDir}/posts.json`; }
   get votesPath()       { return `${this.cfg.dataDir}/votes.json`; }
+  get rosterPath()      { return `${this.cfg.dataDir}/roster.json`; }
+  get attendancePath()  { return `${this.cfg.dataDir}/attendance.json`; }
 
   /**
    * 새 파일들을 uploads/ 아래에 커밋하고 레코드의 files 배열을 채웁니다.
@@ -218,6 +220,39 @@ export class GitHubStore {
         storage: 'github', path,
       });
     }
+  }
+
+  /* ------------------------------------------------------- 수강 현황 -- */
+
+  async listStudents() {
+    const rows = await this.readJSON(this.rosterPath, []);
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /** 명단 전체를 화면이 들고 있는 상태로 맞춥니다. */
+  async saveStudents(list) {
+    await this.mutateJSON(this.rosterPath, [], () => list,
+      `chore(roster): ${list.length}명`);
+    return list;
+  }
+
+  async listAttendance() {
+    const rows = await this.readJSON(this.attendancePath, []);
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /** 회차 기록을 id 로 덮어씁니다. 손대지 않은 회차는 그대로 둡니다. */
+  async saveAttendance(records) {
+    const incoming = Array.isArray(records) ? records : [records];
+    await this.mutateJSON(this.attendancePath, [], (list) => {
+      const arr = Array.isArray(list) ? list : [];
+      incoming.forEach((rec) => {
+        const i = arr.findIndex((x) => x.id === rec.id);
+        if (i >= 0) arr[i] = rec; else arr.push(rec);
+      });
+      return arr;
+    }, `chore(attendance): ${incoming.map((r) => r.id).join(', ')}`);
+    return incoming;
   }
 
   /* ----------------------------------------------------------- 소통방 -- */
@@ -527,6 +562,8 @@ export class GitHubStore {
       submissions: await this.listSubmissions(),
       materials: await this.listMaterials(),
       posts: await this.listPosts(),
+      roster: await this.listStudents(),
+      attendance: await this.listAttendance(),
     };
   }
 
@@ -542,6 +579,12 @@ export class GitHubStore {
     }
     if (dump.posts) {
       await this.mutateJSON(this.postsPath, [], () => dump.posts, 'chore(posts): import');
+    }
+    if (dump.roster) {
+      await this.mutateJSON(this.rosterPath, [], () => dump.roster, 'chore(roster): import');
+    }
+    if (dump.attendance) {
+      await this.mutateJSON(this.attendancePath, [], () => dump.attendance, 'chore(attendance): import');
     }
   }
 }

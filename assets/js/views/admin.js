@@ -11,9 +11,10 @@ import {
 } from '../utils.js';
 import {
   spinner, emptyState, toastOk, toastErr, confirmModal, FilePicker,
-  fieldError, clearErrors, focusFirstError, busy,
+  fieldError, clearErrors, focusFirstError, busy, stat,
 } from '../ui.js';
 import { go } from '../router.js';
+import { mergeSessions, computeStats, pct } from '../attendance.js';
 
 /* ---------------------------------------------------------- 대시보드 -- */
 
@@ -30,6 +31,7 @@ export async function adminView(mount) {
           </div>
           <div class="row">
             <a class="btn btn--primary" href="#/admin/project/new">＋ 프로젝트 개설</a>
+            <a class="btn btn--outline" href="#/admin/attendance">수강 현황</a>
             <a class="btn btn--outline" href="#/admin/members">회원 관리</a>
           </div>
         </div>
@@ -45,6 +47,17 @@ export async function adminView(mount) {
             </div>
           </div>
           <div id="adminProjects">${spinner()}</div>
+        </div>
+
+        <div class="card" style="margin-bottom:var(--space-5)">
+          <div class="page-head" style="margin-bottom:var(--space-3)">
+            <h2 class="page-title" style="font-size:2rem">수강 현황</h2>
+            <div class="row">
+              <a class="btn btn--outline btn--sm" href="#/admin/attendance">대시보드</a>
+              <a class="btn btn--quiet btn--sm" href="#/admin/attendance/sessions">회차별 기록</a>
+            </div>
+          </div>
+          <div id="adminAttendance">${spinner()}</div>
         </div>
 
         <div class="card" style="margin-bottom:var(--space-5)">
@@ -106,9 +119,11 @@ export async function adminView(mount) {
   });
 
   try {
-    const [projects, submissions, materials, members] = await Promise.all([
+    const [projects, submissions, materials, members, roster, attRecords] = await Promise.all([
       store.listProjects(), store.listSubmissions(), store.listMaterials(),
       store.auth.listMembers().catch(() => []),
+      store.listStudents().catch(() => []),
+      store.listAttendance().catch(() => []),
     ]);
     const openCount = projects.filter((p) => p.status === 'open' && !isPastDue(p.dueAt)).length;
     const fileCount = submissions.reduce((n, s) => n + (s.files || []).length, 0);
@@ -188,6 +203,25 @@ export async function adminView(mount) {
            }</div></div>
          </div>`
       : emptyState({ title: '아직 회원이 없습니다', body: '교육생이 가입하면 이곳에 표시됩니다.' });
+
+    const attHolder = mount.querySelector('#adminAttendance');
+    const attSessions = mergeSessions(attRecords);
+    const attStats = computeStats(roster, attSessions);
+    attHolder.innerHTML = roster.length
+      ? `<div class="kv">
+           <div class="kv__row"><div class="kv__k">전체 수강생</div><div class="kv__v">${attStats.total}명</div></div>
+           <div class="kv__row"><div class="kv__k">기록된 회차</div><div class="kv__v">${
+  attStats.recordedCount}/${attSessions.length}회차</div></div>
+           <div class="kv__row"><div class="kv__k">평균 출석·제출</div><div class="kv__v">출석 ${
+  pct(attStats.avgAtt)} · 제출 ${pct(attStats.avgSub)}</div></div>
+           <div class="kv__row"><div class="kv__k">주의 학생</div><div class="kv__v">${
+  attStats.atRisk.length ? `${attStats.atRisk.length}명 — <a href="#/admin/attendance">대시보드</a>에서 확인` : '없음'}</div></div>
+         </div>`
+      : emptyState({
+        title: '수강생 명단이 없습니다',
+        body: '전체 명단을 한 번 올려두면 회차별 출석·과제 제출을 관리할 수 있습니다.',
+        action: '<a class="btn btn--primary" href="#/admin/attendance/roster">전체 명단 올리기</a>',
+      });
 
     const mHolder = mount.querySelector('#adminMaterials');
     if (!materials.length) {
@@ -349,8 +383,6 @@ export async function materialFormView(mount, { id }) {
     });
   }
 }
-
-const stat = (v, k) => `<div class="stat"><div class="stat__v">${esc(v)}</div><div class="stat__k">${esc(k)}</div></div>`;
 
 /* ------------------------------------------------------- 저장소 패널 -- */
 

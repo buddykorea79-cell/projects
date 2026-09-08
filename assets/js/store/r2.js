@@ -4,6 +4,8 @@
  *   data/projects.json / materials.json   색인 (관리자만 쓰기)
  *   data/submissions.json                 제출물 — 서버만 고칩니다
  *   data/votes.json                       상호 투표 — 서버만 고칩니다
+ *   data/roster.json                      전체 수강생 명단 — 관리자만
+ *   data/attendance.json                  회차별 출석·과제 기록 — 관리자만
  *   data/members.json                     회원 명부 — 브라우저로 절대 안 내려옵니다
  *   uploads/m_<회원키>/…                   과제 첨부
  *   uploads/materials/<자료ID>/…           강의자료
@@ -262,6 +264,35 @@ export class R2Store {
     await this.mutateIndex('materials', (list) => list.filter((x) => x.id !== id));
   }
 
+  /* ------------------------------------------------------- 수강 현황 -- */
+
+  async listStudents() {
+    const { data } = await this.readIndex('roster');
+    return data;
+  }
+
+  /** 명단 전체를 화면이 들고 있는 상태로 맞춥니다(관리자 한 명이 쓰는 화면). */
+  async saveStudents(list) {
+    await this.mutateIndex('roster', () => list);
+    return list;
+  }
+
+  async listAttendance() {
+    const { data } = await this.readIndex('attendance');
+    return data;
+  }
+
+  /** 회차 기록을 id 로 덮어씁니다. 손대지 않은 회차는 그대로 둡니다. */
+  async saveAttendance(records) {
+    const incoming = Array.isArray(records) ? records : [records];
+    await this.mutateIndex('attendance', (list) => {
+      const arr = Array.isArray(list) ? list : [];
+      incoming.forEach((rec) => upsert(arr, rec));
+      return arr;
+    });
+    return incoming;
+  }
+
   /* ----------------------------------------------------------- 소통방 -- */
 
   /** 서버가 공지를 맨 위로 정렬해 줍니다. */
@@ -362,11 +393,13 @@ export class R2Store {
       submissions: await this.listSubmissions(),
       materials: await this.listMaterials(),
       posts: await this.listPosts(),
+      roster: await this.listStudents().catch(() => []),
+      attendance: await this.listAttendance().catch(() => []),
     };
   }
 
   async importAll(dump) {
-    for (const name of ['projects', 'materials']) {
+    for (const name of ['projects', 'materials', 'roster', 'attendance']) {
       if (Array.isArray(dump[name])) await this.mutateIndex(name, () => dump[name]);
     }
     // 제출물 색인은 평소 서버만 고칩니다. 복원은 관리자 전용 경로로 따로 요청합니다.
