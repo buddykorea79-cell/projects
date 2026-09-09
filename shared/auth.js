@@ -129,11 +129,36 @@ export function validatePassword(password) {
   return null;
 }
 
-/** 관리자가 초기화해 줄 때 쓰는, 사람이 받아적기 좋은 임시 비밀번호. */
-export function tempPassword() {
-  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
-  const bytes = crypto.getRandomValues(new Uint32Array(12));
-  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('');
+/** 임시 비밀번호가 살아 있는 시간. 짧게 두어 새어나가도 오래 쓰이지 못하게 합니다. */
+export const TEMP_PASSWORD_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * 숫자 6자리 임시 비밀번호.
+ *
+ * 전화로 불러주거나 대면으로 전달하기 좋으라고 숫자만 씁니다. 그만큼 조합이
+ * 100만 가지뿐이라 다음 세 가지를 함께 걸어 씁니다 —
+ * ① 30분이 지나면 만료(TEMP_PASSWORD_TTL_MS),
+ * ② 로그인 8회 실패면 계정 잠금(MAX_FAILED·LOCK_MS — 무차별 대입 차단),
+ * ③ 이 비밀번호로는 로그인만 되고 **반드시 새 비밀번호를 정해야** 합니다.
+ *
+ * 나머지 연산으로 자르면 앞쪽 숫자가 조금 더 자주 나오므로, 치우침이 생기는
+ * 구간의 난수는 버리고 다시 뽑습니다.
+ */
+export function numericTempPassword(digits = 6) {
+  const max = 10 ** digits;
+  const limit = Math.floor(0xFFFFFFFF / max) * max;
+  let n;
+  do {
+    n = crypto.getRandomValues(new Uint32Array(1))[0];
+  } while (n >= limit);
+  return String(n % max).padStart(digits, '0');
+}
+
+/** 임시 비밀번호가 만료됐는지. 만료 시각이 없으면(예전 자료) 만료로 보지 않습니다. */
+export function tempPasswordExpired(member, now = Date.now()) {
+  if (!member?.mustChangePassword) return false;
+  const until = Number(member.tempPasswordUntil || 0);
+  return Boolean(until) && until < now;
 }
 
 /**
@@ -144,14 +169,16 @@ export function tempPassword() {
  * `tempPassword` 는 호출한 쪽(관리자)이 본인 책임으로 신청자에게 직접 전달합니다.
  */
 export async function issueTempPassword(email, env) {
-  const temp = tempPassword();
+  const temp = numericTempPassword();
   const hash = await hashPassword(temp, env);
+  const expiresAt = Date.now() + TEMP_PASSWORD_TTL_MS;
 
   const result = await updateMembers(env, (l) => {
     const m = findMember(l, email);
     if (!m) return null;
     m.passwordHash = hash;
     m.mustChangePassword = true;
+    m.tempPasswordUntil = expiresAt;
     m.failedAttempts = 0;
     m.lockedUntil = 0;
     m.updatedAt = new Date().toISOString();
@@ -161,7 +188,7 @@ export async function issueTempPassword(email, env) {
     return l;
   });
   if (!result.ok) return { ok: false };
-  return { ok: true, tempPassword: temp };
+  return { ok: true, tempPassword: temp, expiresAt };
 }
 
 /* -------------------------------------------------- 재설정 링크(토큰) -- */
@@ -220,6 +247,7 @@ export async function resetPasswordWithToken(token, password, env) {
     if (!m || !m.resetTokenHash || !safeEqual(m.resetTokenHash, tokenHash)) return null;
     m.passwordHash = hash;
     m.mustChangePassword = false;
+    m.tempPasswordUntil = 0;
     m.failedAttempts = 0;
     m.lockedUntil = 0;
     m.updatedAt = new Date().toISOString();
@@ -429,4 +457,6 @@ export function validateSignup({ email, password, name, institution }) {
 }
 
 /** 테스트에서 쓰는 상수 노출 */
-export const AUTH_LIMITS = { MAX_FAILED, LOCK_MS, DEFAULT_ITERATIONS, MIN_PASSWORD };
+export const AUTH_LIMITS = {
+  MAX_FAILED, LOCK_MS, DEFAULT_ITERATIONS, MIN_PASSWORD, TEMP_PASSWORD_TTL_MS,
+};

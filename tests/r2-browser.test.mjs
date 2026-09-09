@@ -580,6 +580,102 @@ await step('로그아웃하면 다시 로그인 벽', async () => {
   await alice.waitForSelector('.empty h3, #loginForm', { timeout: 10000 });
 });
 
+log('\n== 8-2. 임시 비밀번호 6자리 ==');
+
+/**
+ * 헤르메스(텔레그램)가 멈췄을 때를 위한 길. 서버 규칙은 auth.test.mjs 가 보고,
+ * 여기서는 **화면만으로** 잊은 사람이 끝까지 갈 수 있는지 밟아 봅니다.
+ */
+const charlie = await person('찰리');
+const CHARLIE = 'charlie@example.com';
+let code = '';
+
+await step('가입하고 로그아웃', async () => {
+  await signup(charlie, { email: CHARLIE, name: '찰리', institution: '한국디자인진흥원' });
+  await charlie.locator('.gnav__actions [data-logout]').click();
+  await charlie.waitForSelector('.empty h3, #loginForm', { timeout: 10000 });
+});
+
+await step('비밀번호 찾기에 방법 두 가지가 있음', async () => {
+  await charlie.goto(`${origin}/#/forgot`, { waitUntil: 'networkidle' });
+  await charlie.waitForSelector('#forgotForm', { timeout: 8000 });
+  const values = await charlie.locator('#forgotForm [name="method"]').evaluateAll(
+    (els) => els.map((e) => ({ value: e.value, checked: e.checked })));
+  if (values.length !== 2) throw new Error(`선택지 ${values.length}개`);
+  if (values[0].value !== 'admin' || !values[0].checked) throw new Error('기본값이 관리자 요청이 아님');
+  if (values[1].value !== 'code') throw new Error('code 선택지 없음');
+});
+
+await step('방법을 고르면 버튼 문구가 따라 바뀜', async () => {
+  await charlie.check('#forgotForm [name="method"][value="code"]');
+  const label = (await charlie.locator('#forgotSubmit').innerText()).trim();
+  if (label !== '임시 비밀번호 받기') throw new Error(`버튼: ${label}`);
+});
+
+await step('숫자 6자리를 화면에 바로 보여줌', async () => {
+  await charlie.fill('#forgotForm [name="email"]', CHARLIE);
+  await charlie.locator('#forgotSubmit').click();
+  await charlie.waitForSelector('#forgotCode:not([hidden])', { timeout: 10000 });
+  code = (await charlie.locator('#tempCode').innerText()).trim();
+  if (!/^\d{6}$/.test(code)) throw new Error(`번호: ${code}`);
+  const hint = await charlie.locator('#forgotCode').innerText();
+  if (!hint.includes('30분')) throw new Error(hint.replace(/\s+/g, ' '));
+});
+
+await step('그 번호로 로그인하면 새 비밀번호를 정하라고 데려감', async () => {
+  await charlie.goto(`${origin}/#/login`, { waitUntil: 'networkidle' });
+  await charlie.fill('#loginForm [name="email"]', CHARLIE);
+  await charlie.fill('#loginForm [name="password"]', code);
+  await charlie.locator('#loginForm button[type="submit"]').click();
+  await charlie.waitForSelector('#pwForm', { timeout: 12000 });
+  if (!charlie.url().includes('#/account')) throw new Error(charlie.url());
+
+  const warn = (await charlie.locator('.notice--warn').first().innerText()).replace(/\s+/g, ' ');
+  if (!warn.includes('임시 비밀번호로 로그인했습니다')) throw new Error(warn);
+  const label = await charlie.locator('#pwForm .field__label').first().innerText();
+  if (!label.includes('숫자 6자리')) throw new Error(`라벨: ${label}`);
+});
+
+await step('규칙에 맞지 않는 새 비밀번호는 화면에서 막힘', async () => {
+  await charlie.fill('#pwForm [name="current"]', code);
+  await charlie.fill('#pwForm [name="next"]', 'abcdefgh');
+  await charlie.fill('#pwForm [name="confirm"]', 'abcdefgh');
+  await charlie.locator('#pwForm button[type="submit"]').click();
+  await charlie.waitForSelector('#pwForm .field__err', { timeout: 5000 });
+});
+
+await step('새 비밀번호를 정하면 임시 번호는 죽고 새 것으로 들어감', async () => {
+  await charlie.fill('#pwForm [name="current"]', code);
+  await charlie.fill('#pwForm [name="next"]', 'charlie-new9!');
+  await charlie.fill('#pwForm [name="confirm"]', 'charlie-new9!');
+  await charlie.locator('#pwForm button[type="submit"]').click();
+  await charlie.waitForSelector('.toast--ok', { timeout: 12000 });
+
+  const again = await person('찰리2');
+  await again.goto(`${origin}/#/login`, { waitUntil: 'networkidle' });
+  await again.fill('#loginForm [name="email"]', CHARLIE);
+  await again.fill('#loginForm [name="password"]', code);
+  await again.locator('#loginForm button[type="submit"]').click();
+  await again.waitForSelector('#loginForm .field__err', { timeout: 8000 });
+
+  await again.fill('#loginForm [name="password"]', 'charlie-new9!');
+  await again.locator('#loginForm button[type="submit"]').click();
+  await again.waitForSelector('.tile, .empty', { timeout: 12000 });
+  await again.context().close();
+});
+
+await step('관리자에게 요청하는 길은 그대로 접수 안내', async () => {
+  const anon = await person('익명');
+  await anon.goto(`${origin}/#/forgot`, { waitUntil: 'networkidle' });
+  await anon.waitForSelector('#forgotForm', { timeout: 8000 });
+  await anon.fill('#forgotForm [name="email"]', 'nobody-here@example.com');
+  await anon.locator('#forgotSubmit').click();
+  await anon.waitForSelector('#forgotDone:not([hidden])', { timeout: 10000 });
+  await anon.context().close();
+});
+
+await charlie.context().close();
+
 log('\n== 9. 콘솔 오류 ==');
 await step('실행 중 자바스크립트 오류 없음', () => {
   if (consoleErrors.length) throw new Error(consoleErrors.slice(0, 3).join(' | '));

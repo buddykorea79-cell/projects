@@ -355,7 +355,9 @@ await t('관리자가 임시 비밀번호로 초기화', async () => {
   const r = await admin('/auth/members/reset', { method: 'POST', body: { email: 'reset@example.com' } });
   eq(r.status, 200, 'status');
   const temp = r.data.tempPassword;
-  if (!temp || temp.length < 8) throw new Error('임시 비밀번호가 이상함');
+  // 전화로 불러주기 좋으라고 숫자 6자리입니다 — 대신 30분만 살고, 로그인하면
+  // 곧바로 새 비밀번호를 정해야 합니다(아래 '임시 비밀번호 6자리' 묶음 참고).
+  if (!/^\d{6}$/.test(temp)) throw new Error(`임시 비밀번호가 이상함: ${temp}`);
 
   const c = client();
   const login = await c('/auth/login', { method: 'POST', body: { email: 'reset@example.com', password: temp } });
@@ -685,6 +687,147 @@ await t('관리자가 임시 비밀번호를 발급하면 대기에서 내려감
   eq((await relog('/auth/login', {
     method: 'POST', body: { email: 'forgot@example.com', password: r.data.tempPassword },
   })).status, 200, '임시 비밀번호로 로그인');
+});
+
+console.log('\n== 임시 비밀번호 6자리 (헤르메스 없이) ==');
+
+/** members.json 을 직접 읽고 고칩니다 — 시간이 흐른 상황을 만들 때만 씁니다. */
+const readMembers = async () => JSON.parse(await (await bucket.get('data/members.json')).text());
+const editMember = async (email, patch) => {
+  const list = await readMembers();
+  Object.assign(list.find((m) => m.email === email), patch);
+  await bucket.put('data/members.json', JSON.stringify(list, null, 2));
+};
+
+const CODE_USER = 'code@example.com';
+let firstCode = '';
+
+await t('요청하면 숫자 6자리를 그 자리에서 돌려줌', async () => {
+  const c = client();
+  await signup(c, CODE_USER, { name: '급한이' });
+
+  const r = await client()('/auth/forgot', {
+    method: 'POST', body: { email: CODE_USER, method: 'code' },
+  });
+  eq(r.status, 200, 'status');
+  firstCode = r.data.tempPassword;
+  if (!/^\d{6}$/.test(firstCode)) throw new Error(`6자리 숫자가 아님: ${firstCode}`);
+  eq(r.data.expiresInMin, 30, '유효 시간');
+  if (!Number.isFinite(r.data.expiresAt)) throw new Error('만료 시각 없음');
+});
+
+await t('받은 번호로 로그인되고 새 비밀번호를 정하라고 표시됨', async () => {
+  const c = client();
+  const r = await c('/auth/login', { method: 'POST', body: { email: CODE_USER, password: firstCode } });
+  eq(r.status, 200, 'status');
+  eq(r.data.me.mustChangePassword, true, '변경 안내');
+
+  // 옛 비밀번호는 이 번호로 덮였습니다.
+  eq((await client()('/auth/login', {
+    method: 'POST', body: { email: CODE_USER, password: 'hunter2!hunter2' },
+  })).status, 401, '옛 비밀번호가 살아 있음');
+});
+
+await t('규칙에 맞지 않는 새 비밀번호는 거절', async () => {
+  const c = client();
+  await c('/auth/login', { method: 'POST', body: { email: CODE_USER, password: firstCode } });
+  eq((await c('/auth/password', {
+    method: 'POST', body: { current: firstCode, next: 'abcdefgh' },
+  })).status, 400, '문자만으로 통과');
+});
+
+await t('새 비밀번호를 정하면 임시 번호는 더 못 씀', async () => {
+  const c = client();
+  await c('/auth/login', { method: 'POST', body: { email: CODE_USER, password: firstCode } });
+  eq((await c('/auth/password', {
+    method: 'POST', body: { current: firstCode, next: 'newpass9!ok' },
+  })).status, 200, '변경 실패');
+
+  const row = (await admin('/auth/members')).data.data.find((m) => m.email === CODE_USER);
+  eq(row.mustChangePassword, false, '변경 안내가 남음');
+
+  eq((await client()('/auth/login', {
+    method: 'POST', body: { email: CODE_USER, password: firstCode },
+  })).status, 401, '임시 번호로 아직 들어가짐');
+  eq((await client()('/auth/login', {
+    method: 'POST', body: { email: CODE_USER, password: 'newpass9!ok' },
+  })).status, 200, '새 비밀번호로 못 들어감');
+});
+
+await t('30분이 지난 번호로는 들어갈 수 없음', async () => {
+  const r = await client()('/auth/forgot', {
+    method: 'POST', body: { email: CODE_USER, method: 'code' },
+  });
+  eq(r.status, 200, '재발급');
+
+  // 발급 시각을 31분 전으로 밀어 만료를 만듭니다.
+  await editMember(CODE_USER, { tempPasswordUntil: Date.now() - 60 * 1000 });
+
+  const login = await client()('/auth/login', {
+    method: 'POST', body: { email: CODE_USER, password: r.data.tempPassword },
+  });
+  eq(login.status, 401, 'status');
+  if (!login.data.message.includes('만료')) throw new Error(`문구: ${login.data.message}`);
+});
+
+await t('5분 안에 다시 요청하면 거절', async () => {
+  await editMember(CODE_USER, { tempPasswordUntil: Date.now() + 29 * 60 * 1000 });
+  const again = await client()('/auth/forgot', {
+    method: 'POST', body: { email: CODE_USER, method: 'code' },
+  });
+  eq(again.status, 429, 'status');
+  if (!/\d+분/.test(again.data.message)) throw new Error(`문구: ${again.data.message}`);
+});
+
+await t('쿨다운이 지나면 다시 받을 수 있음', async () => {
+  await editMember(CODE_USER, { tempPasswordUntil: Date.now() - 60 * 1000 });
+  const r = await client()('/auth/forgot', {
+    method: 'POST', body: { email: CODE_USER, method: 'code' },
+  });
+  eq(r.status, 200, 'status');
+  if (r.data.tempPassword === firstCode) throw new Error('같은 번호가 나옴');
+});
+
+await t('없는 계정에는 없다고 답함 — 번호를 화면에 띄우는 창구라 얼버무릴 수 없음', async () => {
+  const r = await client()('/auth/forgot', {
+    method: 'POST', body: { email: 'nobody2@example.com', method: 'code' },
+  });
+  eq(r.status, 404, 'status');
+  if (r.data.tempPassword) throw new Error('없는 계정에 번호가 나옴');
+});
+
+await t('정지된 계정에는 발급하지 않음', async () => {
+  const c = client();
+  await signup(c, 'blockedcode@example.com');
+  await admin('/auth/members', { method: 'PATCH', body: { email: 'blockedcode@example.com', status: 'blocked' } });
+  const r = await client()('/auth/forgot', {
+    method: 'POST', body: { email: 'blockedcode@example.com', method: 'code' },
+  });
+  eq(r.status, 403, 'status');
+});
+
+await t('관리자가 발급하는 임시 비밀번호도 숫자 6자리', async () => {
+  const c = client();
+  await signup(c, 'adminissued@example.com');
+  const r = await admin('/auth/members/reset', {
+    method: 'POST', body: { email: 'adminissued@example.com' },
+  });
+  eq(r.status, 200, 'status');
+  if (!/^\d{6}$/.test(r.data.tempPassword)) throw new Error(`6자리 숫자가 아님: ${r.data.tempPassword}`);
+
+  const row = (await admin('/auth/members')).data.data.find((m) => m.email === 'adminissued@example.com');
+  eq(row.mustChangePassword, true, '변경 안내');
+});
+
+await t('method 를 주지 않으면 예전처럼 관리자에게 넘김 — 번호가 새지 않음', async () => {
+  const c = client();
+  await signup(c, 'plainforgot@example.com');
+  const r = await client()('/auth/forgot', {
+    method: 'POST', body: { email: 'plainforgot@example.com' },
+  });
+  eq(r.status, 200, 'status');
+  if (r.data.tempPassword) throw new Error('관리자 경로인데 번호가 나옴');
+  eq(JSON.stringify(r.data), '{"ok":true}', '본문');
 });
 
 console.log('\n== 세션 무효화 ==');

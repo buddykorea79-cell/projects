@@ -90,9 +90,14 @@ export function loginView(mount) {
 /* ------------------------------------------------------ 비밀번호 찾기 -- */
 
 /**
- * 서버에 메일 발송이 설정돼 있으면(store.mailReset) "초기화 링크를 메일로 보냈다"는
- * 흐름으로, 아니면 "담당자가 전달한다"는 흐름으로 안내합니다. 어느 쪽이든 응답은
- * 계정 존재 여부와 무관하게 같습니다 — 가입 여부를 흘리지 않기 위해서입니다.
+ * 비밀번호 찾기. 받는 방법이 두 가지입니다.
+ *
+ * ① 관리자에게 요청 — 담당자에게 알림이 갑니다(메일 발송이 설정돼 있으면
+ *    본인 메일로 초기화 링크도 함께). 계정이 있든 없든 화면이 같아 가입 여부가
+ *    새지 않습니다.
+ * ② 임시 비밀번호 즉시 받기 — 숫자 6자리를 이 화면에 바로 띄웁니다. 텔레그램이
+ *    멈췄거나 담당자가 자리에 없을 때를 위한 길입니다. 30분만 살고, 그것으로
+ *    로그인하면 곧바로 새 비밀번호를 정하게 됩니다.
  */
 export function forgotView(mount) {
   const mailReset = Boolean(store?.mailReset);
@@ -105,22 +110,31 @@ export function forgotView(mount) {
           <p class="page-sub">가입할 때 쓴 이메일을 알려주세요.</p>
         </div>
 
-        <div class="notice notice--info" style="margin-bottom:var(--space-4)">
-          ${mailReset
-    ? `아래에 이메일을 입력하고 버튼을 누르면, <strong>등록하신 메일 주소로
-          비밀번호 초기화 링크</strong>가 전송됩니다. 링크에서 새 비밀번호를
-          직접 정하시면 됩니다.`
-    : `요청을 남기면 담당자에게 바로 알림이 갑니다. 담당자가 비밀번호
-          재설정 링크나 임시 비밀번호를 직접 전달해 드립니다.`}
-        </div>
-
         <form class="card" id="forgotForm" novalidate>
           <label class="field">
             <span class="field__label">이메일</span>
             <input class="input" name="email" type="email" inputmode="email"
                    autocomplete="username" placeholder="you@example.com" />
           </label>
-          <button class="btn btn--primary btn--block btn--lg" type="submit">
+
+          <span class="field__label" style="display:block;margin-bottom:4px">어떻게 받으시겠어요?</span>
+          <label class="check">
+            <input type="radio" name="method" value="admin" checked />
+            <span><strong>관리자에게 요청</strong>
+              <span class="check__hint">${mailReset
+    ? '등록하신 메일 주소로 초기화 링크가 갑니다. 링크에서 새 비밀번호를 직접 정하세요.'
+    : '담당자에게 알림이 갑니다. 재설정 링크나 임시 비밀번호를 직접 전달해 드립니다.'}</span>
+            </span>
+          </label>
+          <label class="check">
+            <input type="radio" name="method" value="code" />
+            <span><strong>임시 비밀번호 즉시 받기</strong>
+              <span class="check__hint">숫자 6자리를 이 화면에 바로 띄웁니다.
+                30분 동안만 쓸 수 있고, 로그인하면 곧바로 새 비밀번호를 정하게 됩니다.</span>
+            </span>
+          </label>
+
+          <button class="btn btn--primary btn--block btn--lg" type="submit" id="forgotSubmit">
             ${mailReset ? '비밀번호 초기화' : '요청 남기기'}</button>
         </form>
 
@@ -148,6 +162,27 @@ export function forgotView(mount) {
           </div>
         </div>
 
+        <div id="forgotCode" hidden>
+          <div class="code-ceremony">
+            <div class="code-ceremony__label">임시 비밀번호</div>
+            <div class="code-ceremony__code" id="tempCode"></div>
+            <div class="code-ceremony__hint">
+              <strong id="tempMin">30</strong>분 안에 로그인해 주세요.
+            </div>
+          </div>
+          <div class="card" style="margin-top:var(--space-3)">
+            <p style="font-size:1.5rem;color:var(--text-black-soft)">
+              이 번호는 <strong>지금 이 화면에서만</strong> 보여 드립니다.
+              적어 두시거나 복사해 두세요.<br>
+              이 번호로 로그인하면 곧바로 새 비밀번호를 정하는 화면이 열립니다.
+            </p>
+            <div class="row" style="justify-content:center;margin-top:var(--space-4)">
+              <button class="btn btn--outline" type="button" id="copyCode">번호 복사</button>
+              <a class="btn btn--primary" href="#/login">로그인하러 가기</a>
+            </div>
+          </div>
+        </div>
+
         <p style="text-align:center;margin-top:var(--space-4);color:var(--text-black-soft);font-size:1.4rem">
           <a href="#/login">← 로그인으로 돌아가기</a>
         </p>
@@ -155,6 +190,17 @@ export function forgotView(mount) {
     </section>`;
 
   const form = mount.querySelector('#forgotForm');
+  const btn = mount.querySelector('#forgotSubmit');
+  const chosen = () => form.querySelector('[name="method"]:checked')?.value || 'admin';
+
+  // 고른 방법에 따라 버튼 문구를 바꿉니다 — 무엇이 일어날지 누르기 전에 보이도록.
+  const label = () => (chosen() === 'code'
+    ? '임시 비밀번호 받기'
+    : (mailReset ? '비밀번호 초기화' : '요청 남기기'));
+  form.querySelectorAll('[name="method"]').forEach((el) => {
+    el.addEventListener('change', () => { btn.textContent = label(); });
+  });
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     clearErrors(form);
@@ -164,10 +210,22 @@ export function forgotView(mount) {
       return;
     }
 
-    const btn = form.querySelector('button[type="submit"]');
-    busy(btn, true, mailReset ? '전송 중…' : '접수 중…');
+    const method = chosen();
+    busy(btn, true, method === 'code' ? '발급 중…' : (mailReset ? '전송 중…' : '접수 중…'));
     try {
-      await requestReset(form.email.value);
+      const res = (await requestReset(form.email.value, method)) || {};
+
+      if (method === 'code') {
+        // 이 경로만 계정이 없으면 오류를 냅니다(아래 catch 로 갑니다) — 번호를
+        // 화면에 바로 띄우는 창구라 "접수됐습니다" 로 얼버무릴 수 없어서입니다.
+        if (!res.tempPassword) throw new Error('임시 비밀번호를 받지 못했습니다.');
+        mount.querySelector('#tempCode').textContent = res.tempPassword;
+        if (res.expiresInMin) mount.querySelector('#tempMin').textContent = String(res.expiresInMin);
+        form.hidden = true;
+        mount.querySelector('#forgotCode').hidden = false;
+        return;
+      }
+
       // 가입 여부를 알려주지 않기 위해, 계정이 없어도 같은 화면을 보여줍니다.
       const emailSlot = mount.querySelector('#forgotEmail');
       if (emailSlot) emailSlot.textContent = form.email.value.trim();
@@ -175,9 +233,24 @@ export function forgotView(mount) {
       mount.querySelector('#forgotDone').hidden = false;
     } catch (err) {
       busy(btn, false);
-      toastErr(`요청을 남기지 못했습니다 — ${err.message}`);
+      btn.textContent = label();
+      toastErr(method === 'code'
+        ? `임시 비밀번호를 받지 못했습니다 — ${err.message}`
+        : `요청을 남기지 못했습니다 — ${err.message}`);
     }
   });
+
+  mount.querySelector('#copyCode').addEventListener('click', async () => {
+    const code = mount.querySelector('#tempCode').textContent;
+    try {
+      await navigator.clipboard.writeText(code);
+      toastOk('임시 비밀번호를 복사했습니다.');
+    } catch {
+      // 클립보드 권한이 없을 수 있습니다 — 그럴 땐 눈으로 옮겨 적으시면 됩니다.
+      toastErr('복사하지 못했습니다. 화면의 번호를 적어 주세요.');
+    }
+  });
+
   form.email.focus();
 }
 
@@ -391,6 +464,7 @@ export function accountView(mount) {
         ${me.mustChangePassword ? `
           <div class="notice notice--warn">
             <strong>임시 비밀번호로 로그인했습니다.</strong> 아래에서 새 비밀번호로 바꿔주세요.
+            임시 비밀번호는 이 한 번을 위한 것이라, 바꾸기 전까지는 계속 이 안내가 뜹니다.
           </div>` : ''}
 
         <div class="card">
@@ -411,8 +485,10 @@ export function accountView(mount) {
         <form class="card" id="pwForm" novalidate>
           <h2 class="page-title" style="font-size:1.8rem;margin-bottom:var(--space-3)">비밀번호 변경</h2>
           <label class="field">
-            <span class="field__label">현재 비밀번호</span>
-            <input class="input" name="current" type="password" autocomplete="current-password" />
+            <span class="field__label">${me.mustChangePassword
+    ? '임시 비밀번호 (숫자 6자리)' : '현재 비밀번호'}</span>
+            <input class="input" name="current" type="password" autocomplete="current-password"
+                   ${me.mustChangePassword ? 'inputmode="numeric"' : ''} />
           </label>
           <div class="field-row field-row--2">
             <label class="field">
@@ -446,6 +522,10 @@ export function accountView(mount) {
   });
 
   const form = mount.querySelector('#pwForm');
+  // 임시 비밀번호로 들어온 사람은 여기서 할 일이 하나뿐이라 커서를 옮겨 둡니다.
+  // (innerHTML 로 붙인 요소에는 autofocus 가 먹지 않습니다.)
+  if (me.mustChangePassword) form.current.focus();
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     clearErrors(form);

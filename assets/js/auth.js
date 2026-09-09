@@ -54,11 +54,18 @@ export function changePassword(current, next) {
 }
 
 /**
- * "비밀번호를 잊었습니다" 접수. 메일 발송 수단이 없어, 관리자 화면에
- * 처리 대기로 올라가고 관리자가 재설정 링크나 임시 비밀번호를 전달합니다.
+ * "비밀번호를 잊었습니다" 접수. 방법이 두 가지입니다.
+ *
+ * @param {string} email
+ * @param {'admin'|'code'} method
+ *   'admin'(기본) — 관리자 화면에 처리 대기로 올라가고, 관리자가 재설정 링크나
+ *     임시 비밀번호를 전달합니다. 계정이 없어도 조용히 성공한 척 끝냅니다.
+ *   'code' — 숫자 6자리 임시 비밀번호를 그 자리에서 돌려받습니다(30분 유효).
+ *     텔레그램이 멈췄을 때를 위한 예비 수단이라 없는 계정이면 오류를 냅니다.
+ * @returns {Promise<{tempPassword?: string, expiresAt?: number, expiresInMin?: number}>}
  */
-export function requestReset(email) {
-  return store.auth.requestReset(email);
+export function requestReset(email, method = 'admin') {
+  return store.auth.requestReset(email, method);
 }
 
 /**

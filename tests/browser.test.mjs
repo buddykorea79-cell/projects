@@ -242,17 +242,47 @@ await step('로그인 화면에서 비밀번호 찾기로 이동', async () => {
   await page.waitForSelector('#loginForm', { timeout: 5000 });
   await page.locator('a[href="#/forgot"]').click();
   await page.waitForSelector('#forgotForm', { timeout: 5000 });
-  const notice = await page.locator('.notice').first().innerText();
-  if (!notice.includes('재설정 링크')) throw new Error(notice);
+  const admin = await page.locator('#forgotForm [name="method"][value="admin"]').isChecked();
+  if (!admin) throw new Error('기본값이 관리자 요청이 아님');
+  const t = (await page.locator('#forgotForm').innerText()).replace(/\s+/g, ' ');
+  if (!t.includes('재설정 링크')) throw new Error(t);
 });
 await step('잘못된 이메일은 막힘', async () => {
   await page.fill('#forgotForm [name="email"]', 'not-an-email');
   await page.locator('#forgotForm button[type="submit"]').click();
   await page.waitForSelector('.field__err', { timeout: 3000 });
 });
-await step('요청을 남기면 접수 안내가 뜸', async () => {
+await step('임시 비밀번호를 고르면 숫자 6자리가 화면에 뜸', async () => {
+  await page.check('#forgotForm [name="method"][value="code"]');
   await page.fill('#forgotForm [name="email"]', USER.email);
-  await page.locator('#forgotForm button[type="submit"]').click();
+  await page.locator('#forgotSubmit').click();
+  await page.waitForSelector('#forgotCode:not([hidden])', { timeout: 5000 });
+  const code = (await page.locator('#tempCode').innerText()).trim();
+  if (!/^\d{6}$/.test(code)) throw new Error(`번호: ${code}`);
+  tempPassword = code;
+});
+await step('그 번호로 로그인하면 새 비밀번호를 정하는 화면으로', async () => {
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await submitForm('#loginForm', { email: USER.email, password: tempPassword });
+  await page.waitForSelector('#pwForm', { timeout: 8000 });
+  const warn = (await page.locator('.notice--warn').first().innerText()).replace(/\s+/g, ' ');
+  if (!warn.includes('임시 비밀번호로 로그인했습니다')) throw new Error(warn);
+});
+await step('새 비밀번호를 정하면 원래 비밀번호로 돌아옴', async () => {
+  await submitForm('#pwForm', {
+    current: tempPassword, next: USER.password, confirm: USER.password,
+  });
+  await page.waitForSelector('.toast--ok', { timeout: 8000 });
+});
+// 스스로 임시 비밀번호를 받으면 관리자 대기 목록에서는 내려갑니다(본인이 이미
+// 해결했으므로). 뒤의 관리자 화면 검사가 볼 요청을 여기서 새로 남깁니다.
+await step('관리자에게 요청하는 길은 접수 안내로 끝남', async () => {
+  await logout();
+  await page.goto(`${BASE}#/login`, { waitUntil: 'networkidle' });
+  await page.locator('a[href="#/forgot"]').click();
+  await page.waitForSelector('#forgotForm', { timeout: 5000 });
+  await page.fill('#forgotForm [name="email"]', USER.email);
+  await page.locator('#forgotSubmit').click();
   await page.waitForSelector('#forgotDone:not([hidden])', { timeout: 5000 });
   const t = await page.locator('#forgotDone').innerText();
   if (!t.includes('접수되었습니다')) throw new Error(t);
@@ -262,7 +292,7 @@ await step('가입하지 않은 주소도 같은 화면 (가입 여부가 안 �
   await page.locator('a[href="#/forgot"]').click();
   await page.waitForSelector('#forgotForm', { timeout: 5000 });
   await page.fill('#forgotForm [name="email"]', 'nobody-here@example.com');
-  await page.locator('#forgotForm button[type="submit"]').click();
+  await page.locator('#forgotSubmit').click();
   await page.waitForSelector('#forgotDone:not([hidden])', { timeout: 5000 });
 });
 await step('다시 로그인', async () => {
@@ -526,7 +556,7 @@ await step('비밀번호 초기화로 임시 비밀번호 발급', async () => {
   const text = await page.locator('.modal').innerText();
   if (!text.includes('임시 비밀번호')) throw new Error(text.slice(0, 120));
   if (!text.includes(USER.email)) throw new Error(text.slice(0, 120));
-  const m = text.match(/[A-Za-z2-9]{12}/);
+  const m = text.match(/\b\d{6}\b/);   // 임시 비밀번호는 숫자 6자리
   if (!m) throw new Error(text.slice(0, 200));
   log(`        임시 비밀번호: ${m[0]}`);
   tempPassword = m[0];

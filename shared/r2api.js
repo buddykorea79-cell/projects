@@ -32,6 +32,8 @@
  *   PATCH  /auth/members            (관리자) 역할·차단
  *   DELETE /auth/members            (관리자) 정지된 회원 삭제
  *   POST   /auth/members/reset      (관리자) 임시 비밀번호 발급
+ *   POST   /auth/forgot             (공개) 비밀번호 찾기 — method:'code' 면
+ *                                   6자리 임시 비밀번호를 그 자리에서 돌려줌
  *   POST   /auth/reset/confirm      (공개) 재설정 링크(토큰)로 새 비밀번호 설정
  *   POST   /telegram/webhook        (텔레그램) 재설정 버튼 콜백 — Hermes
  *   GET    /data/projects|materials (로그인)   PUT (관리자)
@@ -61,8 +63,12 @@ import {
   readMembers, updateMembers, findMember, publicMember,
   lockState, registerFailure, clearFailures, epochOf, bumpEpoch,
   validateSignup, normEmail, RESET_REQUEST_COOLDOWN_MS,
+  tempPasswordExpired, TEMP_PASSWORD_TTL_MS,
 } from './auth.js';
-import { notifySignup, notifySubmission, notifyResetRequest, handleTelegramWebhook } from './telegram.js';
+import {
+  notifySignup, notifySubmission, notifyResetRequest, notifyInstantReset,
+  handleTelegramWebhook,
+} from './telegram.js';
 import { sendResetEmail } from './email.js';
 
 /** 이 이메일로 가입하면 자동으로 관리자 권한이 붙습니다. */
@@ -395,6 +401,15 @@ async function login(request, env, url, cors) {
     return json(generic, 401, cors);
   }
 
+  // 6자리 임시 비밀번호는 30분만 삽니다. 번호는 맞았지만 시간이 지났다면
+  // 들여보내지 않고 다시 받으라고 알려줍니다. 맞힌 사람에게만 보이는 문구라
+  // 계정이 있는지 새어나가지 않습니다.
+  if (tempPasswordExpired(member)) {
+    return json({
+      message: '임시 비밀번호가 만료되었습니다. 비밀번호 찾기에서 다시 받아 주세요.',
+    }, 401, cors);
+  }
+
   await updateMembers(env, (l) => {
     const m = findMember(l, email);
     if (m) { clearFailures(m); m.lastLoginAt = new Date().toISOString(); }
@@ -440,6 +455,7 @@ async function changePassword(request, env, url, cors) {
     if (m) {
       m.passwordHash = hash;
       m.mustChangePassword = false;
+      m.tempPasswordUntil = 0; // 임시 비밀번호는 여기서 수명을 다합니다
       m.updatedAt = new Date().toISOString();
       clearResetToken(m);     // 나가 있던 재설정 링크가 있었다면 무효화합니다
       bumpEpoch(m);           // 다른 기기에 남아 있던 세션을 끊습니다
@@ -545,18 +561,27 @@ async function removeMember(request, env, admin, cors) {
 }
 
 /**
- * "비밀번호를 잊었습니다" 접수.
+ * "비밀번호를 잊었습니다" 접수. 방법이 두 가지입니다.
  *
+ * ── 기본(method 없음 · 관리자에게 요청) ──────────────────────────────
  * 메일을 보낼 수단이 없으므로, 본인이 남긴 요청을 관리자 화면에 대기 목록으로
  * 띄웁니다. 텔레그램(Hermes)을 설정했다면 신청자가 스스로 새 비밀번호를 정할 수
  * 있는 1회용 링크가 알림에 함께 나가고, 관리자가 그 링크를 본인에게 전달합니다.
- *
  * 응답은 계정이 있든 없든 **항상 같습니다.** 그러지 않으면 이 창구가
  * "이 이메일이 가입돼 있는지" 확인하는 도구가 됩니다.
+ *
+ * ── method:'code' (임시 비밀번호 즉시 발급) ──────────────────────────
+ * 텔레그램이 멈춰 있거나 관리자가 자리에 없을 때를 위한 길입니다.
+ * 6자리 숫자를 그 자리에서 화면에 돌려줍니다 — instantTempPassword 참고.
  */
 async function requestReset(request, env, cors, waitUntil) {
   const body = await request.json().catch(() => null);
   const email = normEmail(body?.email);
+
+  if (String(body?.method || '') === 'code') {
+    if (!email) return json({ message: '이메일을 입력해 주세요.' }, 400, cors);
+    return instantTempPassword(email, env, cors, waitUntil);
+  }
 
   if (email) {
     // updateMembers 의 mutate 는 동기 함수라, 토큰 해시를 먼저 계산해 두고
@@ -585,6 +610,56 @@ async function requestReset(request, env, cors, waitUntil) {
     }
   }
   return json({ ok: true }, 200, cors);
+}
+
+/**
+ * 비밀번호 찾기 — 6자리 임시 비밀번호를 그 자리에서 돌려줍니다.
+ *
+ * 관리자를 거치지 않는 길이라, 대신 다음 넷으로 좁혀 둡니다 —
+ *   ① 6자리는 30분만 살고(TEMP_PASSWORD_TTL_MS),
+ *   ② 그것으로는 로그인만 되고 곧바로 새 비밀번호를 정해야 하며,
+ *   ③ 5분 안에 다시 요청하면 거절하고(RESET_REQUEST_COOLDOWN_MS),
+ *   ④ 발급 사실이 관리자에게 텔레그램으로 남습니다.
+ * 무차별 대입은 로그인 8회 실패 잠금(MAX_FAILED·LOCK_MS)이 막습니다.
+ *
+ * 관리자 경로와 달리 없는 계정에는 없다고 답합니다. 번호를 화면에 바로 띄우는
+ * 창구라 "요청이 접수됐습니다" 로 얼버무릴 수 없고, 오타를 낸 사람을 30분
+ * 기다리게 하는 편이 더 나쁩니다. 이메일만 알면 남의 계정 비밀번호를 갈아
+ * 끼울 수 있다는 뜻이기도 하니, 이 방법은 관리자 경로가 막혔을 때의
+ * 예비 수단으로 두세요(README '비밀번호 찾기' 참고).
+ */
+async function instantTempPassword(email, env, cors, waitUntil) {
+  const { list } = await readMembers(env);
+  const member = findMember(list, email);
+  if (!member) return json({ message: '가입되지 않은 이메일입니다.' }, 404, cors);
+  if ((member.status || 'active') !== 'active') {
+    return json({ message: '이용이 정지된 계정입니다. 관리자에게 문의하세요.' }, 403, cors);
+  }
+
+  // 연타로 계속 새 번호를 뽑지 못하게 합니다. 발급 시각은 따로 두지 않고
+  // 만료 시각에서 되짚습니다(만료 = 발급 + TTL).
+  const issuedAt = Number(member.tempPasswordUntil || 0) - TEMP_PASSWORD_TTL_MS;
+  const since = Date.now() - issuedAt;
+  if (issuedAt > 0 && since < RESET_REQUEST_COOLDOWN_MS) {
+    const wait = Math.max(1, Math.ceil((RESET_REQUEST_COOLDOWN_MS - since) / 60000));
+    return json({
+      message: `조금 전에 임시 비밀번호를 받으셨습니다. ${wait}분 후 다시 시도해 주세요.`,
+    }, 429, cors);
+  }
+
+  const result = await issueTempPassword(email, env);
+  if (!result.ok) return json({ message: '가입되지 않은 이메일입니다.' }, 404, cors);
+
+  // 번호 자체는 알림에 담지 않습니다 — 화면에서 이미 본인에게 갔고,
+  // 채팅 기록에 비밀번호를 남길 이유가 없습니다.
+  notifyInstantReset(env, waitUntil, member);
+
+  return json({
+    ok: true,
+    tempPassword: result.tempPassword,
+    expiresAt: result.expiresAt,
+    expiresInMin: Math.round(TEMP_PASSWORD_TTL_MS / 60000),
+  }, 200, cors);
 }
 
 /**

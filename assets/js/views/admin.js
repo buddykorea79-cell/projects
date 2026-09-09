@@ -1265,7 +1265,7 @@ export async function membersView(mount) {
         const email = btn.dataset.reset;
         const ok = await confirmModal({
           title: '비밀번호를 초기화할까요?',
-          body: `${email} 의 비밀번호가 임시 비밀번호로 바뀝니다.\n메일 발송 기능이 없으니 화면에 뜨는 값을 본인에게 직접 전달해 주세요.`,
+          body: `${email} 의 비밀번호가 숫자 6자리 임시 비밀번호로 바뀝니다.\n메일 발송 기능이 없으니 화면에 뜨는 값을 본인에게 직접 전달해 주세요.\n임시 비밀번호는 30분 동안만 쓸 수 있습니다.`,
           confirmLabel: '초기화', danger: true,
         });
         if (!ok) return;
@@ -1273,7 +1273,7 @@ export async function membersView(mount) {
           const temp = await store.auth.resetPassword(email);
           await confirmModal({
             title: '임시 비밀번호',
-            body: `${email}\n\n${temp}\n\n이 값을 본인에게 전달하세요. 창을 닫으면 다시 볼 수 없습니다.`,
+            body: `${email}\n\n${temp}\n\n이 값을 본인에게 전달하세요. 창을 닫으면 다시 볼 수 없습니다.\n30분 안에 로그인해 새 비밀번호를 정하시면 됩니다.`,
             confirmLabel: '확인했습니다', cancelLabel: '닫기',
           });
           await load();

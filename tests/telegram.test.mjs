@@ -200,6 +200,45 @@ await t('가입하지 않은 이메일은 알림·메일 없음 (계정 존재�
   eq(mails.length, 0, 'mails');
 });
 
+console.log('\n== 알림: 임시 비밀번호 자가 발급 ==');
+
+await t('스스로 6자리를 받아 가면 관리자에게 알림이 감', async () => {
+  const gina = client();
+  await signup(gina, 'gina@example.com', { name: '지나', institution: '지나기관' });
+
+  calls = [];
+  mails = [];
+  const r = await client()('/auth/forgot', {
+    method: 'POST', body: { email: 'gina@example.com', method: 'code' },
+  });
+  eq(r.status, 200, 'status');
+  if (!/^\d{6}$/.test(r.data.tempPassword)) throw new Error(`번호: ${r.data.tempPassword}`);
+
+  eq(calls.length, 1, 'calls');
+  eq(calls[0].method, 'sendMessage', 'method');
+  const text = calls[0].payload.text;
+  if (!text.includes('자가 발급')) throw new Error(text);
+  if (!text.includes('지나')) throw new Error(text);
+  if (!text.includes('gina@example.com')) throw new Error(text);
+});
+
+await t('알림에 번호 자체는 담기지 않음 — 채팅에 비밀번호를 남기지 않습니다', async () => {
+  // 앞 검사에서 받은 번호가 알림 본문에 그대로 있으면 안 됩니다.
+  const text = calls[0].payload.text;
+  if (/\b\d{6}\b/.test(text)) throw new Error(`번호가 새어나감: ${text}`);
+  eq(calls[0].payload.reply_markup, undefined, '버튼이 붙음');
+  eq(mails.length, 0, 'mails');
+});
+
+await t('연달아 요청하면 쿨다운에 걸림 — 알림 도배도 막힙니다', async () => {
+  calls = [];
+  const again = await client()('/auth/forgot', {
+    method: 'POST', body: { email: 'gina@example.com', method: 'code' },
+  });
+  eq(again.status, 429, 'status');
+  eq(calls.length, 0, '거절했는데 알림이 감');
+});
+
 /* ================================================================ 웹훅 == */
 
 console.log('\n== 웹훅: 시크릿 검증 ==');

@@ -495,9 +495,19 @@ class R2Auth {
     });
   }
 
-  /** "비밀번호를 잊었습니다" 접수. 계정이 있든 없든 응답은 같습니다. */
-  async requestReset(email) {
-    await this.store.post('/auth/forgot', { email });
+  /**
+   * "비밀번호를 잊었습니다" 접수.
+   *
+   * @param {string} email
+   * @param {'admin'|'code'} method 'admin' 은 관리자에게 넘깁니다 — 계정이 있든
+   *   없든 응답이 같아 가입 여부가 새지 않습니다. 'code' 는 6자리 임시
+   *   비밀번호를 그 자리에서 받아 옵니다(없는 계정이면 오류).
+   * @returns {Promise<{tempPassword?: string, expiresAt?: number, expiresInMin?: number}>}
+   */
+  async requestReset(email, method = 'admin') {
+    const body = await this.store.post('/auth/forgot',
+      method === 'code' ? { email, method: 'code' } : { email });
+    return body || {};
   }
 
   /** 재설정 링크(토큰)로 새 비밀번호 설정 — 로그인 없이 호출됩니다. */

@@ -16,7 +16,9 @@
  * 신뢰 경계 — 이 채팅방에 들어와 있는 사람은 누구든 버튼으로 임시 비밀번호를
  * 발급할 수 있습니다. 신뢰하는 관리자만 이 채팅에 초대하세요.
  */
-import { issueTempPassword, normEmail, safeEqual, RESET_TOKEN_TTL_MS } from './auth.js';
+import {
+  issueTempPassword, normEmail, safeEqual, RESET_TOKEN_TTL_MS, TEMP_PASSWORD_TTL_MS,
+} from './auth.js';
 
 const apiUrl = (token, method) => `https://api.telegram.org/bot${token}/${method}`;
 
@@ -98,6 +100,21 @@ export function notifyResetRequest(env, waitUntil, member, resetUrl) {
   });
 }
 
+/**
+ * 신청자가 스스로 6자리 임시 비밀번호를 받아 간 사실을 알립니다.
+ *
+ * 번호는 담지 않습니다 — 이미 본인 화면에 떴고, 채팅 기록에 남길 이유가
+ * 없습니다. 관리자가 "내가 발급한 적 없는데?" 하고 알아채라고 보내는 알림이라
+ * 누가·언제만 있으면 충분합니다.
+ */
+export function notifyInstantReset(env, waitUntil, member) {
+  const text = `🔓 <b>임시 비밀번호 자가 발급</b>\n`
+    + `${escapeHtml(member.name)} · ${escapeHtml(member.institution)}\n`
+    + `${escapeHtml(normEmail(member.email))}\n\n`
+    + `본인이 요청한 것이 아니라면 회원 관리에서 계정을 잠가 주세요.`;
+  return notify(env, waitUntil, text);
+}
+
 /* ------------------------------------------------------------ 웹훅 -- */
 
 /**
@@ -146,7 +163,7 @@ async function handleResetCallback(env, cb) {
     chat_id: cb.message.chat.id,
     message_id: cb.message.message_id,
     text: `${original}\n\n✅ 임시 비밀번호: <code>${escapeHtml(result.tempPassword)}</code>\n`
-      + `${escapeHtml(email)} 님께 직접 전달하세요.`,
+      + `${escapeHtml(email)} 님께 직접 전달하세요 (${Math.round(TEMP_PASSWORD_TTL_MS / 60000)}분 유효).`,
     parse_mode: 'HTML',
     reply_markup: { inline_keyboard: [] },
   });

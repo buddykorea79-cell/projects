@@ -11,6 +11,8 @@ import { CONFIG } from '../config.js';
 const MEMBERS_KEY = 'ah.demo.members';
 const SESSION_KEY = 'ah.demo.session';
 const ITERATIONS = 15000;
+const TEMP_TTL_MS = 30 * 60 * 1000;      // 임시 비밀번호 수명
+const RESET_COOLDOWN_MS = 5 * 60 * 1000; // 재요청 간격
 
 const enc = new TextEncoder();
 const normEmail = (v) => String(v || '').trim().toLowerCase();
@@ -23,6 +25,17 @@ function read(key, fallback) {
 }
 function write(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode */ }
+}
+
+/** 숫자 6자리 임시 비밀번호 — shared/auth.js 의 numericTempPassword 와 같은 방식. */
+function numericTempPassword(digits = 6) {
+  const max = 10 ** digits;
+  const limit = Math.floor(0xFFFFFFFF / max) * max;
+  let n;
+  do {
+    n = crypto.getRandomValues(new Uint32Array(1))[0];
+  } while (n >= limit);
+  return String(n % max).padStart(digits, '0');
 }
 
 function b64(bytes) {
@@ -141,6 +154,10 @@ export class DemoAuth {
     if (!m) { await hash(String(password)); throw generic(); }
     if ((m.status || 'active') !== 'active') throw new Error('이용이 정지된 계정입니다.');
     if (!(await verify(String(password), m.passwordHash))) throw generic();
+    if (m.mustChangePassword && Number(m.tempPasswordUntil || 0) &&
+        Number(m.tempPasswordUntil) < Date.now()) {
+      throw new Error('임시 비밀번호가 만료되었습니다. 비밀번호 찾기에서 다시 받아 주세요.');
+    }
 
     m.lastLoginAt = new Date().toISOString();
     write(MEMBERS_KEY, this.members().map((x) => (normEmail(x.email) === normEmail(m.email) ? m : x)));
@@ -161,21 +178,52 @@ export class DemoAuth {
     if (String(next).length < 8) throw new Error('새 비밀번호는 8자 이상이어야 합니다.');
     m.passwordHash = await hash(String(next));
     m.mustChangePassword = false;
+    m.tempPasswordUntil = 0;
     write(MEMBERS_KEY, this.members().map((x) => (normEmail(x.email) === normEmail(m.email) ? m : x)));
     this._me = { ...this._me, mustChangePassword: false };
   }
 
-  async requestReset(email) {
+  /**
+   * "비밀번호를 잊었습니다" 접수 — 서버 쪽(shared/r2api.js) 규칙을 흉내냅니다.
+   * 'code' 를 주면 6자리 임시 비밀번호를 그 자리에서 돌려줍니다.
+   */
+  async requestReset(email, method = 'admin') {
     const list = this.members();
     const m = list.find((x) => normEmail(x.email) === normEmail(email));
+
+    if (method === 'code') {
+      if (!m) throw new Error('가입되지 않은 이메일입니다.');
+      if ((m.status || 'active') !== 'active') {
+        throw new Error('이용이 정지된 계정입니다. 관리자에게 문의하세요.');
+      }
+      const issuedAt = Number(m.tempPasswordUntil || 0) - TEMP_TTL_MS;
+      const since = Date.now() - issuedAt;
+      if (issuedAt > 0 && since < RESET_COOLDOWN_MS) {
+        const wait = Math.max(1, Math.ceil((RESET_COOLDOWN_MS - since) / 60000));
+        throw new Error(`조금 전에 임시 비밀번호를 받으셨습니다. ${wait}분 후 다시 시도해 주세요.`);
+      }
+      const temp = numericTempPassword();
+      m.passwordHash = await hash(temp);
+      m.mustChangePassword = true;
+      m.tempPasswordUntil = Date.now() + TEMP_TTL_MS;
+      m.resetRequestedAt = null;
+      write(MEMBERS_KEY, list);
+      return {
+        tempPassword: temp,
+        expiresAt: m.tempPasswordUntil,
+        expiresInMin: Math.round(TEMP_TTL_MS / 60000),
+      };
+    }
+
     if (m) {
       const last = m.resetRequestedAt ? Date.parse(m.resetRequestedAt) : 0;
-      if (!(Number.isFinite(last) && Date.now() - last < 5 * 60 * 1000)) {
+      if (!(Number.isFinite(last) && Date.now() - last < RESET_COOLDOWN_MS)) {
         m.resetRequestedAt = new Date().toISOString();
         write(MEMBERS_KEY, list);
       }
     }
     // 계정이 없어도 성공한 것처럼 끝냅니다(가입 여부를 알려주지 않기 위해).
+    return {};
   }
 
   async listMembers() { return this.members().map(publicMember); }
@@ -229,11 +277,10 @@ export class DemoAuth {
     const list = this.members();
     const m = list.find((x) => normEmail(x.email) === normEmail(email));
     if (!m) throw new Error('해당 회원을 찾을 수 없습니다.');
-    const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
-    const bytes = crypto.getRandomValues(new Uint32Array(12));
-    const temp = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('');
+    const temp = numericTempPassword();
     m.passwordHash = await hash(temp);
     m.mustChangePassword = true;
+    m.tempPasswordUntil = Date.now() + TEMP_TTL_MS;
     m.resetRequestedAt = null;
     write(MEMBERS_KEY, list);
     return temp;
