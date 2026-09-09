@@ -4,7 +4,9 @@
  * 표 자체는 저장소가 관리합니다(R2 모드에서는 서버). 이 화면은 집계와
  * "내가 넣은 표"만 받아 그리고, 넣을 수 있는지 여부는 저장소가 다시 봅니다.
  */
-import { store, votingOf, votingPhase, VOTE_PHASE_LABEL } from '../store/index.js';
+import {
+  store, votingOf, votingPhase, votableSubmission, VOTE_PHASE_LABEL,
+} from '../store/index.js';
 import { esc, attr, fmtDate, kindOf } from '../utils.js';
 import { spinner, emptyState, toastOk, toastErr } from '../ui.js';
 import { currentUser, isAdmin } from '../auth.js';
@@ -165,12 +167,19 @@ export async function voteProjectView(mount, { id }) {
 
   let subs = [];
   let summary = null;
+  /** 투표판에서 뺀 '마감 후 등록' 제출물 수 — 관리자에게만 알려줍니다. */
+  let lateNote = 0;
 
   try {
     [subs, summary] = await Promise.all([
       store.listSubmissions({ projectId: project.id }),
       store.voteSummary(project.id),
     ]);
+    // 마감 뒤에 등록된 제출물은 투표판에 올리지 않습니다 — 같은 기간에 맞춰 낸
+    // 작품들과 나란히 겨루는 것이 아니기 때문입니다(store/voting.js).
+    const lateCount = subs.length - subs.filter(votableSubmission).length;
+    subs = subs.filter(votableSubmission);
+    if (lateCount) lateNote = lateCount;
   } catch (e) {
     boardEl.innerHTML = `<div class="notice notice--err">투표 정보를 불러오지 못했습니다 — ${esc(e.message)}</div>`;
     return;
@@ -179,8 +188,10 @@ export async function voteProjectView(mount, { id }) {
   if (!subs.length) {
     statusEl.innerHTML = '';
     boardEl.innerHTML = emptyState({
-      title: '아직 제출물이 없습니다',
-      body: '과제가 제출되면 이곳에서 투표할 수 있습니다.',
+      title: lateNote ? '투표할 수 있는 제출물이 없습니다' : '아직 제출물이 없습니다',
+      body: lateNote
+        ? `등록된 ${lateNote}건은 모두 마감 뒤에 들어와 투표 대상에서 빠졌습니다.`
+        : '과제가 제출되면 이곳에서 투표할 수 있습니다.',
       action: `<a class="btn btn--outline" href="#/p/${attr(project.id)}">프로젝트 보기</a>`,
     });
     return;
@@ -209,6 +220,11 @@ export async function voteProjectView(mount, { id }) {
         ${phase === 'open' && summary.counts === null ? `
           <div class="notice notice--info" style="margin-top:var(--space-3)">
             공정한 투표를 위해 <strong>득표수는 투표가 끝난 뒤</strong> 공개됩니다.
+          </div>` : ''}
+        ${lateNote && isAdmin() ? `
+          <div class="notice notice--info" style="margin-top:var(--space-3)">
+            마감 뒤에 등록된 제출물 <strong>${esc(lateNote)}건</strong>은 투표에서 빠졌습니다.
+            <a href="#/admin/submissions/${attr(project.id)}">제출물 관리</a>에서 볼 수 있습니다.
           </div>` : ''}
       </div>`;
   };

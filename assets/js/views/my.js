@@ -114,6 +114,11 @@ export async function submissionView(mount, { id }) {
               ${esc(sub.author?.institution || '—')} · ${esc(sub.author?.name || '—')}
               ${sub.author?.email ? ` · ${esc(sub.author.email)}` : ''}
             </p>
+            ${sub.late ? `
+              <p class="page-sub" style="margin-top:6px">
+                <span class="badge badge--due">마감 후 등록</span>
+                <span style="margin-left:6px">관리자가 마감 뒤에 등록해 투표에서는 빠집니다.</span>
+              </p>` : ''}
           </div>
           ${editable ? `
           <div class="row">

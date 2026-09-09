@@ -10,8 +10,8 @@ import { isPastDue } from '../utils.js';
 
 // 투표 규칙은 저장소 구현과 함께 쓰므로 별도 모듈에 두고 여기서 다시 내보냅니다.
 export {
-  votingOf, votingPhase, votingOpen, summarizeVotes,
-  VOTE_PHASE_LABEL, VOTE_MAX_PER_MEMBER, VOTE_DEFAULT_PER_MEMBER,
+  votingOf, votingPhase, votingOpen, summarizeVotes, votableSubmission,
+  VOTE_PHASE_LABEL, VOTE_MAX_PER_MEMBER, VOTE_DEFAULT_PER_MEMBER, LATE_VOTE_MESSAGE,
 } from './voting.js';
 
 const MODE_KEY = 'ah.storageMode';
@@ -96,3 +96,18 @@ export function closedReason(project) {
   if (isPastDue(project.dueAt)) return '제출 마감일이 지났습니다.';
   return '';
 }
+
+/**
+ * 지금 이 사람이 새 제출물을 등록할 수 있는지.
+ *
+ * 마감된 과제에도 **관리자는 등록할 수 있습니다** — 늦게 받은 과제를 대신
+ * 올리거나 빠진 제출을 채워 넣어야 할 때가 있기 때문입니다. 대신 그렇게 들어온
+ * 제출물은 `late` 표시가 붙고 투표에서 빠집니다(store/voting.js).
+ */
+export function canSubmit(project, admin = false) {
+  if (!project) return false;
+  return submissionOpen(project) || Boolean(admin);
+}
+
+/** 지금 등록하면 "마감 뒤 등록"이 되는지. */
+export function submitsLate(project) { return Boolean(project) && !submissionOpen(project); }

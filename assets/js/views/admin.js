@@ -784,8 +784,11 @@ export async function adminSubmissionsView(mount, { projectId }) {
                 <td>${esc(s.author?.institution || '—')}</td>
                 <td>${esc(s.author?.name || '—')}</td>
                 <td><a href="mailto:${attr(s.author?.email || '')}">${esc(s.author?.email || '—')}</a></td>
-                <td><a href="#/s/${attr(s.id)}">${esc(s.title)}</a></td>
-                ${counts ? `<td class="num">${esc(votesOf(s))}</td>` : ''}
+                <td>
+                  <a href="#/s/${attr(s.id)}">${esc(s.title)}</a>
+                  ${s.late ? ' <span class="badge badge--due">마감 후 등록</span>' : ''}
+                </td>
+                ${counts ? `<td class="num">${s.late ? '—' : esc(votesOf(s))}</td>` : ''}
                 <td class="num">${(s.files || []).length}</td>
                 <td class="num">${esc(bytes ? fmtBytes(bytes) : '—')}</td>
                 <td>${esc(fmtDate(s.createdAt, true))}</td>
@@ -825,7 +828,7 @@ export async function adminSubmissionsView(mount, { projectId }) {
 
   mount.querySelector('[data-csv]').addEventListener('click', () => {
     const header = ['번호', '기관명', '성명', '이메일', '제목', '설명',
-      ...(counts ? ['득표'] : []), '첨부수', '첨부목록', '제출일시', '수정일시', '제출ID'];
+      ...(counts ? ['득표'] : []), '등록', '첨부수', '첨부목록', '제출일시', '수정일시', '제출ID'];
     const lines = [header.map(csvCell).join(',')];
     all.forEach((s, i) => {
       lines.push([
@@ -835,7 +838,8 @@ export async function adminSubmissionsView(mount, { projectId }) {
         s.author?.email || '',
         s.title || '',
         s.body || '',
-        ...(counts ? [votesOf(s)] : []),
+        ...(counts ? [s.late ? '' : votesOf(s)] : []),
+        s.late ? '마감 후 등록' : '기한 내',
         (s.files || []).length,
         (s.files || []).map((f) => f.name).join(' | '),
         fmtDate(s.createdAt, true),

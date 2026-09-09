@@ -283,6 +283,79 @@ await t('회원을 지우면 그 사람이 넣은 표도 집계에서 사라짐'
   eq(after.counts[aliceSub] || 0, had, '표가 남아 있음');
 });
 
+console.log('\n== 마감 뒤 등록 (관리자) ==');
+// 마감된 과제에도 관리자는 제출물을 등록할 수 있고, 그렇게 들어온 것은
+// `late` 표시가 붙어 투표에서 빠집니다.
+
+const LATE = { id: 'p_late', title: '늦은 과제' };
+/** p_vote 는 그대로 두고 p_late 만 원하는 상태로 바꿉니다. */
+const setLateProject = (over) => putProjects(admin, [project(), project({ ...LATE, ...over })]);
+
+await t('마감 전에는 회원이 그대로 제출하고 late 표시가 없음', async () => {
+  await setLateProject({ dueAt: iso(60000) });
+  const r = await alice('/submissions', {
+    method: 'POST',
+    body: { projectId: 'p_late', title: '기한 내 작품', body: '내용', files: [] },
+  });
+  eq(r.status, 200, '제출');
+  eq(r.data.submission.late, undefined, 'late 표시 없음');
+});
+
+await t('마감일이 지나면 회원은 등록할 수 없음', async () => {
+  await setLateProject({ dueAt: iso(-60000) });
+  const r = await alice('/submissions', {
+    method: 'POST',
+    body: { projectId: 'p_late', title: '늦은 회원 작품', body: '내용', files: [] },
+  });
+  eq(r.status, 400, '거부');
+  eq(r.data.message, '제출 마감일이 지났습니다.', '안내 문구');
+});
+
+await t('마감일이 지나도 관리자는 등록할 수 있고 late 가 붙음', async () => {
+  const r = await admin('/submissions', {
+    method: 'POST',
+    body: { projectId: 'p_late', title: '관리자 등록 작품', body: '내용', files: [] },
+  });
+  eq(r.status, 200, '등록');
+  eq(r.data.submission.late, true, 'late 표시');
+});
+
+await t('접수를 닫은 과제도 관리자는 등록 가능', async () => {
+  await setLateProject({ dueAt: null, status: 'closed' });
+  const r = await admin('/submissions', {
+    method: 'POST',
+    body: { projectId: 'p_late', title: '접수마감 등록 작품', body: '내용', files: [] },
+  });
+  eq(r.status, 200, '등록');
+  eq(r.data.submission.late, true, 'late 표시');
+});
+
+await t('없는 프로젝트에는 관리자도 등록할 수 없음', async () => {
+  const r = await admin('/submissions', {
+    method: 'POST',
+    body: { projectId: 'p_nope', title: 'x', body: 'y', files: [] },
+  });
+  eq(r.status, 404, '거부');
+});
+
+await t('마감 뒤 등록된 제출물에는 표를 넣을 수 없음', async () => {
+  await setLateProject({ dueAt: iso(-60000) });          // 투표는 진행중
+  const rows = (await admin('/submissions')).data.data;
+  const lateSub = rows.find((s) => s.title === '관리자 등록 작품');
+  const onTime = rows.find((s) => s.title === '기한 내 작품');
+
+  const bad = await bob('/votes', { method: 'POST', body: { submissionId: lateSub.id } });
+  eq(bad.status, 400, '거부');
+  eq(bad.data.message, '마감 뒤에 등록된 제출물은 투표 대상이 아닙니다.', '안내 문구');
+
+  const good = await bob('/votes', { method: 'POST', body: { submissionId: onTime.id } });
+  eq(good.status, 200, '기한 내 작품에는 정상 투표');
+
+  const summary = (await admin('/votes?projectId=p_late')).data.summary;
+  eq(summary.counts[lateSub.id] || 0, 0, '늦은 작품 득표 0');
+  eq(summary.counts[onTime.id], 1, '기한 내 작품 득표 1');
+});
+
 console.log('\n================ 결과 ================');
 console.log(`버킷 객체 ${bucket.objects.size}개`);
 if (fails.length) { console.log(`실패 ${fails.length}건: ${fails.join(', ')}`); process.exit(1); }

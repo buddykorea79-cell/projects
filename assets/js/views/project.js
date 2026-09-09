@@ -1,6 +1,7 @@
 /** 프로젝트 상세 · 과제 제출 · 첨부 렌더. */
 import {
-  store, submissionOpen, closedReason, votingOf, votingPhase, VOTE_PHASE_LABEL,
+  store, submissionOpen, closedReason, canSubmit, submitsLate,
+  votingOf, votingPhase, VOTE_PHASE_LABEL,
 } from '../store/index.js';
 import { CONFIG } from '../config.js';
 import { esc, attr, fmtDate, fmtBytes, kindOf, downloadLink } from '../utils.js';
@@ -49,7 +50,10 @@ export async function projectView(mount, { id }) {
         <div class="row" style="margin-top:var(--space-4)">
           ${open
             ? `<a class="btn btn--onDark btn--lg" href="#/p/${attr(project.id)}/submit">과제 제출하기</a>`
-            : `<span class="btn btn--ghostDark btn--lg" aria-disabled="true">${esc(reason)}</span>`}
+            : isAdmin()
+              ? `<a class="btn btn--onDark btn--lg" href="#/p/${attr(project.id)}/submit">관리자로 등록하기</a>
+                 <span class="btn btn--ghostDark btn--lg" aria-disabled="true">${esc(reason)}</span>`
+              : `<span class="btn btn--ghostDark btn--lg" aria-disabled="true">${esc(reason)}</span>`}
           ${vote ? `<a class="btn btn--onDark btn--lg" href="#/vote/${attr(project.id)}">
             ${votePhase === 'open' ? '투표하기' : '투표 결과 보기'}</a>` : ''}
           <a class="btn btn--ghostDark btn--lg" href="#/my">내 제출물</a>
@@ -143,7 +147,7 @@ export async function submitView(mount, { id }) {
   const project = await store.getProject(id);
   if (!project) { go('/'); return; }
 
-  if (!submissionOpen(project)) {
+  if (!canSubmit(project, isAdmin())) {
     mount.innerHTML = `<section class="section"><div class="wrap wrap--narrow">
       <div class="notice notice--warn">${esc(closedReason(project))}</div>
       <div style="margin-top:var(--space-4)"><a class="btn btn--outline" href="#/p/${attr(project.id)}">프로젝트로 돌아가기</a></div>
@@ -152,6 +156,8 @@ export async function submitView(mount, { id }) {
   }
 
   const me = currentUser();
+  // 마감 뒤 등록 — 관리자만 여기까지 옵니다. 결과가 달라지므로 미리 알려줍니다.
+  const late = submitsLate(project);
 
   mount.innerHTML = `
     <section class="section">
@@ -160,7 +166,14 @@ export async function submitView(mount, { id }) {
           <a href="#/">프로젝트</a><span>/</span>
           <a href="#/p/${attr(project.id)}">${esc(project.title)}</a><span>/</span>제출
         </p>
-        <h1 class="page-title" style="margin-bottom:var(--space-4)">과제 제출</h1>
+        <h1 class="page-title" style="margin-bottom:var(--space-4)">${late ? '과제 등록 (마감 뒤)' : '과제 제출'}</h1>
+
+        ${late ? `
+          <div class="notice notice--warn" style="margin-bottom:var(--space-3)">
+            <strong>${esc(closedReason(project))}</strong>
+            관리자 권한으로 등록합니다. 이 제출물에는 <strong>'마감 후 등록'</strong> 표시가 붙고
+            <strong>투표 대상에서 빠집니다.</strong> 목록·제출 현황·내려받기에는 그대로 나옵니다.
+          </div>` : ''}
 
         <div class="card card--flat" style="margin-bottom:var(--space-3)">
           <div class="row row--between" style="gap:var(--space-3)">
@@ -233,8 +246,11 @@ export async function submitView(mount, { id }) {
         title: form.title.value,
         body: form.body.value,
         files: [],
+        // 서버가 있는 R2 모드에서는 서버가 다시 판정합니다(클라이언트 값은 무시).
+        // 서버 없는 모드(브라우저·GitHub)에서는 이 값이 그대로 저장됩니다.
+        ...(late ? { late: true } : {}),
       }, picker ? picker.files : []);
-      toastOk('제출이 완료되었습니다.');
+      toastOk(late ? '마감 뒤 등록으로 저장했습니다. 투표에서는 빠집니다.' : '제출이 완료되었습니다.');
       go(`/s/${saved.id}`);
     } catch (err) {
       busy(btn, false);

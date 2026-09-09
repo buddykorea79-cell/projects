@@ -37,7 +37,7 @@
  *   GET    /data/projects|materials (로그인)   PUT (관리자)
  *   GET    /data/roster|attendance  (관리자)   PUT (관리자) — 수강 현황
  *   GET    /submissions             (로그인, 권한에 따라 필터)
- *   POST   /submissions             (로그인)
+ *   POST   /submissions             (로그인) — 마감 뒤에는 관리자만(late 표시)
  *   PATCH  /submissions/:id         (본인·관리자)
  *   DELETE /submissions/:id         (본인·관리자)
  *   POST   /upload                  (로그인)
@@ -786,8 +786,16 @@ async function createSubmission(request, env, cors, waitUntil) {
   }
 
   const { data: projects } = await readIndex(env, 'projects');
+  const project = projects.find((p) => p.id === body.projectId);
+  if (!project) return json({ message: '프로젝트를 찾을 수 없습니다.' }, 404, cors);
+
+  /**
+   * 마감된 과제에도 관리자는 등록할 수 있습니다 — 늦게 받은 과제를 대신 올리거나
+   * 빠진 제출을 채워 넣어야 할 때가 있습니다. 대신 `late` 를 붙여 두고
+   * 투표에서는 뺍니다(castVote). 교육생은 지금까지처럼 막힙니다.
+   */
   const closed = checkProjectOpen(projects, body.projectId);
-  if (closed) return json({ message: closed }, 400, cors);
+  if (closed && me.role !== 'admin') return json({ message: closed }, 400, cors);
 
   const prefix = await memberKey(me.email);
   if (!ownsFiles(body.files, prefix, me.role === 'admin')) {
@@ -803,12 +811,15 @@ async function createSubmission(request, env, cors, waitUntil) {
     body: String(body.body).trim().slice(0, 20000),
     files: Array.isArray(body.files) ? body.files.slice(0, 20) : [],
     status: 'submitted',
+    // 마감 뒤 등록이면 표시를 남깁니다. 나중에 마감일을 고쳐도 이 값은 그대로라
+    // "등록 시점 기준"이라는 뜻이 흔들리지 않습니다.
+    ...(closed ? { late: true } : {}),
     createdAt: now,
     updatedAt: now,
   };
 
   await mutateIndex(env, 'submissions', (list) => { list.push(rec); return list; });
-  notifySubmission(env, waitUntil, rec, projects.find((p) => p.id === rec.projectId));
+  notifySubmission(env, waitUntil, rec, project);
   return json({ submission: rec }, 200, cors);
 }
 
@@ -1193,6 +1204,10 @@ async function castVote(request, env, cors) {
     return json({
       message: phase === 'before' ? '아직 투표 기간이 아닙니다.' : '투표가 마감되었습니다.',
     }, 400, cors);
+  }
+  // 마감 뒤에 들어온 제출물은 같은 조건에서 겨룬 것이 아니므로 표를 받지 않습니다.
+  if (on && sub.late) {
+    return json({ message: '마감 뒤에 등록된 제출물은 투표 대상이 아닙니다.' }, 400, cors);
   }
   if (on && !cfg.allowSelf && normEmail(sub.author?.email) === normEmail(me.email)) {
     return json({ message: '본인 제출물에는 투표할 수 없습니다.' }, 400, cors);

@@ -47,6 +47,17 @@ export function votingPhase(project, now = Date.now()) {
 /** 지금 표를 넣을 수 있는 프로젝트인지. */
 export function votingOpen(project) { return votingPhase(project) === 'open'; }
 
+/**
+ * 투표에 올릴 제출물인지.
+ *
+ * 마감 뒤에 관리자가 넣어 준 제출물(`late`)은 빠집니다 — 같은 기간에 맞춰 낸
+ * 사람들과 나란히 겨루는 것이 아니라서 표를 받으면 결과가 공정하지 않습니다.
+ * 기록으로는 그대로 남고 목록·현황에는 다 보입니다.
+ */
+export function votableSubmission(sub) { return !sub?.late; }
+
+export const LATE_VOTE_MESSAGE = '마감 뒤에 등록된 제출물은 투표 대상이 아닙니다.';
+
 export const VOTE_PHASE_LABEL = {
   off: '투표 없음',
   before: '투표 예정',
@@ -108,6 +119,7 @@ export function applyVote(project, rows, me, submissionId, on, submission) {
   if (phase !== 'open') {
     throw new Error(phase === 'before' ? '아직 투표 기간이 아닙니다.' : '투표가 마감되었습니다.');
   }
+  if (on && !votableSubmission(submission)) throw new Error(LATE_VOTE_MESSAGE);
   if (on && !cfg.allowSelf && norm(submission?.author?.email) === norm(me?.email)) {
     throw new Error('본인 제출물에는 투표할 수 없습니다.');
   }
