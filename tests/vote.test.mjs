@@ -356,6 +356,99 @@ await t('마감 뒤 등록된 제출물에는 표를 넣을 수 없음', async (
   eq(summary.counts[onTime.id], 1, '기한 내 작품 득표 1');
 });
 
+console.log('\n== 다른 회원 이름으로 등록 (관리자) ==');
+
+await t('관리자는 다른 회원 이름으로 등록할 수 있음', async () => {
+  await setLateProject({ dueAt: iso(600000) });          // 마감 전으로 되돌립니다
+  const r = await admin('/submissions', {
+    method: 'POST',
+    body: {
+      projectId: 'p_late', title: '앨리스 대신 낸 작품', body: '내용', files: [],
+      authorEmail: 'alice@example.com',
+    },
+  });
+  eq(r.status, 200, '등록');
+  eq(r.data.submission.author.email, 'alice@example.com', '제출자');
+  eq(r.data.submission.author.name, 'alice', '이름은 명부에서');
+  eq(r.data.submission.registeredBy, ADMIN, '대신 올린 사람');
+  eq(r.data.submission.late, undefined, '마감 전이라 late 아님');
+});
+
+await t('그 제출물은 지정한 회원의 목록에 잡힘', async () => {
+  const rows = (await alice('/submissions')).data.data;
+  const one = rows.find((s) => s.title === '앨리스 대신 낸 작품');
+  eq(Boolean(one), true, '앨리스가 자기 것으로 봄');
+});
+
+await t('요청에 실린 이름·기관은 믿지 않고 명부 값을 씁니다', async () => {
+  const r = await admin('/submissions', {
+    method: 'POST',
+    body: {
+      projectId: 'p_late', title: '이름 위조 시도', body: '내용', files: [],
+      authorEmail: 'alice@example.com',
+      author: { name: '가짜이름', institution: '가짜기관', email: 'someone@else.com' },
+    },
+  });
+  eq(r.status, 200, '등록');
+  eq(r.data.submission.author.name, 'alice', '이름(요청의 가짜 이름이 아님)');
+  eq(r.data.submission.author.institution, '한국디자인진흥원', '기관도 명부 값');
+  eq(r.data.submission.author.email, 'alice@example.com', '이메일');
+});
+
+await t('가입하지 않은 이메일은 거부됨', async () => {
+  const r = await admin('/submissions', {
+    method: 'POST',
+    body: {
+      projectId: 'p_late', title: 'x', body: 'y', files: [],
+      authorEmail: 'nobody@example.com',
+    },
+  });
+  eq(r.status, 404, '거부');
+  eq(r.data.message, '그 이메일로 가입한 회원이 없습니다.', '안내 문구');
+});
+
+await t('일반 회원은 남의 이름으로 낼 수 없음', async () => {
+  const r = await bob('/submissions', {
+    method: 'POST',
+    body: {
+      projectId: 'p_late', title: '남의 이름', body: '내용', files: [],
+      authorEmail: 'alice@example.com',
+    },
+  });
+  eq(r.status, 403, '거부');
+  eq(r.data.message, '다른 사람 이름으로는 제출할 수 없습니다.', '안내 문구');
+});
+
+await t('자기 이메일을 넣는 것은 그냥 통과', async () => {
+  const r = await bob('/submissions', {
+    method: 'POST',
+    body: {
+      projectId: 'p_late', title: '밥 본인 작품', body: '내용', files: [],
+      authorEmail: 'bob@example.com',
+    },
+  });
+  eq(r.status, 200, '등록');
+  eq(r.data.submission.author.email, 'bob@example.com', '제출자');
+  eq(r.data.submission.registeredBy, undefined, '대신 등록 표시 없음');
+});
+
+await t('마감 뒤에 다른 회원 이름으로 등록하면 late 도 함께 붙음', async () => {
+  await setLateProject({ dueAt: iso(-600000) });
+  const r = await admin('/submissions', {
+    method: 'POST',
+    body: {
+      projectId: 'p_late', title: '마감 뒤 대신 등록', body: '내용', files: [],
+      authorEmail: 'alice@example.com',
+    },
+  });
+  eq(r.status, 200, '등록');
+  eq(r.data.submission.late, true, 'late');
+  eq(r.data.submission.registeredBy, ADMIN, '대신 올린 사람');
+
+  const bad = await bob('/votes', { method: 'POST', body: { submissionId: r.data.submission.id } });
+  eq(bad.status, 400, '투표 거부');
+});
+
 console.log('\n================ 결과 ================');
 console.log(`버킷 객체 ${bucket.objects.size}개`);
 if (fails.length) { console.log(`실패 ${fails.length}건: ${fails.join(', ')}`); process.exit(1); }

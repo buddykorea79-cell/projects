@@ -4,7 +4,7 @@ import {
   votingOf, votingPhase, VOTE_PHASE_LABEL,
 } from '../store/index.js';
 import { CONFIG } from '../config.js';
-import { esc, attr, fmtDate, fmtBytes, kindOf, downloadLink } from '../utils.js';
+import { esc, attr, fmtDate, fmtBytes, kindOf, downloadLink, normEmail } from '../utils.js';
 import {
   spinner, emptyState, toastOk, toastErr, FilePicker, fieldError, clearErrors,
   focusFirstError, busy, lightbox,
@@ -159,6 +159,17 @@ export async function submitView(mount, { id }) {
   // 마감 뒤 등록 — 관리자만 여기까지 옵니다. 결과가 달라지므로 미리 알려줍니다.
   const late = submitsLate(project);
 
+  /**
+   * 관리자는 다른 회원 이름으로 등록할 수 있습니다 — 메일로 받은 과제를 대신
+   * 올리는 경우가 있습니다. 고를 수 있게 명부를 미리 읽어 둡니다(관리자만 열립니다).
+   */
+  const members = isAdmin()
+    ? (await store.auth.listMembers().catch(() => []))
+      .filter((m) => m.email && normEmail(m.email) !== normEmail(me.email))
+      .sort((a, b) => String(a.institution || '').localeCompare(String(b.institution || ''), 'ko')
+        || String(a.name || '').localeCompare(String(b.name || ''), 'ko'))
+    : [];
+
   mount.innerHTML = `
     <section class="section">
       <div class="wrap wrap--narrow">
@@ -177,15 +188,30 @@ export async function submitView(mount, { id }) {
 
         <div class="card card--flat" style="margin-bottom:var(--space-3)">
           <div class="row row--between" style="gap:var(--space-3)">
-            <div>
+            <div class="grow">
               <div class="field__label" style="margin-bottom:2px">제출자</div>
-              <div style="font-size:1.5rem">
+              <div style="font-size:1.5rem" id="authorLine">
                 ${esc(me.institution || '—')} · <strong>${esc(me.name)}</strong>
                 <span style="color:var(--text-black-soft)"> · ${esc(me.email)}</span>
               </div>
             </div>
             <a class="btn btn--quiet btn--sm" href="#/account">내 계정</a>
           </div>
+
+          ${members.length ? `
+            <label class="field" style="margin:var(--space-3) 0 0">
+              <span class="field__label">다른 회원 이름으로 등록 (관리자)</span>
+              <select class="select" id="authorPick">
+                <option value="">나 — ${attr(me.name)}</option>
+                ${members.map((m) => `
+                  <option value="${attr(m.email)}">${esc(
+    `${m.institution || '소속 없음'} · ${m.name} · ${m.email}${m.status === 'blocked' ? ' (정지)' : ''}`)}</option>`).join('')}
+              </select>
+              <span class="field__hint">
+                고른 회원의 제출물로 등록됩니다 — 그 사람의 '내 제출물'과 제출 현황에도 잡힙니다.
+                누가 대신 올렸는지는 기록에 남습니다.
+              </span>
+            </label>` : ''}
         </div>
 
         <form id="submitForm" class="card" novalidate>
@@ -220,6 +246,17 @@ export async function submitView(mount, { id }) {
     </section>`;
 
   const form = mount.querySelector('#submitForm');
+
+  // 제출자를 바꾸면 위쪽 안내줄도 함께 바뀝니다 — 누구 이름으로 올리는지 헷갈리지 않도록.
+  const pickEl = mount.querySelector('#authorPick');
+  const lineEl = mount.querySelector('#authorLine');
+  pickEl?.addEventListener('change', () => {
+    const m = members.find((x) => x.email === pickEl.value);
+    const who = m || me;
+    lineEl.innerHTML = `${esc(who.institution || '—')} · <strong>${esc(who.name)}</strong>`
+      + `<span style="color:var(--text-black-soft)"> · ${esc(who.email)}</span>`
+      + (m ? ' <span class="badge badge--gold">관리자가 대신 등록</span>' : '');
+  });
   const picker = project.allowFiles === false
     ? null
     : new FilePicker(mount.querySelector('#picker'));
@@ -241,16 +278,29 @@ export async function submitView(mount, { id }) {
     const btn = form.querySelector('button[type="submit"]');
     busy(btn, true, '제출 중…');
     try {
+      const picked = pickEl?.value || '';
+      const target = members.find((m) => m.email === picked) || null;
       const saved = await store.saveSubmission({
         projectId: project.id,
         title: form.title.value,
         body: form.body.value,
         files: [],
+        // 서버(R2)는 authorEmail 만 보고 명부에서 이름·기관을 채웁니다.
+        // 서버 없는 모드(브라우저·GitHub)에서는 author 를 그대로 저장합니다.
+        ...(target ? {
+          authorEmail: target.email,
+          author: {
+            institution: target.institution || '', name: target.name, email: target.email,
+          },
+          registeredBy: normEmail(me.email),
+        } : {}),
         // 서버가 있는 R2 모드에서는 서버가 다시 판정합니다(클라이언트 값은 무시).
         // 서버 없는 모드(브라우저·GitHub)에서는 이 값이 그대로 저장됩니다.
         ...(late ? { late: true } : {}),
       }, picker ? picker.files : []);
-      toastOk(late ? '마감 뒤 등록으로 저장했습니다. 투표에서는 빠집니다.' : '제출이 완료되었습니다.');
+      toastOk(target
+        ? `${target.name} 님의 제출물로 등록했습니다.${late ? ' (마감 뒤 등록 — 투표 제외)' : ''}`
+        : (late ? '마감 뒤 등록으로 저장했습니다. 투표에서는 빠집니다.' : '제출이 완료되었습니다.'));
       go(`/s/${saved.id}`);
     } catch (err) {
       busy(btn, false);

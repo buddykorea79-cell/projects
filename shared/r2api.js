@@ -37,7 +37,8 @@
  *   GET    /data/projects|materials (로그인)   PUT (관리자)
  *   GET    /data/roster|attendance  (관리자)   PUT (관리자) — 수강 현황
  *   GET    /submissions             (로그인, 권한에 따라 필터)
- *   POST   /submissions             (로그인) — 마감 뒤에는 관리자만(late 표시)
+ *   POST   /submissions             (로그인) — 마감 뒤에는 관리자만(late 표시).
+ *                                   관리자는 authorEmail 로 다른 회원 이름으로 등록
  *   PATCH  /submissions/:id         (본인·관리자)
  *   DELETE /submissions/:id         (본인·관리자)
  *   POST   /upload                  (로그인)
@@ -802,11 +803,31 @@ async function createSubmission(request, env, cors, waitUntil) {
     return json({ message: '첨부 파일 경로가 올바르지 않습니다.' }, 400, cors);
   }
 
+  /**
+   * 관리자는 **다른 회원 이름으로** 등록할 수 있습니다 — 메일로 받은 과제를
+   * 대신 올리는 경우가 있습니다. 그 사람의 '내 제출물'·제출 현황에도 잡힙니다.
+   * 지정한 이메일은 반드시 가입한 회원이어야 하고, 이름·기관은 명부에서
+   * 가져옵니다(요청에 실린 값은 믿지 않습니다). 누가 대신 올렸는지도 남깁니다.
+   */
+  let author = authorOf(me);
+  let registeredBy = null;
+  const asEmail = normEmail(body.authorEmail || '');
+  if (asEmail && asEmail !== normEmail(me.email)) {
+    if (me.role !== 'admin') {
+      return json({ message: '다른 사람 이름으로는 제출할 수 없습니다.' }, 403, cors);
+    }
+    const { list } = await readMembers(env);
+    const target = findMember(list, asEmail);
+    if (!target) return json({ message: '그 이메일로 가입한 회원이 없습니다.' }, 404, cors);
+    author = authorOf(target);
+    registeredBy = normEmail(me.email);
+  }
+
   const now = new Date().toISOString();
   const rec = {
     id: uid('s_'),
     projectId: body.projectId,
-    author: authorOf(me),
+    author,
     title: String(body.title).trim().slice(0, 200),
     body: String(body.body).trim().slice(0, 20000),
     files: Array.isArray(body.files) ? body.files.slice(0, 20) : [],
@@ -814,6 +835,7 @@ async function createSubmission(request, env, cors, waitUntil) {
     // 마감 뒤 등록이면 표시를 남깁니다. 나중에 마감일을 고쳐도 이 값은 그대로라
     // "등록 시점 기준"이라는 뜻이 흔들리지 않습니다.
     ...(closed ? { late: true } : {}),
+    ...(registeredBy ? { registeredBy } : {}),
     createdAt: now,
     updatedAt: now,
   };

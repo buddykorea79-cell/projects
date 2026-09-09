@@ -56,9 +56,10 @@ async function signup(page, email, name) {
   await page.waitForURL((u) => u.hash === '#/' || u.hash === '', { timeout: 12000 });
 }
 
-/** 제출 폼을 채워 보내고 상세 화면까지 갑니다. */
-async function submitWork(page, title, body) {
+/** 제출 폼을 채워 보내고 상세 화면까지 갑니다. asEmail 을 주면 그 회원 이름으로. */
+async function submitWork(page, title, body, asEmail = '') {
   await page.waitForSelector('#submitForm', { timeout: 8000 });
+  if (asEmail) await page.selectOption('#authorPick', asEmail);
   await page.fill('#submitForm [name="title"]', title);
   await page.fill('#submitForm [name="body"]', body);
   await page.check('#submitForm [name="agree"]');
@@ -166,6 +167,51 @@ await step('관리자 제출물 표에 표시되고 득표 칸은 비어 있음'
   const text = (await row.innerText()).replace(/\s+/g, ' ');
   ok(text.includes('마감 후 등록'), `줄 내용: ${text}`);
   eq(await admin.locator('.table tbody tr').count(), 2, '제출물 2건 모두 보임');
+});
+
+log('\n== 다른 회원 이름으로 등록 ==');
+
+await step('관리자 제출 화면에 제출자 선택기가 있고 회원이 들어 있음', async () => {
+  await admin.goto(`${origin}/#/p/p1/submit`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('#authorPick', { timeout: 8000 });
+  const opts = await admin.locator('#authorPick option').allInnerTexts();
+  ok(opts[0].includes('나 —'), `첫 항목: ${opts[0]}`);
+  ok(opts.some((o) => o.includes('alice@example.com')), `앨리스 없음: ${opts.join(' / ')}`);
+});
+
+await step('회원은 선택기가 보이지 않음', async () => {
+  await putProject({});                       // 마감 전으로 되돌려 앨리스도 들어가게
+  await alice.goto(`${origin}/#/p/p1/submit`, { waitUntil: 'networkidle' });
+  await alice.waitForSelector('#submitForm', { timeout: 8000 });
+  eq(await alice.locator('#authorPick').count(), 0, '선택기 없음');
+});
+
+await step('고르면 위쪽 제출자 표시가 함께 바뀜', async () => {
+  await admin.goto(`${origin}/#/p/p1/submit`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('#authorPick', { timeout: 8000 });
+  await admin.selectOption('#authorPick', 'alice@example.com');
+  const line = (await admin.locator('#authorLine').innerText()).replace(/\s+/g, ' ');
+  ok(line.includes('alice@example.com'), `표시: ${line}`);
+  ok(line.includes('관리자가 대신 등록'), `표시: ${line}`);
+});
+
+await step('앨리스 이름으로 등록하면 앨리스의 제출물이 됨', async () => {
+  await submitWork(admin, '대신 등록한 작품', '관리자가 대신 올립니다.', 'alice@example.com');
+  const detail = (await admin.locator('.page-head').first().innerText()).replace(/\s+/g, ' ');
+  ok(detail.includes('alice@example.com'), `상세 제출자: ${detail}`);
+  ok(detail.includes('관리자 대신 등록'), `배지: ${detail}`);
+
+  const rows = JSON.parse(await (await bucket.get('data/submissions.json')).text());
+  const one = rows.find((s) => s.title === '대신 등록한 작품');
+  eq(one.author.email, 'alice@example.com', '저장된 제출자');
+  eq(one.registeredBy, 'aireader@mois.go.kr', '대신 올린 관리자');
+});
+
+await step('앨리스의 내 제출물에도 나타남', async () => {
+  await alice.goto(`${origin}/#/my`, { waitUntil: 'networkidle' });
+  await alice.waitForSelector('.table tbody tr', { timeout: 8000 });
+  const text = (await alice.locator('.table').innerText()).replace(/\s+/g, ' ');
+  ok(text.includes('대신 등록한 작품'), `내 제출물: ${text}`);
 });
 
 await step('자바스크립트 오류 없음', () => {

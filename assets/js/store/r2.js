@@ -212,6 +212,9 @@ export class R2Store {
         title: sub.title,
         body: sub.body,
         files,
+        // 관리자가 다른 회원 이름으로 등록할 때만 씁니다. 서버가 회원 명부에서
+        // 이름·기관을 가져오므로 여기서는 이메일만 넘깁니다.
+        ...(sub.authorEmail ? { authorEmail: sub.authorEmail } : {}),
       });
       return submission;
     }
