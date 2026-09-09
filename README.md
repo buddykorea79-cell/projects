@@ -83,6 +83,12 @@ Worker 의 `ADMIN_EMAILS` 환경변수에 원하는 주소를 넣어두면 됩�
 
 버튼 하나하나까지 적어둔 순서는 **[docs/SETUP.md](docs/SETUP.md)** 에 있습니다.
 
+> **푸시했는데 사이트가 안 바뀐다면** — Cloudflare 의 Git 연동은 프로덕션 브랜치에
+> 푸시했을 때만 실제 배포를 하고, 그 밖의 브랜치는 버전만 만들어 둡니다(목록에는
+> 똑같이 커밋이 찍힙니다). `Settings → Builds` 의 Production branch 와 Deploy command
+> 를 확인하거나, `.github/workflows/deploy.yml` 로 GitHub Actions 가 직접 배포하게
+> 하세요 — [docs/SETUP.md](docs/SETUP.md#푸시했는데-사이트가-안-바뀔-때) 참고.
+
 ---
 
 ## 저장소 모드

@@ -1,0 +1,96 @@
+name: Deploy to Cloudflare Workers
+
+# main 에 푸시하면 곧바로 프로덕션에 배포합니다.
+#
+# Cloudflare 의 Git 연동(Workers Builds)은 **프로덕션 브랜치**에 푸시했을 때만
+# `wrangler deploy` 를 돌리고, 그 밖의 브랜치에는 `wrangler versions upload` 만
+# 합니다. 두 경우 모두 Deployments 목록에는 커밋이 찍히기 때문에 배포된 것처럼
+# 보이는데 사이트는 그대로여서, 사람이 Retry 를 눌러야 반영되는 일이 생깁니다.
+# 이 워크플로는 그 판단을 거치지 않고 언제나 배포합니다.
+#
+# ── 준비 (한 번만) ────────────────────────────────────────────────────
+# GitHub 레포 → Settings → Secrets and variables → Actions → New secret
+#
+#   CLOUDFLARE_API_TOKEN   Cloudflare → 내 프로필 → API 토큰 →
+#                          "Edit Cloudflare Workers" 템플릿으로 만든 토큰
+#   CLOUDFLARE_ACCOUNT_ID  Workers & Pages 개요 오른쪽에 있는 Account ID
+#
+# 두 값이 없으면 이 워크플로는 조용히 건너뜁니다(실패로 뜨지 않습니다).
+#
+# ── 겹치지 않게 ──────────────────────────────────────────────────────
+# Cloudflare 의 Git 연동을 그대로 두면 한 번 푸시에 배포가 두 번 일어납니다.
+# 결과는 같지만 기록이 지저분해지므로, 이 워크플로를 쓰기로 했다면
+# Workers & Pages → projects → Settings → Builds 에서 Git 연동을 끊어두세요.
+
+on:
+  push:
+    branches: [main]
+  # 필요할 때 Actions 탭에서 직접 돌릴 수도 있습니다.
+  workflow_dispatch:
+
+# 배포는 한 번에 하나씩. 연달아 밀면 마지막 것만 올라갑니다.
+concurrency:
+  group: cloudflare-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 시크릿이 없으면 여기서 멈추고 안내만 남깁니다 — 매 푸시가 빨간 X 로
+      # 뜨면 진짜 오류를 놓치게 되므로 실패시키지 않습니다.
+      - name: 배포 설정 확인
+        id: check
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$TOKEN" ] || [ -z "$ACCOUNT" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### 자동 배포가 아직 켜지지 않았습니다"
+              echo ""
+              echo "레포 **Settings → Secrets and variables → Actions** 에"
+              echo "\`CLOUDFLARE_API_TOKEN\` 과 \`CLOUDFLARE_ACCOUNT_ID\` 를 넣으면"
+              echo "다음 푸시부터 자동으로 배포됩니다."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 구문 오류가 있는 코드를 배포하지 않도록 한 번 걸러냅니다.
+      # 브라우저가 필요 없는 가벼운 검사라 몇 초면 끝납니다.
+      - name: 구문 검사
+        if: steps.check.outputs.ready == 'true'
+        working-directory: tests
+        run: |
+          npm install --no-audit --no-fund --ignore-scripts
+          npm run test:parse
+
+      - name: Cloudflare 에 배포
+        if: steps.check.outputs.ready == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # wrangler.jsonc 에 Worker 이름·R2 바인딩·정적 자산 경로가 다 있어서
+        # 별도 인자가 필요 없습니다. 대시보드에서 넣은 환경변수와 Secret 은
+        # keep_vars 설정 덕분에 이 배포로 지워지지 않습니다.
+        run: npx --yes wrangler deploy
+
+      - name: 결과 남기기
+        if: steps.check.outputs.ready == 'true'
+        run: |
+          {
+            echo "### 배포 완료"
+            echo ""
+            echo "커밋 \`${GITHUB_SHA:0:7}\` 가 프로덕션에 올라갔습니다."
+            echo ""
+            echo "브라우저에 옛 파일이 남아 있으면 강력 새로고침"
+            echo "(Windows \`Ctrl+Shift+R\` / Mac \`Cmd+Shift+R\`) 하세요."
+          } >> "$GITHUB_STEP_SUMMARY"

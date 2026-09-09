@@ -102,6 +102,37 @@ Pages 라면 `functions/api/[[path]].js` 가, Worker 라면 `shared/worker-entry
 > **순서가 중요합니다.** A-2(바인딩) → A-3(머지) 순으로 하면 머지가 일으키는 자동 배포가
 > 바인딩까지 함께 반영해 줍니다. 반대로 하면 수동 재배포를 한 번 더 해야 합니다.
 
+#### 푸시했는데 사이트가 안 바뀔 때
+
+Cloudflare 의 Git 연동은 **프로덕션 브랜치**에 푸시했을 때만 `wrangler deploy` 를
+돌리고, 그 밖의 브랜치에는 `wrangler versions upload` 만 합니다. 두 경우 모두
+Deployments 목록에는 커밋이 찍히기 때문에 **배포된 것처럼 보이는데 사이트는
+그대로**인 일이 생깁니다. 사람이 Retry 를 눌러야 반영된다면 대개 이것입니다.
+
+**Settings → Builds** 에서 두 가지를 보세요.
+
+| 항목 | 있어야 할 값 |
+|---|---|
+| Production branch | `main` |
+| Deploy command | `npx wrangler deploy` (`versions upload` 이면 프로덕션에 안 나갑니다) |
+| Build watch paths | 비어 있거나 바꾼 경로를 포함 |
+
+**대시보드 설정에 기대지 않으려면** `.github/workflows/deploy.yml` 을 쓰세요.
+`main` 푸시마다 GitHub Actions 가 직접 `wrangler deploy` 를 돌립니다.
+레포 **Settings → Secrets and variables → Actions** 에 두 값만 넣으면 됩니다.
+
+| 시크릿 | 어디서 |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare → 내 프로필 → API 토큰 → **Edit Cloudflare Workers** 템플릿 |
+| `CLOUDFLARE_ACCOUNT_ID` | Workers & Pages 개요 오른쪽의 Account ID |
+
+값이 없으면 워크플로는 조용히 건너뜁니다(빨간 X 로 뜨지 않습니다). 켜고 나면
+Cloudflare 의 Git 연동은 끊어두세요 — 그대로 두면 한 번 푸시에 배포가 두 번
+일어납니다(결과는 같지만 기록이 지저분해집니다).
+
+대시보드에서 넣은 환경변수와 Secret 은 `wrangler.jsonc` 의 `keep_vars` 때문에
+이 배포로 지워지지 않습니다.
+
 ### A-4. 확인
 
 ```bash
