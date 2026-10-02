@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>영수증 A4 출력</title>
+<meta name="description" content="영수증 이미지를 여러 장 올리면 A4 용지에 가운데 정렬해 인쇄합니다. 넘치는 영수증은 겹치지 않게 다음 장으로 넘어갑니다." />
+<meta name="theme-color" content="#1E3932" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%23006241'/%3E%3Cpath d='M11 8h10v16l-2.5-1.6L16 24l-2.5-1.6L11 24z' fill='%23fff'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet" />
+<style id="pageRule">@page { size: A4 portrait; margin: 0; }</style>
+<style>
+  :root {
+    --green: #006241;
+    --green-accent: #00754A;
+    --house: #1E3932;
+    --green-light: #d4e9e2;
+    --canvas: #f2f0eb;
+    --card: #ffffff;
+    --ink: rgba(0, 0, 0, .87);
+    --ink-soft: rgba(0, 0, 0, .58);
+    --ink-mute: rgba(0, 0, 0, .38);
+    --line: #e2e0db;
+    --red: #c82014;
+    --shadow: 0 0 .5px rgba(0,0,0,.14), 0 1px 1px rgba(0,0,0,.24);
+    --shadow-page: 0 0 1px rgba(0,0,0,.2), 0 4px 14px rgba(0,0,0,.12);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: "Noto Sans KR", system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  button, input, select { font: inherit; color: inherit; }
+
+  /* ── header ─────────────────────────────────────────── */
+  .top {
+    background: var(--house);
+    color: #fff;
+    padding: 14px 16px;
+  }
+  .top__inner {
+    max-width: 1280px; margin: 0 auto;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .top h1 { font-size: 19px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
+  .top p { margin: 0; color: rgba(255,255,255,.72); font-size: 13px; }
+  .top__spacer { flex: 1; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    border: 1px solid var(--green-accent);
+    background: transparent; color: var(--green-accent);
+    border-radius: 50px; padding: 8px 18px;
+    font-weight: 600; cursor: pointer; white-space: nowrap;
+    transition: transform .1s, background .15s;
+  }
+  .btn:active { transform: scale(.96); }
+  .btn--fill { background: var(--green-accent); color: #fff; }
+  .btn--fill:hover { background: var(--green); }
+  .btn--white { border-color: #fff; background: #fff; color: var(--house); }
+  .btn[disabled] { opacity: .45; cursor: not-allowed; transform: none; }
+  .btn--small { padding: 5px 12px; font-size: 13px; }
+  .btn--danger { border-color: var(--red); color: var(--red); }
+
+  /* ── layout ─────────────────────────────────────────── */
+  .wrap {
+    max-width: 1280px; margin: 0 auto; padding: 16px;
+    display: grid; grid-template-columns: 340px 1fr; gap: 16px; align-items: start;
+  }
+  @media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--card); border-radius: 12px; box-shadow: var(--shadow);
+    padding: 16px; display: grid; gap: 16px;
+  }
+  @media (min-width: 861px) { .panel { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; } }
+  .panel h2 { font-size: 14px; margin: 0 0 8px; color: var(--green); font-weight: 700; }
+
+  .drop {
+    display: block;
+    border: 2px dashed #b9c9c2; border-radius: 12px;
+    padding: 20px 12px; text-align: center; cursor: pointer;
+    background: #fafcfb; transition: background .15s, border-color .15s;
+  }
+  .drop:hover, .drop.is-over { background: var(--green-light); border-color: var(--green-accent); }
+  .drop strong { display: block; font-size: 15px; color: var(--green); }
+  .drop span { font-size: 12.5px; color: var(--ink-soft); }
+  .drop input { display: none; }
+
+  .field { display: grid; gap: 4px; margin-bottom: 10px; }
+  .field:last-child { margin-bottom: 0; }
+  .field label, .field .lbl { font-size: 13px; color: var(--ink-soft); font-weight: 500; }
+  .field select, .field input[type="number"] {
+    width: 100%; padding: 8px 10px; border: 1px solid #d6dbde; border-radius: 6px; background: #fff;
+  }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+  .row2 .field { margin-bottom: 0; }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid #d6dbde; border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: #fff; padding: 7px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid #d6dbde; }
+  .seg button[aria-pressed="true"] { background: var(--green-accent); color: #fff; font-weight: 600; }
+  .range { display: flex; align-items: center; gap: 10px; }
+  .range input { flex: 1; accent-color: var(--green-accent); }
+  .range output { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
+  .check { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+  .check input { accent-color: var(--green-accent); width: 16px; height: 16px; }
+
+  .list-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .list-head h2 { margin: 0; }
+  .list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .item {
+    display: grid; grid-template-columns: 22px 44px 1fr auto; gap: 8px; align-items: center;
+    padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: #fff;
+  }
+  .item.is-drag { opacity: .4; }
+  .item.is-target { border-color: var(--green-accent); box-shadow: 0 0 0 2px var(--green-light); }
+  .item__no { font-size: 12px; color: var(--ink-mute); text-align: center; cursor: grab; font-variant-numeric: tabular-nums; }
+  .item__thumb { width: 44px; height: 44px; border-radius: 4px; background: #f3f3f3; overflow: hidden; display: grid; place-items: center; }
+  .item__thumb img { max-width: 100%; max-height: 100%; }
+  .item__name { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .item__tools { display: flex; gap: 2px; }
+  .icon {
+    width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent;
+    cursor: pointer; display: grid; place-items: center; color: var(--ink-soft);
+  }
+  .icon:hover { background: var(--canvas); color: var(--ink); }
+  .icon[disabled] { opacity: .3; cursor: default; background: none; }
+  .icon--del:hover { color: var(--red); background: #fbecea; }
+  .empty-list { font-size: 13px; color: var(--ink-mute); text-align: center; padding: 8px 0; }
+  .hint { font-size: 12px; color: var(--ink-soft); margin: 0; }
+
+  /* ── preview ────────────────────────────────────────── */
+  .preview { min-width: 0; }
+  .preview__bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    margin-bottom: 12px; font-size: 14px; color: var(--ink-soft);
+  }
+  .preview__bar b { color: var(--ink); }
+  .sheets-viewport { overflow: hidden; }
+  .sheets { display: flex; flex-direction: column; align-items: center; gap: 20px; transform-origin: top left; }
+  .empty {
+    background: var(--card); border-radius: 12px; box-shadow: var(--shadow);
+    padding: 56px 16px; text-align: center; color: var(--ink-soft);
+  }
+  .empty svg { color: #b9c9c2; margin-bottom: 8px; }
+
+  /* A4 sheet — all geometry in mm so it prints 1:1 */
+  .page {
+    position: relative;
+    background: #fff;
+    box-shadow: var(--shadow-page);
+    overflow: hidden;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    flex: none;
+  }
+  .page__row { display: flex; justify-content: center; align-items: center; flex: none; }
+  .cell { display: flex; align-items: center; justify-content: center; flex: none; }
+  .shot { position: relative; flex: none; }
+  .shot.has-border { outline: 0.2mm dashed #888; outline-offset: 0; }
+  .shot img {
+    position: absolute; left: 50%; top: 50%;
+    transform-origin: center center;
+    display: block;
+  }
+  .page__no {
+    position: absolute; right: 4mm; bottom: 3mm; font-size: 8pt; color: #aaa;
+  }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    background: #222; color: #fff; padding: 10px 18px; border-radius: 8px;
+    font-size: 14px; box-shadow: 0 6px 20px rgba(0,0,0,.25);
+    opacity: 0; pointer-events: none; transition: opacity .2s; max-width: calc(100% - 32px);
+  }
+  .toast.show { opacity: 1; }
+
+  /* ── print: only the sheets, at real size ───────────── */
+  @media print {
+    html, body { background: #fff; }
+    .top, .panel, .preview__bar, .toast, .empty { display: none !important; }
+    .wrap { display: block; padding: 0; max-width: none; }
+    .sheets-viewport { overflow: visible; height: auto !important; }
+    .sheets { display: block; transform: none !important; width: auto !important; margin-left: 0 !important; }
+    .page {
+      box-shadow: none; margin: 0;
+      break-after: page; page-break-after: always;
+    }
+    .page:last-child { break-after: auto; page-break-after: auto; }
+    .page__no { display: none; }
+    .shot.has-border { outline-color: #999; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="top__inner">
+    <div>
+      <h1>영수증 A4 출력</h1>
+      <p>이미지를 올리면 A4 한가운데에 맞춰 배치하고, 넘치면 다음 장으로 넘깁니다.</p>
+    </div>
+    <span class="top__spacer"></span>
+    <button class="btn btn--white" id="printTop" type="button" disabled>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+      인쇄하기
+    </button>
+  </div>
+</header>
+
+<div class="wrap">
+  <aside class="panel" aria-label="설정">
+    <section>
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept="image/*" multiple />
+        <strong>영수증 이미지 추가</strong>
+        <span>클릭해서 고르거나 여기로 끌어다 놓으세요<br />여러 장 한 번에 · 붙여넣기(Ctrl+V)도 됩니다</span>
+      </label>
+    </section>
+
+    <section>
+      <h2>배치</h2>
+      <div class="field">
+        <span class="lbl">용지 방향 (A4)</span>
+        <div class="seg" role="group" aria-label="용지 방향">
+          <button type="button" data-orient="portrait">세로</button>
+          <button type="button" data-orient="landscape">가로</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="layout">한 장에 넣을 영수증 수</label>
+        <select id="layout">
+          <option value="1x1">1개</option>
+          <option value="2x1">2개 (좌우로 나란히)</option>
+          <option value="1x2">2개 (위아래로)</option>
+          <option value="3x1">3개 (좌우로 나란히)</option>
+          <option value="2x2">4개 (2 × 2)</option>
+          <option value="3x2">6개 (3 × 2)</option>
+          <option value="4x2">8개 (4 × 2)</option>
+          <option value="3x3">9개 (3 × 3)</option>
+        </select>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label for="margin">바깥 여백 (mm)</label>
+          <input type="number" id="margin" min="0" max="50" step="1" />
+        </div>
+        <div class="field">
+          <label for="gap">영수증 간격 (mm)</label>
+          <input type="number" id="gap" min="0" max="50" step="1" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="scale">영수증 크기 (칸에 꽉 차게 = 100%)</label>
+        <div class="range">
+          <input type="range" id="scale" min="30" max="100" step="5" />
+          <output id="scaleOut" for="scale"></output>
+        </div>
+      </div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="border" /> 영수증 둘레에 점선 (오려낼 때)</label>
+      </div>
+    </section>
+
+    <section>
+      <div class="list-head">
+        <h2>영수증 <span id="count">0</span>장</h2>
+        <button class="btn btn--small btn--danger" id="clear" type="button" disabled>모두 지우기</button>
+      </div>
+      <ul class="list" id="list"></ul>
+      <p class="empty-list" id="emptyList">아직 올린 영수증이 없습니다.</p>
+      <p class="hint">번호를 끌어 순서를 바꿀 수 있습니다. 이미지는 이 브라우저 안에서만 처리되고 어디에도 올라가지 않습니다.</p>
+    </section>
+
+    <button class="btn btn--fill" id="print" type="button" disabled>인쇄하기 / PDF로 저장</button>
+    <p class="hint">인쇄 창에서 <b>용지 A4 · 배율 100%(기본값)</b>로 두고, <b>머리글/바닥글</b>은 끄면 깔끔합니다.</p>
+  </aside>
+
+  <main class="preview">
+    <div class="preview__bar" id="bar" hidden>
+      <span>미리보기 · A4 <b id="pageCount">0</b>장</span>
+    </div>
+    <div class="empty" id="empty">
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 2h14v20l-2.3-1.5L14.3 22 12 20.5 9.7 22l-2.4-1.5L5 22z"/><path d="M9 7h6M9 11h6M9 15h4"/></svg>
+      <div>왼쪽에서 영수증 이미지를 추가하면 여기에 A4 미리보기가 나타납니다.</div>
+    </div>
+    <div class="sheets-viewport" id="viewport">
+      <div class="sheets" id="sheets"></div>
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  const A4 = { w: 210, h: 297 };                 // mm
+  const MM_PX = 96 / 25.4;                        // CSS px per mm
+  const STORE_KEY = 'receipt-a4-settings';
+
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    drop: $('drop'), file: $('file'), layout: $('layout'), margin: $('margin'), gap: $('gap'),
+    scale: $('scale'), scaleOut: $('scaleOut'), border: $('border'),
+    list: $('list'), emptyList: $('emptyList'), count: $('count'), clear: $('clear'),
+    print: $('print'), printTop: $('printTop'), sheets: $('sheets'), viewport: $('viewport'),
+    empty: $('empty'), bar: $('bar'), pageCount: $('pageCount'), toast: $('toast'), pageRule: $('pageRule'),
+  };
+
+  const defaults = { orient: 'portrait', layout: '1x1', margin: 10, gap: 6, scale: 100, border: false };
+  const settings = { ...defaults };
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+    if (saved && typeof saved === 'object') Object.assign(settings, saved);
+  } catch (_) { /* storage unavailable — defaults are fine */ }
+
+  /** @type {{id:number, name:string, url:string, w:number, h:number, rot:number}[]} */
+  let items = [];
+  let nextId = 1;
+
+  // ── helpers ──────────────────────────────────────────
+  let toastTimer;
+  function toast(msg) {
+    els.toast.textContent = msg;
+    els.toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => els.toast.classList.remove('show'), 3200);
+  }
+  function saveSettings() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(settings)); } catch (_) {}
+  }
+  function clampNum(v, min, max, fallback) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+  }
+  const mm = (n) => n.toFixed(3) + 'mm';
+
+  // ── loading images ───────────────────────────────────
+  function loadImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => resolve({ url, w: img.naturalWidth, h: img.naturalHeight });
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode')); };
+      img.src = url;
+    });
+  }
+
+  async function addFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    const failed = [];
+    let added = 0;
+    for (const file of files) {
+      if (file.type && !file.type.startsWith('image/')) { failed.push(file.name); continue; }
+      try {
+        const { url, w, h } = await loadImage(file);
+        items.push({ id: nextId++, name: file.name || `붙여넣은 이미지 ${nextId - 1}`, url, w, h, rot: 0 });
+        added++;
+      } catch (_) {
+        failed.push(file.name);
+      }
+    }
+    render();
+    if (failed.length) {
+      toast(`${failed.length}개는 열 수 없었습니다 (${failed.slice(0, 2).join(', ')}${failed.length > 2 ? ' 외' : ''}). JPG·PNG로 바꿔서 올려 주세요.`);
+    } else if (added) {
+      toast(`영수증 ${added}장을 추가했습니다.`);
+    }
+  }
+
+  // ── layout math ──────────────────────────────────────
+  function pageSize() {
+    return settings.orient === 'landscape' ? { w: A4.h, h: A4.w } : { w: A4.w, h: A4.h };
+  }
+
+  function grid() {
+    const [cols, rows] = settings.layout.split('x').map(Number);
+    const page = pageSize();
+    const m = settings.margin, g = settings.gap;
+    const cellW = Math.max(5, (page.w - 2 * m - (cols - 1) * g) / cols);
+    const cellH = Math.max(5, (page.h - 2 * m - (rows - 1) * g) / rows);
+    return { cols, rows, perPage: cols * rows, cellW, cellH, page, gap: g };
+  }
+
+  // Largest box with the image's (rotated) aspect ratio that fits the cell, times scale.
+  function fitBox(item, cellW, cellH) {
+    const turned = item.rot % 180 !== 0;
+    const iw = turned ? item.h : item.w;
+    const ih = turned ? item.w : item.h;
+    const k = Math.min(cellW / iw, cellH / ih) * (settings.scale / 100);
+    return { w: iw * k, h: ih * k, turned };
+  }
+
+  // ── render ───────────────────────────────────────────
+  function render() {
+    renderControls();
+    renderList();
+    renderSheets();
+  }
+
+  function renderControls() {
+    document.querySelectorAll('[data-orient]').forEach((b) => {
+      b.setAttribute('aria-pressed', String(b.dataset.orient === settings.orient));
+    });
+    els.layout.value = settings.layout;
+    els.margin.value = settings.margin;
+    els.gap.value = settings.gap;
+    els.scale.value = settings.scale;
+    els.scaleOut.textContent = settings.scale + '%';
+    els.border.checked = settings.border;
+    els.pageRule.textContent = `@page { size: A4 ${settings.orient}; margin: 0; }`;
+
+    const has = items.length > 0;
+    els.print.disabled = !has;
+    els.printTop.disabled = !has;
+    els.clear.disabled = !has;
+    els.count.textContent = items.length;
+    els.empty.hidden = has;
+    els.bar.hidden = !has;
+  }
+
+  function iconBtn(label, path, onClick, opts = {}) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'icon' + (opts.danger ? ' icon--del' : '');
+    b.title = label;
+    b.setAttribute('aria-label', label);
+    b.disabled = !!opts.disabled;
+    b.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  let dragId = null;
+
+  function renderList() {
+    els.list.textContent = '';
+    els.emptyList.hidden = items.length > 0;
+    items.forEach((item, i) => {
+      const li = document.createElement('li');
+      li.className = 'item';
+      li.draggable = true;
+      li.dataset.id = item.id;
+
+      const no = document.createElement('span');
+      no.className = 'item__no';
+      no.textContent = i + 1;
+      no.title = '끌어서 순서 바꾸기';
+
+      const thumb = document.createElement('div');
+      thumb.className = 'item__thumb';
+      const img = document.createElement('img');
+      img.src = item.url;
+      img.alt = '';
+      img.style.transform = `rotate(${item.rot}deg)`;
+      thumb.appendChild(img);
+
+      const name = document.createElement('span');
+      name.className = 'item__name';
+      name.textContent = item.name;
+      name.title = item.name;
+
+      const tools = document.createElement('div');
+      tools.className = 'item__tools';
+      tools.append(
+        iconBtn('위로', '<path d="M12 19V5M5 12l7-7 7 7"/>', () => move(i, i - 1), { disabled: i === 0 }),
+        iconBtn('아래로', '<path d="M12 5v14M19 12l-7 7-7-7"/>', () => move(i, i + 1), { disabled: i === items.length - 1 }),
+        iconBtn('오른쪽으로 90° 회전', '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>', () => rotate(item.id)),
+        iconBtn('삭제', '<path d="M18 6 6 18M6 6l12 12"/>', () => remove(item.id), { danger: true }),
+      );
+
+      li.append(no, thumb, name, tools);
+
+      li.addEventListener('dragstart', (e) => {
+        dragId = item.id;
+        li.classList.add('is-drag');
+        e.dataTransfer.effectAllowed = 'move';
+        try { e.dataTransfer.setData('text/plain', String(item.id)); } catch (_) {}
+      });
+      li.addEventListener('dragend', () => {
+        dragId = null;
+        li.classList.remove('is-drag');
+        els.list.querySelectorAll('.is-target').forEach((n) => n.classList.remove('is-target'));
+      });
+      li.addEventListener('dragover', (e) => {
+        if (dragId === null) return;
+        e.preventDefault();
+        li.classList.add('is-target');
+      });
+      li.addEventListener('dragleave', () => li.classList.remove('is-target'));
+      li.addEventListener('drop', (e) => {
+        if (dragId === null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const from = items.findIndex((x) => x.id === dragId);
+        const to = items.findIndex((x) => x.id === item.id);
+        move(from, to);
+      });
+
+      els.list.appendChild(li);
+    });
+  }
+
+  function renderSheets() {
+    els.sheets.textContent = '';
+    if (!items.length) { fitPreview(); return; }
+
+    const gd = grid();
+    const pages = Math.ceil(items.length / gd.perPage);
+    els.pageCount.textContent = pages;
+
+    for (let p = 0; p < pages; p++) {
+      const chunk = items.slice(p * gd.perPage, (p + 1) * gd.perPage);
+      const page = document.createElement('section');
+      page.className = 'page';
+      page.style.width = mm(gd.page.w);
+      page.style.height = mm(gd.page.h);
+      page.style.gap = mm(gd.gap);
+
+      // Fill rows left-to-right; a short last page keeps only the rows it needs,
+      // and the flex centering puts that block in the middle of the sheet.
+      for (let r = 0; r * gd.cols < chunk.length; r++) {
+        const rowItems = chunk.slice(r * gd.cols, (r + 1) * gd.cols);
+        const row = document.createElement('div');
+        row.className = 'page__row';
+        row.style.gap = mm(gd.gap);
+        for (const item of rowItems) {
+          const cell = document.createElement('div');
+          cell.className = 'cell';
+          cell.style.width = mm(gd.cellW);
+          cell.style.height = mm(gd.cellH);
+
+          const box = fitBox(item, gd.cellW, gd.cellH);
+          const shot = document.createElement('div');
+          shot.className = 'shot' + (settings.border ? ' has-border' : '');
+          shot.style.width = mm(box.w);
+          shot.style.height = mm(box.h);
+
+          const img = document.createElement('img');
+          img.src = item.url;
+          img.alt = item.name;
+          // Before rotation the image's own width is the box's height when turned 90°/270°.
+          img.style.width = mm(box.turned ? box.h : box.w);
+          img.style.height = mm(box.turned ? box.w : box.h);
+          img.style.transform = `translate(-50%, -50%) rotate(${item.rot}deg)`;
+
+          shot.appendChild(img);
+          cell.appendChild(shot);
+          row.appendChild(cell);
+        }
+        page.appendChild(row);
+      }
+
+      const no = document.createElement('span');
+      no.className = 'page__no';
+      no.textContent = `${p + 1} / ${pages}`;
+      page.appendChild(no);
+
+      els.sheets.appendChild(page);
+    }
+    fitPreview();
+  }
+
+  // Shrink the real-size sheets to the preview column width (screen only).
+  function fitPreview() {
+    const page = pageSize();
+    const pageW = page.w * MM_PX;
+    const avail = els.viewport.clientWidth;
+    const k = Math.min(1, avail / pageW);
+    els.sheets.style.transform = `scale(${k})`;
+    els.sheets.style.width = pageW + 'px';
+    // transform does not shrink the layout box, so size the viewport by hand
+    els.viewport.style.height = items.length ? (els.sheets.scrollHeight * k) + 'px' : '0px';
+    els.sheets.style.marginLeft = Math.max(0, (avail - pageW * k) / 2) + 'px';
+  }
+
+  // ── actions ──────────────────────────────────────────
+  function move(from, to) {
+    if (from < 0 || to < 0 || from >= items.length || to >= items.length || from === to) return;
+    const [it] = items.splice(from, 1);
+    items.splice(to, 0, it);
+    render();
+  }
+  function rotate(id) {
+    const it = items.find((x) => x.id === id);
+    if (!it) return;
+    it.rot = (it.rot + 90) % 360;
+    render();
+  }
+  function remove(id) {
+    const i = items.findIndex((x) => x.id === id);
+    if (i < 0) return;
+    URL.revokeObjectURL(items[i].url);
+    items.splice(i, 1);
+    render();
+  }
+  function clearAll() {
+    if (!confirm(`영수증 ${items.length}장을 모두 지울까요?`)) return;
+    items.forEach((x) => URL.revokeObjectURL(x.url));
+    items = [];
+    render();
+  }
+
+  // ── events ───────────────────────────────────────────
+  els.file.addEventListener('change', () => {
+    addFiles(els.file.files);
+    els.file.value = '';
+  });
+
+  // Drop anywhere on the page, not only on the box.
+  let dragDepth = 0;
+  const isFileDrag = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
+  window.addEventListener('dragenter', (e) => {
+    if (!isFileDrag(e)) return;
+    dragDepth++;
+    els.drop.classList.add('is-over');
+  });
+  window.addEventListener('dragleave', (e) => {
+    if (!isFileDrag(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) els.drop.classList.remove('is-over');
+  });
+  window.addEventListener('dragover', (e) => {
+    if (isFileDrag(e)) e.preventDefault();
+  });
+  window.addEventListener('drop', (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    els.drop.classList.remove('is-over');
+    addFiles(e.dataTransfer.files);
+  });
+
+  window.addEventListener('paste', (e) => {
+    const files = Array.from(e.clipboardData?.files || []).filter((f) => f.type.startsWith('image/'));
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  });
+
+  document.querySelectorAll('[data-orient]').forEach((b) => {
+    b.addEventListener('click', () => { settings.orient = b.dataset.orient; saveSettings(); render(); });
+  });
+  els.layout.addEventListener('change', () => { settings.layout = els.layout.value; saveSettings(); render(); });
+  els.margin.addEventListener('input', () => {
+    settings.margin = clampNum(els.margin.value, 0, 50, defaults.margin); saveSettings(); renderSheets();
+  });
+  els.gap.addEventListener('input', () => {
+    settings.gap = clampNum(els.gap.value, 0, 50, defaults.gap); saveSettings(); renderSheets();
+  });
+  [els.margin, els.gap].forEach((el) => el.addEventListener('change', renderControls));
+  els.scale.addEventListener('input', () => {
+    settings.scale = clampNum(els.scale.value, 30, 100, 100);
+    els.scaleOut.textContent = settings.scale + '%';
+    saveSettings(); renderSheets();
+  });
+  els.border.addEventListener('change', () => { settings.border = els.border.checked; saveSettings(); renderSheets(); });
+  els.clear.addEventListener('click', clearAll);
+
+  const doPrint = () => { if (items.length) window.print(); };
+  els.print.addEventListener('click', doPrint);
+  els.printTop.addEventListener('click', doPrint);
+
+  window.addEventListener('resize', fitPreview);
+
+  // Unknown values from an old save fall back to defaults.
+  if (!['portrait', 'landscape'].includes(settings.orient)) settings.orient = defaults.orient;
+  if (![...els.layout.options].some((o) => o.value === settings.layout)) settings.layout = defaults.layout;
+  settings.margin = clampNum(settings.margin, 0, 50, defaults.margin);
+  settings.gap = clampNum(settings.gap, 0, 50, defaults.gap);
+  settings.scale = clampNum(settings.scale, 30, 100, defaults.scale);
+  settings.border = !!settings.border;
+
+  render();
+})();
+</script>
+</body>
+</html>
