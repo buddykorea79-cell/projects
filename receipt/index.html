@@ -51,6 +51,11 @@
   .top h1 { font-size: 19px; margin: 0; font-weight: 700; letter-spacing: -.01em; }
   .top p { margin: 0; color: rgba(255,255,255,.72); font-size: 13px; }
   .top__spacer { flex: 1; }
+  @media (max-width: 600px) {
+    .top__spacer { flex-basis: 100%; height: 0; }
+    .top .btn { flex: 1 1 0; padding: 8px 6px; font-size: 13px; gap: 4px; }
+    .top .btn svg { display: none; }
+  }
 
   .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -134,6 +139,7 @@
   .icon--del:hover { color: var(--red); background: #fbecea; }
   .empty-list { font-size: 13px; color: var(--ink-mute); text-align: center; padding: 8px 0; }
   .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .actions .btn:last-child { grid-column: 1 / -1; }
   .hint { font-size: 12px; color: var(--ink-soft); margin: 0; }
 
   /* ── preview ────────────────────────────────────────── */
@@ -212,6 +218,10 @@
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
       PDF 다운로드
     </button>
+    <button class="btn btn--white" id="pngTop" type="button" disabled>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+      PNG 다운로드
+    </button>
   </div>
 </header>
 
@@ -219,9 +229,9 @@
   <aside class="panel" aria-label="설정">
     <section>
       <label class="drop" id="drop">
-        <input type="file" id="file" accept="image/*" multiple />
+        <input type="file" id="file" accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp" multiple />
         <strong>영수증 이미지 추가</strong>
-        <span>클릭해서 고르거나 여기로 끌어다 놓으세요<br />여러 장 한 번에 · 붙여넣기(Ctrl+V)도 됩니다</span>
+        <span>JPG · PNG · WEBP · GIF · BMP<br />클릭해서 고르거나 여기로 끌어다 놓으세요<br />여러 장 한 번에 · 붙여넣기(Ctrl+V)도 됩니다</span>
       </label>
     </section>
 
@@ -281,9 +291,10 @@
 
     <div class="actions">
       <button class="btn btn--fill" id="download" type="button" disabled>PDF 다운로드</button>
+      <button class="btn btn--fill" id="png" type="button" disabled>PNG 다운로드</button>
       <button class="btn" id="print" type="button" disabled>인쇄하기</button>
     </div>
-    <p class="hint"><b>PDF 다운로드</b>는 A4 크기 PDF 파일을 바로 저장합니다. 인쇄할 때는 인쇄 창에서 <b>용지 A4 · 배율 100%(기본값)</b>로 두고, <b>머리글/바닥글</b>은 끄면 깔끔합니다.</p>
+    <p class="hint"><b>PDF 다운로드</b>는 A4 크기 PDF 파일을, <b>PNG 다운로드</b>는 A4 한 장마다 PNG 이미지(300dpi)를 저장합니다. 여러 장이면 ZIP 하나로 묶어 줍니다. 인쇄할 때는 인쇄 창에서 <b>용지 A4 · 배율 100%(기본값)</b>로 두고, <b>머리글/바닥글</b>은 끄면 깔끔합니다.</p>
   </aside>
 
   <main class="preview">
@@ -315,7 +326,7 @@
     drop: $('drop'), file: $('file'), layout: $('layout'), margin: $('margin'), gap: $('gap'),
     scale: $('scale'), scaleOut: $('scaleOut'), border: $('border'),
     list: $('list'), emptyList: $('emptyList'), count: $('count'), clear: $('clear'),
-    print: $('print'), printTop: $('printTop'), download: $('download'), downloadTop: $('downloadTop'), sheets: $('sheets'), viewport: $('viewport'),
+    print: $('print'), printTop: $('printTop'), download: $('download'), downloadTop: $('downloadTop'), png: $('png'), pngTop: $('pngTop'), sheets: $('sheets'), viewport: $('viewport'),
     empty: $('empty'), bar: $('bar'), pageCount: $('pageCount'), toast: $('toast'), pageRule: $('pageRule'),
   };
 
@@ -366,7 +377,8 @@
     const failed = [];
     let added = 0;
     for (const file of files) {
-      if (file.type && !file.type.startsWith('image/')) { failed.push(file.name); continue; }
+      const looksImage = file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name || '');
+      if (!looksImage) { failed.push(file.name); continue; }
       try {
         const { url, w, h } = await loadImage(file);
         items.push({ id: nextId++, name: file.name || `붙여넣은 이미지 ${nextId - 1}`, url, w, h, rot: 0 });
@@ -430,6 +442,8 @@
     els.printTop.disabled = !has;
     els.download.disabled = !has || busy;
     els.downloadTop.disabled = !has || busy;
+    els.png.disabled = !has || busy;
+    els.pngTop.disabled = !has || busy;
     els.clear.disabled = !has;
     els.count.textContent = items.length;
     els.empty.hidden = has;
@@ -597,20 +611,24 @@
 
   // ── PDF download ─────────────────────────────────────
   const JSPDF_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-  let jspdfLoading = null;
-  function loadJsPDF() {
-    if (window.jspdf) return Promise.resolve(window.jspdf);
-    if (!jspdfLoading) {
-      jspdfLoading = new Promise((resolve, reject) => {
+  const JSZIP_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+  const scriptLoads = new Map();
+  // Loads a library only when it is first needed; a failed load can be retried.
+  function loadScript(url, globalName) {
+    if (window[globalName]) return Promise.resolve(window[globalName]);
+    if (!scriptLoads.has(url)) {
+      scriptLoads.set(url, new Promise((resolve, reject) => {
         const sc = document.createElement('script');
-        sc.src = JSPDF_URL;
-        sc.onload = () => window.jspdf ? resolve(window.jspdf) : reject(new Error('jspdf'));
-        sc.onerror = () => { jspdfLoading = null; reject(new Error('jspdf')); };
+        sc.src = url;
+        sc.onload = () => window[globalName] ? resolve(window[globalName]) : reject(new Error(globalName));
+        sc.onerror = () => { scriptLoads.delete(url); sc.remove(); reject(new Error(globalName)); };
         document.head.appendChild(sc);
-      });
+      }));
     }
-    return jspdfLoading;
+    return scriptLoads.get(url);
   }
+  const loadJsPDF = () => loadScript(JSPDF_URL, 'jspdf');
+  const loadJSZip = () => loadScript(JSZIP_URL, 'JSZip');
 
   const PDF_DPI = 300;
   const imgCache = new Map();
@@ -647,18 +665,41 @@
     return c.toDataURL('image/jpeg', 0.9);
   }
 
-  function pdfFileName() {
+  // English names: some browsers save non-ASCII download names as just "download".
+  function fileStamp() {
     const d = new Date();
     const p2 = (n) => String(n).padStart(2, '0');
-    return `receipts_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}.pdf`;
+    return `receipts_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}`;
   }
 
-  async function downloadPdf() {
+  function saveBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }
+
+  // Runs one export at a time, showing progress on the side-panel button.
+  async function runExport(btn, work) {
     if (!items.length || busy) return;
     busy = true;
     renderControls();
-    const labels = [els.download, els.downloadTop].map((b) => b.innerHTML);
-    const setLabel = (t) => { els.download.textContent = t; };
+    const original = btn.innerHTML;
+    const progress = (t) => { btn.textContent = t; };
+    try {
+      await work(progress);
+    } finally {
+      busy = false;
+      btn.innerHTML = original;
+      renderControls();
+    }
+  }
+
+  const downloadPdf = () => runExport(els.download, async (setLabel) => {
     setLabel('PDF 만드는 중…');
     try {
       const { jsPDF } = await loadJsPDF();
@@ -681,18 +722,80 @@
           setLabel(`PDF 만드는 중… ${done}/${total}`);
         }
       }
-      doc.save(pdfFileName());
+      doc.save(fileStamp() + '.pdf');
       toast(`A4 ${pages.length}장짜리 PDF를 내려받았습니다.`);
     } catch (err) {
       console.error(err);
       toast('PDF를 만들지 못했습니다. 인터넷 연결을 확인하거나 [인쇄하기 → PDF로 저장]을 이용해 주세요.');
-    } finally {
-      busy = false;
-      els.download.innerHTML = labels[0];
-      els.downloadTop.innerHTML = labels[1];
-      renderControls();
     }
+  });
+
+  // ── PNG download: one 300 dpi image per A4 sheet ─────
+  async function pageCanvas(shots, size) {
+    const k = PDF_DPI / 25.4;                       // px per mm
+    const c = document.createElement('canvas');
+    c.width = Math.round(size.w * k);
+    c.height = Math.round(size.h * k);
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff';                          // transparent PNGs land on white paper
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.imageSmoothingQuality = 'high';
+    for (const s of shots) {
+      const img = await decoded(s.item);
+      const w = s.w * k, h = s.h * k;
+      ctx.save();
+      ctx.translate((s.x + s.w / 2) * k, (s.y + s.h / 2) * k);
+      ctx.rotate(s.item.rot * Math.PI / 180);
+      const dw = s.turned ? h : w, dh = s.turned ? w : h;
+      ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+      if (settings.border) {
+        ctx.save();
+        ctx.strokeStyle = '#888';
+        ctx.lineWidth = 0.2 * k;
+        ctx.setLineDash([1 * k, 1 * k]);
+        ctx.strokeRect(s.x * k, s.y * k, w, h);
+        ctx.restore();
+      }
+    }
+    return c;
   }
+
+  const canvasPng = (c) => new Promise((resolve, reject) => {
+    c.toBlob((b) => b ? resolve(b) : reject(new Error('toBlob')), 'image/png');
+  });
+
+  const downloadPng = () => runExport(els.png, async (setLabel) => {
+    setLabel('PNG 만드는 중…');
+    try {
+      const { page: size, pages } = layoutPages();
+      const stamp = fileStamp();
+      // Fetch the zip library alongside the first page when it will be needed.
+      const zipLib = pages.length > 1 ? loadJSZip() : null;
+      const blobs = [];
+      for (let p = 0; p < pages.length; p++) {
+        setLabel(`PNG 만드는 중… ${p + 1}/${pages.length}`);
+        const c = await pageCanvas(pages[p], size);
+        blobs.push(await canvasPng(c));
+        c.width = c.height = 0;                      // free the big canvas right away
+      }
+      if (blobs.length === 1) {
+        saveBlob(blobs[0], stamp + '.png');
+        toast('A4 1장을 PNG로 내려받았습니다.');
+        return;
+      }
+      setLabel('ZIP으로 묶는 중…');
+      const JSZip = await zipLib;
+      const zip = new JSZip();
+      const digits = String(blobs.length).length;
+      blobs.forEach((b, i) => zip.file(`${stamp}_${String(i + 1).padStart(digits, '0')}.png`, b));
+      saveBlob(await zip.generateAsync({ type: 'blob' }), stamp + '.zip');
+      toast(`A4 ${blobs.length}장을 PNG로 만들어 ZIP 하나로 내려받았습니다.`);
+    } catch (err) {
+      console.error(err);
+      toast('PNG를 만들지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.');
+    }
+  });
 
   // Shrink the real-size sheets to the preview column width (screen only).
   function fitPreview() {
@@ -795,6 +898,8 @@
   els.printTop.addEventListener('click', doPrint);
   els.download.addEventListener('click', downloadPdf);
   els.downloadTop.addEventListener('click', downloadPdf);
+  els.png.addEventListener('click', downloadPng);
+  els.pngTop.addEventListener('click', downloadPng);
 
   window.addEventListener('resize', fitPreview);
 
