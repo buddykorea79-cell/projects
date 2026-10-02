@@ -133,6 +133,7 @@
   .icon[disabled] { opacity: .3; cursor: default; background: none; }
   .icon--del:hover { color: var(--red); background: #fbecea; }
   .empty-list { font-size: 13px; color: var(--ink-mute); text-align: center; padding: 8px 0; }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .hint { font-size: 12px; color: var(--ink-soft); margin: 0; }
 
   /* ── preview ────────────────────────────────────────── */
@@ -156,12 +157,9 @@
     background: #fff;
     box-shadow: var(--shadow-page);
     overflow: hidden;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
     flex: none;
   }
-  .page__row { display: flex; justify-content: center; align-items: center; flex: none; }
-  .cell { display: flex; align-items: center; justify-content: center; flex: none; }
-  .shot { position: relative; flex: none; }
+  .shot { position: absolute; }
   .shot.has-border { outline: 0.2mm dashed #888; outline-offset: 0; }
   .shot img {
     position: absolute; left: 50%; top: 50%;
@@ -209,6 +207,10 @@
     <button class="btn btn--white" id="printTop" type="button" disabled>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
       인쇄하기
+    </button>
+    <button class="btn btn--white" id="downloadTop" type="button" disabled>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+      PDF 다운로드
     </button>
   </div>
 </header>
@@ -277,8 +279,11 @@
       <p class="hint">번호를 끌어 순서를 바꿀 수 있습니다. 이미지는 이 브라우저 안에서만 처리되고 어디에도 올라가지 않습니다.</p>
     </section>
 
-    <button class="btn btn--fill" id="print" type="button" disabled>인쇄하기 / PDF로 저장</button>
-    <p class="hint">인쇄 창에서 <b>용지 A4 · 배율 100%(기본값)</b>로 두고, <b>머리글/바닥글</b>은 끄면 깔끔합니다.</p>
+    <div class="actions">
+      <button class="btn btn--fill" id="download" type="button" disabled>PDF 다운로드</button>
+      <button class="btn" id="print" type="button" disabled>인쇄하기</button>
+    </div>
+    <p class="hint"><b>PDF 다운로드</b>는 A4 크기 PDF 파일을 바로 저장합니다. 인쇄할 때는 인쇄 창에서 <b>용지 A4 · 배율 100%(기본값)</b>로 두고, <b>머리글/바닥글</b>은 끄면 깔끔합니다.</p>
   </aside>
 
   <main class="preview">
@@ -310,7 +315,7 @@
     drop: $('drop'), file: $('file'), layout: $('layout'), margin: $('margin'), gap: $('gap'),
     scale: $('scale'), scaleOut: $('scaleOut'), border: $('border'),
     list: $('list'), emptyList: $('emptyList'), count: $('count'), clear: $('clear'),
-    print: $('print'), printTop: $('printTop'), sheets: $('sheets'), viewport: $('viewport'),
+    print: $('print'), printTop: $('printTop'), download: $('download'), downloadTop: $('downloadTop'), sheets: $('sheets'), viewport: $('viewport'),
     empty: $('empty'), bar: $('bar'), pageCount: $('pageCount'), toast: $('toast'), pageRule: $('pageRule'),
   };
 
@@ -324,6 +329,7 @@
   /** @type {{id:number, name:string, url:string, w:number, h:number, rot:number}[]} */
   let items = [];
   let nextId = 1;
+  let busy = false;   // PDF being built
 
   // ── helpers ──────────────────────────────────────────
   let toastTimer;
@@ -422,6 +428,8 @@
     const has = items.length > 0;
     els.print.disabled = !has;
     els.printTop.disabled = !has;
+    els.download.disabled = !has || busy;
+    els.downloadTop.disabled = !has || busy;
     els.clear.disabled = !has;
     els.count.textContent = items.length;
     els.empty.hidden = has;
@@ -510,64 +518,180 @@
     });
   }
 
+  // Where every receipt goes, in mm from the sheet's top-left corner.
+  // Rows fill left-to-right; a short last page keeps only the rows it needs.
+  // Each row and the block of rows are centered on the sheet, and each
+  // receipt is centered in its cell — so nothing overlaps and everything
+  // sits in the middle both ways.
+  function layoutPages() {
+    const gd = grid();
+    const pages = [];
+    for (let start = 0; start < items.length; start += gd.perPage) {
+      const chunk = items.slice(start, start + gd.perPage);
+      const rowsUsed = Math.ceil(chunk.length / gd.cols);
+      const blockH = rowsUsed * gd.cellH + (rowsUsed - 1) * gd.gap;
+      const top = (gd.page.h - blockH) / 2;
+      const shots = [];
+      for (let r = 0; r < rowsUsed; r++) {
+        const rowItems = chunk.slice(r * gd.cols, (r + 1) * gd.cols);
+        const rowW = rowItems.length * gd.cellW + (rowItems.length - 1) * gd.gap;
+        const left = (gd.page.w - rowW) / 2;
+        rowItems.forEach((item, c) => {
+          const box = fitBox(item, gd.cellW, gd.cellH);
+          const cellX = left + c * (gd.cellW + gd.gap);
+          const cellY = top + r * (gd.cellH + gd.gap);
+          shots.push({
+            item, turned: box.turned, w: box.w, h: box.h,
+            x: cellX + (gd.cellW - box.w) / 2,
+            y: cellY + (gd.cellH - box.h) / 2,
+          });
+        });
+      }
+      pages.push(shots);
+    }
+    return { page: gd.page, pages };
+  }
+
   function renderSheets() {
     els.sheets.textContent = '';
     if (!items.length) { fitPreview(); return; }
 
-    const gd = grid();
-    const pages = Math.ceil(items.length / gd.perPage);
-    els.pageCount.textContent = pages;
+    const { page: size, pages } = layoutPages();
+    els.pageCount.textContent = pages.length;
 
-    for (let p = 0; p < pages; p++) {
-      const chunk = items.slice(p * gd.perPage, (p + 1) * gd.perPage);
+    pages.forEach((shots, p) => {
       const page = document.createElement('section');
       page.className = 'page';
-      page.style.width = mm(gd.page.w);
-      page.style.height = mm(gd.page.h);
-      page.style.gap = mm(gd.gap);
+      page.style.width = mm(size.w);
+      page.style.height = mm(size.h);
 
-      // Fill rows left-to-right; a short last page keeps only the rows it needs,
-      // and the flex centering puts that block in the middle of the sheet.
-      for (let r = 0; r * gd.cols < chunk.length; r++) {
-        const rowItems = chunk.slice(r * gd.cols, (r + 1) * gd.cols);
-        const row = document.createElement('div');
-        row.className = 'page__row';
-        row.style.gap = mm(gd.gap);
-        for (const item of rowItems) {
-          const cell = document.createElement('div');
-          cell.className = 'cell';
-          cell.style.width = mm(gd.cellW);
-          cell.style.height = mm(gd.cellH);
+      for (const s of shots) {
+        const shot = document.createElement('div');
+        shot.className = 'shot' + (settings.border ? ' has-border' : '');
+        shot.style.left = mm(s.x);
+        shot.style.top = mm(s.y);
+        shot.style.width = mm(s.w);
+        shot.style.height = mm(s.h);
 
-          const box = fitBox(item, gd.cellW, gd.cellH);
-          const shot = document.createElement('div');
-          shot.className = 'shot' + (settings.border ? ' has-border' : '');
-          shot.style.width = mm(box.w);
-          shot.style.height = mm(box.h);
+        const img = document.createElement('img');
+        img.src = s.item.url;
+        img.alt = s.item.name;
+        // Before rotation the image's own width is the box's height when turned 90°/270°.
+        img.style.width = mm(s.turned ? s.h : s.w);
+        img.style.height = mm(s.turned ? s.w : s.h);
+        img.style.transform = `translate(-50%, -50%) rotate(${s.item.rot}deg)`;
 
-          const img = document.createElement('img');
-          img.src = item.url;
-          img.alt = item.name;
-          // Before rotation the image's own width is the box's height when turned 90°/270°.
-          img.style.width = mm(box.turned ? box.h : box.w);
-          img.style.height = mm(box.turned ? box.w : box.h);
-          img.style.transform = `translate(-50%, -50%) rotate(${item.rot}deg)`;
-
-          shot.appendChild(img);
-          cell.appendChild(shot);
-          row.appendChild(cell);
-        }
-        page.appendChild(row);
+        shot.appendChild(img);
+        page.appendChild(shot);
       }
 
       const no = document.createElement('span');
       no.className = 'page__no';
-      no.textContent = `${p + 1} / ${pages}`;
+      no.textContent = `${p + 1} / ${pages.length}`;
       page.appendChild(no);
 
       els.sheets.appendChild(page);
-    }
+    });
     fitPreview();
+  }
+
+  // ── PDF download ─────────────────────────────────────
+  const JSPDF_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+  let jspdfLoading = null;
+  function loadJsPDF() {
+    if (window.jspdf) return Promise.resolve(window.jspdf);
+    if (!jspdfLoading) {
+      jspdfLoading = new Promise((resolve, reject) => {
+        const sc = document.createElement('script');
+        sc.src = JSPDF_URL;
+        sc.onload = () => window.jspdf ? resolve(window.jspdf) : reject(new Error('jspdf'));
+        sc.onerror = () => { jspdfLoading = null; reject(new Error('jspdf')); };
+        document.head.appendChild(sc);
+      });
+    }
+    return jspdfLoading;
+  }
+
+  const PDF_DPI = 300;
+  const imgCache = new Map();
+  function decoded(item) {
+    if (!imgCache.has(item.url)) {
+      imgCache.set(item.url, new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = item.url;
+      }));
+    }
+    return imgCache.get(item.url);
+  }
+
+  // Draw the receipt already rotated, at about 300 dpi for its printed size
+  // (never above its own resolution), as a JPEG to keep the file small.
+  async function shotJpeg(s) {
+    const img = await decoded(s.item);
+    const want = (s.w / 25.4) * PDF_DPI;
+    const native = s.turned ? img.naturalHeight : img.naturalWidth;
+    const k = Math.min(1, want / native);
+    const outW = Math.max(1, Math.round((s.turned ? img.naturalHeight : img.naturalWidth) * k));
+    const outH = Math.max(1, Math.round((s.turned ? img.naturalWidth : img.naturalHeight) * k));
+    const c = document.createElement('canvas');
+    c.width = outW; c.height = outH;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, outW, outH);
+    ctx.translate(outW / 2, outH / 2);
+    ctx.rotate(s.item.rot * Math.PI / 180);
+    const dw = s.turned ? outH : outW, dh = s.turned ? outW : outH;
+    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+    return c.toDataURL('image/jpeg', 0.9);
+  }
+
+  function pdfFileName() {
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    return `receipts_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}.pdf`;
+  }
+
+  async function downloadPdf() {
+    if (!items.length || busy) return;
+    busy = true;
+    renderControls();
+    const labels = [els.download, els.downloadTop].map((b) => b.innerHTML);
+    const setLabel = (t) => { els.download.textContent = t; };
+    setLabel('PDF 만드는 중…');
+    try {
+      const { jsPDF } = await loadJsPDF();
+      const { pages } = layoutPages();
+      const orient = settings.orient;
+      const doc = new jsPDF({ orientation: orient, unit: 'mm', format: 'a4', compress: true });
+      let done = 0;
+      const total = items.length;
+      for (let p = 0; p < pages.length; p++) {
+        if (p > 0) doc.addPage('a4', orient);
+        for (const s of pages[p]) {
+          doc.addImage(await shotJpeg(s), 'JPEG', s.x, s.y, s.w, s.h, undefined, 'FAST');
+          if (settings.border) {
+            doc.setDrawColor(136);
+            doc.setLineWidth(0.2);
+            doc.setLineDashPattern([1, 1], 0);
+            doc.rect(s.x, s.y, s.w, s.h);
+          }
+          done++;
+          setLabel(`PDF 만드는 중… ${done}/${total}`);
+        }
+      }
+      doc.save(pdfFileName());
+      toast(`A4 ${pages.length}장짜리 PDF를 내려받았습니다.`);
+    } catch (err) {
+      console.error(err);
+      toast('PDF를 만들지 못했습니다. 인터넷 연결을 확인하거나 [인쇄하기 → PDF로 저장]을 이용해 주세요.');
+    } finally {
+      busy = false;
+      els.download.innerHTML = labels[0];
+      els.downloadTop.innerHTML = labels[1];
+      renderControls();
+    }
   }
 
   // Shrink the real-size sheets to the preview column width (screen only).
@@ -600,12 +724,14 @@
     const i = items.findIndex((x) => x.id === id);
     if (i < 0) return;
     URL.revokeObjectURL(items[i].url);
+    imgCache.delete(items[i].url);
     items.splice(i, 1);
     render();
   }
   function clearAll() {
     if (!confirm(`영수증 ${items.length}장을 모두 지울까요?`)) return;
     items.forEach((x) => URL.revokeObjectURL(x.url));
+    imgCache.clear();
     items = [];
     render();
   }
@@ -667,6 +793,8 @@
   const doPrint = () => { if (items.length) window.print(); };
   els.print.addEventListener('click', doPrint);
   els.printTop.addEventListener('click', doPrint);
+  els.download.addEventListener('click', downloadPdf);
+  els.downloadTop.addEventListener('click', downloadPdf);
 
   window.addEventListener('resize', fitPreview);
 
