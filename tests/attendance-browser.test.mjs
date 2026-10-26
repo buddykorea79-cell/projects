@@ -6,6 +6,7 @@
  * 출석 반영(동명이인·명단에 없는 이름 확인) → 직접 체크 → 대시보드 → 엑셀 내려받기.
  */
 import { chromium } from 'playwright';
+import { chromeOptions } from './chrome.mjs';
 import { existsSync, mkdtempSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
@@ -27,8 +28,7 @@ const eq = (a, b, m) => { if (a !== b) throw new Error(`${m}: ${JSON.stringify(a
 const { server, bucket, origin } = await startServer({ root, env: { PBKDF2_ITERATIONS: 1000 } });
 log(`\n로컬 R2 스텁 서버: ${origin}`);
 
-const executablePath = process.env.CHROME_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
-const browser = await chromium.launch(existsSync(executablePath) ? { executablePath } : {});
+const browser = await chromium.launch(chromeOptions());
 const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 }, acceptDownloads: true });
 const page = await ctx.newPage();
 

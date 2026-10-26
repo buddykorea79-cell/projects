@@ -13,6 +13,7 @@ import { guideView } from './views/guide.js';
 import { materialsView } from './views/materials.js';
 import { boardView, postView, postFormView } from './views/board.js';
 import { voteHomeView, voteProjectView } from './views/vote.js';
+import { campHomeView, campProjectView, campResultView } from './views/camp.js';
 import { loginView, signupView, accountView, forgotView, resetView } from './views/account.js';
 import {
   adminView, projectFormView, adminSubmissionsView, materialFormView, membersView, rosterView,
@@ -59,7 +60,7 @@ function renderNavLinks() {
   const signed = isSignedIn();
   document.querySelectorAll('.gnav__links a, .gnav__drawer a').forEach((a) => {
     const href = a.getAttribute('href') || '';
-    const memberOnly = ['#/materials', '#/vote', '#/board', '#/my'].includes(href);
+    const memberOnly = ['#/materials', '#/camp', '#/board', '#/my'].includes(href);
     a.hidden = memberOnly && !signed;
   });
 }
@@ -70,7 +71,7 @@ function markActiveNav(path) {
     const nav = a.dataset.nav;
     const active = (nav === 'home' && (key === 'home' || key === 'p'))
       || (nav === 'materials' && key === 'materials')
-      || (nav === 'vote' && key === 'vote')
+      || (nav === 'camp' && key === 'camp')
       || (nav === 'board' && key === 'board')
       || (nav === 'my' && (key === 'my' || key === 's'))
       || (nav === 'guide' && key === 'guide');
@@ -101,6 +102,7 @@ async function updateFrap(path) {
   const frap = $('#frap');
   if (!isSignedIn() || path.startsWith('/admin') || path.startsWith('/materials')
       || path.startsWith('/board') || path.startsWith('/vote')
+      || path.startsWith('/camp')
       || path.includes('/submit') || PUBLIC_PATHS.has(path)) {
     frap.hidden = true;
     return;
@@ -178,6 +180,11 @@ function registerRoutes() {
   R.route('/board/:id/edit', view((m, p) => postFormView(m, p)));
   R.route('/my', view((m) => myView(m)));
 
+  R.route('/camp', view((m) => campHomeView(m)));
+  R.route('/camp/:id', view((m, p, q) => campProjectView(m, p, q)));
+
+  // 상호 투표는 상단 메뉴에서 내렸지만(그 자리에 Build Camp 가 들어갔습니다)
+  // 기능은 그대로입니다 — 프로젝트 상세에서 들어가고 옛 주소도 계속 열립니다.
   R.route('/vote', view((m) => voteHomeView(m)));
   R.route('/vote/:id', view((m, p) => voteProjectView(m, p)));
 
@@ -199,6 +206,7 @@ function registerRoutes() {
   R.route('/admin/material/:id', view((m, p) => materialFormView(m, p), { admin: true }));
   R.route('/admin/submissions/:projectId', view((m, p) => adminSubmissionsView(m, p), { admin: true }));
   R.route('/admin/roster/:projectId', view((m, p) => rosterView(m, p), { admin: true }));
+  R.route('/admin/scores/:projectId', view((m, p) => campResultView(m, p), { admin: true }));
 
   R.route('/admin/attendance', view((m) => attendanceView(m), { admin: true }));
   R.route('/admin/attendance/roster', view((m) => attendanceRosterView(m), { admin: true }));

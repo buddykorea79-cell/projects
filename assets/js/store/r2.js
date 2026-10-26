@@ -4,6 +4,7 @@
  *   data/projects.json / materials.json   색인 (관리자만 쓰기)
  *   data/submissions.json                 제출물 — 서버만 고칩니다
  *   data/votes.json                       상호 투표 — 서버만 고칩니다
+ *   data/scores.json                      AI Build Camp 발표 평가 — 서버만 고칩니다
  *   data/roster.json                      전체 수강생 명단 — 관리자만
  *   data/attendance.json                  회차별 출석·과제 기록 — 관리자만
  *   data/members.json                     회원 명부 — 브라우저로 절대 안 내려옵니다
@@ -212,6 +213,8 @@ export class R2Store {
         title: sub.title,
         body: sub.body,
         files,
+        // AI Build Camp 과제의 조. 서버가 과제 종류를 보고 다시 판정합니다.
+        ...(sub.team === undefined ? {} : { team: sub.team }),
         // 관리자가 다른 회원 이름으로 등록할 때만 씁니다. 서버가 회원 명부에서
         // 이름·기관을 가져오므로 여기서는 이메일만 넘깁니다.
         ...(sub.authorEmail ? { authorEmail: sub.authorEmail } : {}),
@@ -228,6 +231,7 @@ export class R2Store {
         files,
         name: sub.author?.name,
         institution: sub.author?.institution,
+        ...(sub.team === undefined ? {} : { team: sub.team }),
       }),
     });
     return submission;
@@ -365,6 +369,41 @@ export class R2Store {
   async castVote(submissionId, on = true) {
     const { summary } = await this.post('/votes', { submissionId, on: Boolean(on) });
     return summary;
+  }
+
+  /* --------------------------------------------------------- 발표 평가 -- */
+
+  /**
+   * 발표 과제 선정 — 그룹장이 자기 조에서 하나를 뽑습니다(관리자는 모든 조).
+   * 규칙은 서버가 다시 봅니다 (shared/camp.js 의 nominateBlock).
+   */
+  async nominate(submissionId, on = true) {
+    await this.post('/presentation', { submissionId, on: Boolean(on) });
+    return this.getSubmission(submissionId);
+  }
+
+  /**
+   * 발표 평가 집계 + 내가 준 점수.
+   * @returns {Promise<object>} shared/camp.js 의 summarizeScores 와 같은 모양
+   */
+  async scoreSummary(projectId) {
+    const { summary } = await this.json(
+      `/scores?projectId=${encodeURIComponent(projectId)}`, { cache: 'no-store' },
+    );
+    return summary;
+  }
+
+  /** 세 문항 점수 주기. 같은 사람이 다시 주면 서버가 덮어씁니다. */
+  async castScore(submissionId, input) {
+    const { summary } = await this.post('/scores', { submissionId, ...input });
+    return summary;
+  }
+
+  /** 누가 어느 발표에 몇 점을 줬는지 원자료 (관리자만). */
+  async listScores(projectId = '') {
+    const q = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+    const { data } = await this.json(`/scores/rows${q}`, { cache: 'no-store' });
+    return Array.isArray(data) ? data : [];
   }
 
   /* ------------------------------------------------------------- files */

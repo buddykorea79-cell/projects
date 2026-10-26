@@ -6,9 +6,13 @@
 import { uid } from '../utils.js';
 import { DemoAuth } from './demo-auth.js';
 import { summarizeVotes, applyVote } from './voting.js';
+import {
+  isCamp, normTeam, summarizeScores, applyScore, myTeamIn,
+  nominateBlock, applyNominate, TEAM_MAX,
+} from '../camp.js';
 
 const DB_NAME = 'assignment-hub';
-const DB_VER = 5;
+const DB_VER = 6;
 
 let dbPromise = null;
 
@@ -45,6 +49,11 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains('attendance')) {
         db.createObjectStore('attendance', { keyPath: 'id' });
+      }
+      // AI Build Camp 발표 평가 — 한 사람이 한 발표에 한 줄.
+      if (!db.objectStoreNames.contains('scores')) {
+        const sc = db.createObjectStore('scores', { keyPath: 'id' });
+        sc.createIndex('projectId', 'projectId');
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -121,6 +130,10 @@ export class LocalStore {
     if (stray.length) {
       await tx('votes', 'readwrite', (os) => { for (const v of stray) os.delete(v.id); });
     }
+    const strayScores = (await this.listScores()).filter((r) => r.projectId === id);
+    if (strayScores.length) {
+      await tx('scores', 'readwrite', (os) => { for (const r of strayScores) os.delete(r.id); });
+    }
     await tx('projects', 'readwrite', (os) => os.delete(id));
   }
 
@@ -156,6 +169,16 @@ export class LocalStore {
       rec.author = { institution: me.institution || '', name: me.name, email: me.email };
     }
 
+    // AI Build Camp 과제는 조를 골라야 합니다 (서버와 같은 규칙 — shared/camp.js).
+    const project = await this.getProject(rec.projectId);
+    if (isCamp(project)) {
+      const team = normTeam(rec.team);
+      if (!team) throw new Error(`조를 선택하세요 (1조~${TEAM_MAX}조).`);
+      rec.team = team;
+    } else {
+      delete rec.team;
+    }
+
     for (const file of newFiles) {
       const fid = uid('f_');
       await tx('blobs', 'readwrite', (os) => os.put({ id: fid, blob: file }));
@@ -182,6 +205,11 @@ export class LocalStore {
     const stale = (await this.listVotes()).filter((v) => v.submissionId === id);
     if (stale.length) {
       await tx('votes', 'readwrite', (os) => { for (const v of stale) os.delete(v.id); });
+    }
+    // 발표 평가 점수도 함께 — 없는 발표의 점수는 평균만 흐립니다.
+    const staleScores = (await this.listScores()).filter((r) => r.submissionId === id);
+    if (staleScores.length) {
+      await tx('scores', 'readwrite', (os) => { for (const r of staleScores) os.delete(r.id); });
     }
   }
 
@@ -326,12 +354,18 @@ export class LocalStore {
     return summarizeVotes(project, await this.listVotes(), this.auth?.me() || {});
   }
 
-  /** 삭제된 회원이 넣은 표를 걷어냅니다 (DemoAuth.deleteMember 가 부릅니다). */
+  /** 삭제된 회원이 넣은 표·점수를 걷어냅니다 (DemoAuth.deleteMember 가 부릅니다). */
   async dropVoter(email) {
     const e = String(email || '').trim().toLowerCase();
     const gone = (await this.listVotes()).filter((v) => String(v.voter || '').toLowerCase() === e);
-    if (!gone.length) return;
-    await tx('votes', 'readwrite', (os) => { for (const v of gone) os.delete(v.id); });
+    if (gone.length) {
+      await tx('votes', 'readwrite', (os) => { for (const v of gone) os.delete(v.id); });
+    }
+    const goneScores = (await this.listScores())
+      .filter((r) => String(r.voter || '').toLowerCase() === e);
+    if (goneScores.length) {
+      await tx('scores', 'readwrite', (os) => { for (const r of goneScores) os.delete(r.id); });
+    }
   }
 
   async castVote(submissionId, on = true) {
@@ -354,6 +388,67 @@ export class LocalStore {
       });
     }
     return summarizeVotes(project, next || rows, me);
+  }
+
+  /* ---------------------------------------------------------- 발표 평가 */
+
+  async listScores() {
+    const rows = await tx('scores', 'readonly', (os) => wrap(os.getAll()));
+    return rows || [];
+  }
+
+  async scoreSummary(projectId) {
+    const project = await this.getProject(projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+    return summarizeScores(project, await this.listScores(), this.auth?.me() || {});
+  }
+
+  /** 발표 과제 선정 — 조마다 하나. 먼저 올라가 있던 것은 내려갑니다. */
+  async nominate(submissionId, on = true) {
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+    const sub = await this.getSubmission(submissionId);
+    if (!sub) throw new Error('제출물을 찾을 수 없습니다.');
+    const project = await this.getProject(sub.projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+
+    const blocked = nominateBlock(project, sub, me, on);
+    if (blocked) throw new Error(blocked);
+
+    const siblings = await this.listSubmissions({ projectId: sub.projectId });
+    const target = siblings.find((s) => s.id === submissionId);
+    const touched = applyNominate(siblings, target, on);
+    if (!touched.length) return sub;
+
+    await tx('submissions', 'readwrite', (os) => { for (const s of touched) os.put(s); });
+    // 내려간 발표에 들어와 있던 점수는 갈 곳이 없습니다.
+    const dropped = touched.filter((s) => !s.presenting).map((s) => s.id);
+    if (dropped.length) {
+      const stale = (await this.listScores()).filter((r) => dropped.includes(r.submissionId));
+      if (stale.length) {
+        await tx('scores', 'readwrite', (os) => { for (const r of stale) os.delete(r.id); });
+      }
+    }
+    return target;
+  }
+
+  /** 세 문항 점수 주기. 같은 사람이 다시 주면 덮어씁니다. */
+  async castScore(submissionId, input) {
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+    const sub = await this.getSubmission(submissionId);
+    if (!sub) throw new Error('제출물을 찾을 수 없습니다.');
+    const project = await this.getProject(sub.projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+
+    const here = await this.listSubmissions({ projectId: sub.projectId });
+    const rows = await this.listScores();
+    const next = applyScore(project, rows, me, submissionId, input, sub, myTeamIn(here, me));
+
+    // applyScore 는 줄을 지우지 않고 더하거나 고치기만 합니다 — put 만 하면 됩니다.
+    for (const r of next) if (!r.id) r.id = uid('sc_');
+    await tx('scores', 'readwrite', (os) => { for (const r of next) os.put(r); });
+    return summarizeScores(project, next, me);
   }
 
   /* --------------------------------------------------------------- files */
@@ -391,6 +486,7 @@ export class LocalStore {
       posts: await this.listPosts(),
       roster: await this.listStudents(),
       attendance: await this.listAttendance(),
+      scores: await this.listScores(),
     };
   }
 
@@ -413,6 +509,9 @@ export class LocalStore {
     }
     for (const a of dump.attendance || []) {
       await tx('attendance', 'readwrite', (os) => os.put(a));
+    }
+    for (const r of dump.scores || []) {
+      await tx('scores', 'readwrite', (os) => os.put(r));
     }
   }
 }

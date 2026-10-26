@@ -5,7 +5,7 @@
  * 배포와 같은 구조 — 진짜 크로미움으로 가입부터 제출·다운로드까지 밟아 봅니다.
  */
 import { chromium } from 'playwright';
-import { existsSync } from 'fs';
+import { chromeOptions } from './chrome.mjs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { startServer } from './mock-r2.mjs';
@@ -25,8 +25,7 @@ const { server, bucket, origin } = await startServer({
 });
 log(`\n로컬 R2 스텁 서버: ${origin}`);
 
-const executablePath = process.env.CHROME_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
-const browser = await chromium.launch(existsSync(executablePath) ? { executablePath } : {});
+const browser = await chromium.launch(chromeOptions());
 
 const consoleErrors = [];
 /** 사람마다 별도 브라우저 컨텍스트 — 세션 쿠키가 섞이지 않습니다. */
@@ -358,12 +357,24 @@ await step('관리자가 투표를 켠 프로젝트를 개설', async () => {
   if (saved.voting.perMember !== 1) throw new Error(`1인당 표 ${saved.voting.perMember}`);
 });
 
-await step('상단 메뉴의 과제 투표 링크로 목록이 열림', async () => {
-  await alice.goto(`${origin}/#/`, { waitUntil: 'networkidle' });
-  const link = alice.locator('.gnav__links a[href="#/vote"]');
-  if (!(await link.count())) throw new Error('메뉴에 투표 링크가 없음');
-  if (await link.first().isHidden()) throw new Error('회원인데 투표 메뉴가 숨겨짐');
+// 상호 투표는 상단 메뉴에서 내려갔습니다(그 자리에 Build Camp 가 들어갔습니다).
+// 이제 프로젝트 상세의 '투표하기' 로 들어갑니다 — camp-browser.test.mjs 가 메뉴를 봅니다.
+await step('프로젝트 상세의 투표하기 버튼으로 투표 화면이 열림', async () => {
+  await alice.goto(`${origin}/#/p/${voteProjectId}`, { waitUntil: 'networkidle' });
+  const link = alice.locator(`.band a[href="#/vote/${voteProjectId}"]`);
+  await link.first().waitFor({ timeout: 10000 });
+  if ((await link.first().innerText()).trim() !== '투표하기') {
+    throw new Error(await link.first().innerText());
+  }
   await link.first().click();
+  await alice.waitForSelector('#voteBoard', { timeout: 10000 });
+  if (!(await alice.locator('#main').innerText()).includes('2주차')) {
+    throw new Error(await alice.locator('#main').innerText());
+  }
+});
+
+await step('과제 투표 목록 주소도 그대로 열림', async () => {
+  await alice.goto(`${origin}/#/vote`, { waitUntil: 'networkidle' });
   await alice.waitForSelector('#voteList .tile', { timeout: 10000 });
   const text = await alice.locator('#voteList').innerText();
   if (!text.includes('2주차')) throw new Error(text);

@@ -407,6 +407,8 @@ export function publicMember(m) {
     name: m.name,
     institution: m.institution || '',
     role: m.role || 'member',
+    // 그룹장이 맡은 조 (1~8). 그룹장이 아니면 0 입니다 — shared/camp.js 참고.
+    team: Number(m.team || 0) || 0,
     status: m.status || 'active',
     createdAt: m.createdAt,
     lastLoginAt: m.lastLoginAt || null,

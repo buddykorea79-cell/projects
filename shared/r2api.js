@@ -52,6 +52,10 @@
  *   DELETE /posts/:id/comments/:cid (본인 또는 관리자)
  *   GET    /votes?projectId=…       (로그인) 상호 투표 집계 + 내가 넣은 표
  *   POST   /votes                   (로그인) 표 넣기·빼기
+ *   POST   /presentation            (그룹장·관리자) 발표 과제 선정 — 조마다 하나
+ *   GET    /scores?projectId=…      (로그인) 발표 평가 집계 + 내가 준 점수
+ *   POST   /scores                  (로그인) 세 문항 점수 주기 (덮어쓰기)
+ *   GET    /scores/rows?projectId=… (관리자) 누가 몇 점을 줬는지 원자료
  *   GET    /file/<key>              (로그인)
  *   DELETE /file/<key>              (관리자)
  */
@@ -70,6 +74,11 @@ import {
   handleTelegramWebhook,
 } from './telegram.js';
 import { sendResetEmail } from './email.js';
+import {
+  normTeam, isCamp, normRole, leaderTeam, isNominee,
+  presentationOf, presentationPhase, summarizeScores, normScore, scoreBlock, myTeamIn,
+  nominateBlock, applyNominate, TEAM_MAX,
+} from './camp.js';
 
 /** 이 이메일로 가입하면 자동으로 관리자 권한이 붙습니다. */
 const DEFAULT_ADMIN_EMAILS = ['aireader@mois.go.kr'];
@@ -257,6 +266,18 @@ async function route(request, env, url, path, cors, waitUntil) {
     return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
   }
 
+  /* --------------------------------------------------------- 발표 평가 -- */
+
+  if (path === '/presentation' && method === 'POST') {
+    return nominatePresentation(request, env, cors);
+  }
+  if (path === '/scores') {
+    if (method === 'GET') return scoreSummaryRequest(request, env, url, cors);
+    if (method === 'POST') return castScore(request, env, cors);
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
+  if (path === '/scores/rows' && method === 'GET') return listScores(request, env, url, cors);
+
   /* ------------------------------------------------------- 파일 -- */
 
   if (path === '/upload' && method === 'POST') return upload(request, env, url, cors);
@@ -287,11 +308,16 @@ function adminEmails(env) {
   return new Set(list.map((s) => normEmail(s)).filter(Boolean));
 }
 
-/** 관리자 이메일 목록에 있으면 저장된 역할과 무관하게 관리자로 봅니다. */
+/**
+ * 관리자 이메일 목록에 있으면 저장된 역할과 무관하게 관리자로 봅니다.
+ * 그 밖에는 저장된 역할(회원·그룹장·관리자)을 그대로 씁니다 — shared/camp.js.
+ */
 function withRole(member, env) {
   if (!member) return null;
-  const role = adminEmails(env).has(normEmail(member.email)) ? 'admin' : (member.role || 'member');
-  return { ...member, role };
+  const role = adminEmails(env).has(normEmail(member.email))
+    ? 'admin'
+    : normRole(member.role);
+  return { ...member, role, team: normTeam(member.team) };
 }
 
 export async function currentMember(request, env) {
@@ -469,6 +495,13 @@ async function changePassword(request, env, url, cors) {
   return json({ ok: true }, 200, { ...cors, 'Set-Cookie': sessionCookie(token, url) });
 }
 
+/**
+ * 회원 권한·상태 바꾸기 (관리자).
+ *
+ * 권한은 **회원 · 그룹장 · 관리자** 셋입니다. 그룹장은 맡을 조가 있어야 뜻이
+ * 있으므로 조(1~8)를 함께 받고, 그룹장을 내리면 조도 함께 비웁니다.
+ * 그룹장이 하는 일은 shared/camp.js 의 canNominate 를 보세요.
+ */
 async function patchMember(request, env, admin, cors) {
   const body = await request.json().catch(() => null);
   const email = normEmail(body?.email);
@@ -477,11 +510,25 @@ async function patchMember(request, env, admin, cors) {
     return json({ message: '자기 계정의 권한은 바꿀 수 없습니다.' }, 400, cors);
   }
 
+  const wantsRole = ['admin', 'member', 'leader'].includes(body?.role) ? body.role : null;
+  const wantsTeam = body?.team === undefined ? null : normTeam(body.team);
+  if (body?.team !== undefined && !wantsTeam && Number(body.team) !== 0) {
+    return json({ message: `조는 1조부터 ${TEAM_MAX}조까지입니다.` }, 400, cors);
+  }
+
   let updated = null;
   const result = await updateMembers(env, (l) => {
     const m = findMember(l, email);
     if (!m) return null;
-    if (body.role === 'admin' || body.role === 'member') m.role = body.role;
+    if (wantsRole) {
+      m.role = wantsRole;
+      if (wantsRole !== 'leader') m.team = 0;
+    }
+    if (wantsTeam !== null) m.team = wantsTeam;
+    // 조 없는 그룹장은 아무 조도 못 보는 빈 권한이라, 조가 없으면 회원으로 둡니다.
+    if (normRole(m.role) === 'leader' && !normTeam(m.team)) m.role = 'member';
+    if (normRole(m.role) !== 'leader') m.team = 0;
+
     if (body.status === 'active' || body.status === 'blocked') {
       // 정지를 풀었을 때 예전 토큰이 되살아나지 않도록 세대를 올립니다.
       if (m.status !== body.status) bumpEpoch(m);
@@ -543,19 +590,23 @@ async function removeMember(request, env, admin, cors) {
           if (f.key) await env.BUCKET.delete(f.key).catch(() => {});
         }
       }
-      // 사라진 제출물에 들어간 표는 집계에 유령으로 남지 않도록 걷어냅니다.
-      await mutateIndex(env, 'votes', (l) => {
-        const kept = l.filter((v) => !ids.has(v.submissionId));
-        return kept.length === l.length ? null : kept;
-      });
+      // 사라진 제출물에 들어간 표·점수는 집계에 유령으로 남지 않도록 걷어냅니다.
+      for (const name of ['votes', 'scores']) {
+        await mutateIndex(env, name, (l) => {
+          const kept = l.filter((v) => !ids.has(v.submissionId));
+          return kept.length === l.length ? null : kept;
+        });
+      }
     }
   }
 
-  // 계정이 없어졌으니 그 사람이 넣은 표도 남겨둘 이유가 없습니다.
-  await mutateIndex(env, 'votes', (l) => {
-    const kept = l.filter((v) => normEmail(v.voter) !== email);
-    return kept.length === l.length ? null : kept;
-  });
+  // 계정이 없어졌으니 그 사람이 넣은 표·점수도 남겨둘 이유가 없습니다.
+  for (const name of ['votes', 'scores']) {
+    await mutateIndex(env, name, (l) => {
+      const kept = l.filter((v) => normEmail(v.voter) !== email);
+      return kept.length === l.length ? null : kept;
+    });
+  }
 
   return json({ ok: true, removedSubmissions }, 200, cors);
 }
@@ -748,13 +799,15 @@ async function writeIndexRequest(request, env, name, cors) {
     return json({ message: '동시 수정 충돌이 발생했습니다.', current: { etag, data } }, 409, cors);
   }
 
-  // 프로젝트가 사라졌다면 그 프로젝트에 들어간 표도 갈 곳이 없습니다.
+  // 프로젝트가 사라졌다면 그 프로젝트에 들어간 표·발표 점수도 갈 곳이 없습니다.
   if (name === 'projects') {
     const alive = new Set(body.data.map((p) => p?.id).filter(Boolean));
-    await mutateIndex(env, 'votes', (list) => {
-      const kept = list.filter((v) => alive.has(v.projectId));
-      return kept.length === list.length ? null : kept;
-    });
+    for (const index of ['votes', 'scores']) {
+      await mutateIndex(env, index, (list) => {
+        const kept = list.filter((v) => alive.has(v.projectId));
+        return kept.length === list.length ? null : kept;
+      });
+    }
   }
   return json({ etag: put.etag }, 200, cors);
 }
@@ -807,6 +860,11 @@ async function restoreSubmissions(request, env, cors) {
         name: String(s.author?.name || '').slice(0, 60),
         email: normEmail(s.author?.email),
       },
+      // 조·발표 선정·마감 뒤 표시는 백업에서 되살려야 Build Camp 집계가 맞습니다.
+      ...(normTeam(s.team) ? { team: normTeam(s.team) } : {}),
+      ...(s.presenting ? { presenting: true } : {}),
+      ...(s.late ? { late: true } : {}),
+      ...(normEmail(s.registeredBy) ? { registeredBy: normEmail(s.registeredBy) } : {}),
       createdAt: s.createdAt || new Date().toISOString(),
       updatedAt: s.updatedAt || s.createdAt || new Date().toISOString(),
     }));
@@ -830,8 +888,20 @@ async function listSubmissions(request, env, cors) {
   const openIds = new Set(projects
     .filter((p) => p.visibility === 'public' || votingOf(p))
     .map((p) => p.id));
+  const byId = new Map(projects.map((p) => [p.id, p]));
+  // 그룹장은 **자기 조가 낸 것**을 봅니다 — 그 중에서 발표 과제를 뽑기 때문입니다.
+  const myTeam = leaderTeam(me);
+
   const visible = subs
-    .filter((s) => normEmail(s.author?.email) === normEmail(me.email) || openIds.has(s.projectId))
+    .filter((s) => {
+      if (normEmail(s.author?.email) === normEmail(me.email)) return true;
+      if (openIds.has(s.projectId)) return true;
+      const project = byId.get(s.projectId);
+      // 발표 과제로 뽑힌 제출물은 점수를 주려면 참여자 모두가 봐야 합니다.
+      if (isNominee(s) && presentationOf(project)) return true;
+      if (myTeam && isCamp(project) && normTeam(s.team) === myTeam) return true;
+      return false;
+    })
     .map((s) => viewSubmission(s, me));
 
   return json({ data: visible }, 200, { ...cors, 'Cache-Control': 'no-store' });
@@ -873,6 +943,13 @@ async function createSubmission(request, env, cors, waitUntil) {
   const closed = checkProjectOpen(projects, body.projectId);
   if (closed && me.role !== 'admin') return json({ message: closed }, 400, cors);
 
+  // AI Build Camp 과제는 조를 골라야 합니다 — 조별로 묶어 보고, 조마다 발표
+  // 과제를 하나 뽑습니다(shared/camp.js). 일반 과제에서는 받지 않습니다.
+  const team = isCamp(project) ? normTeam(body.team) : 0;
+  if (isCamp(project) && !team) {
+    return json({ message: `조를 선택하세요 (1조~${TEAM_MAX}조).` }, 400, cors);
+  }
+
   const prefix = await memberKey(me.email);
   if (!ownsFiles(body.files, prefix, me.role === 'admin')) {
     return json({ message: '첨부 파일 경로가 올바르지 않습니다.' }, 400, cors);
@@ -907,6 +984,7 @@ async function createSubmission(request, env, cors, waitUntil) {
     body: String(body.body).trim().slice(0, 20000),
     files: Array.isArray(body.files) ? body.files.slice(0, 20) : [],
     status: 'submitted',
+    ...(team ? { team } : {}),
     // 마감 뒤 등록이면 표시를 남깁니다. 나중에 마감일을 고쳐도 이 값은 그대로라
     // "등록 시점 기준"이라는 뜻이 흔들리지 않습니다.
     ...(closed ? { late: true } : {}),
@@ -937,10 +1015,22 @@ async function patchSubmission(request, env, id, cors) {
     return json({ message: '본인 제출물만 수정할 수 있습니다.' }, 403, cors);
   }
 
+  const { data: projects } = await readIndex(env, 'projects');
   if (me.role !== 'admin') {
-    const { data: projects } = await readIndex(env, 'projects');
     const closed = checkProjectOpen(projects, existing.projectId);
     if (closed) return json({ message: closed }, 400, cors);
+  }
+
+  // 조를 고쳐 보낼 수 있습니다(처음에 잘못 골랐을 때). Build Camp 과제에서는
+  // 조가 비면 안 되므로 1~8 만 받습니다.
+  const project = projects.find((x) => x.id === existing.projectId);
+  let team = null;
+  if (body.team !== undefined) {
+    team = normTeam(body.team);
+    if (isCamp(project) && !team) {
+      return json({ message: `조는 1조부터 ${TEAM_MAX}조까지입니다.` }, 400, cors);
+    }
+    if (!isCamp(project)) team = 0;
   }
 
   const prefix = await memberKey(existing.author?.email || me.email);
@@ -961,6 +1051,10 @@ async function patchSubmission(request, env, id, cors) {
     // 이름·기관은 본인이 고칠 수 있게 두되, 이메일은 계정에 묶여 있으므로 고정입니다.
     if (typeof body.name === 'string' && body.name.trim()) s.author.name = body.name.trim().slice(0, 60);
     if (typeof body.institution === 'string') s.author.institution = body.institution.trim().slice(0, 80);
+    if (team !== null) {
+      if (team) s.team = team;
+      else delete s.team;
+    }
     s.updatedAt = new Date().toISOString();
     updated = s;
     return list;
@@ -990,6 +1084,11 @@ async function removeSubmission(request, env, id, cors) {
   // 지워진 제출물에 들어간 표도 함께 거둡니다 — 남겨두면 투표자의 표 수만 축냅니다.
   await mutateIndex(env, 'votes', (list) => {
     const kept = list.filter((v) => v.submissionId !== id);
+    return kept.length === list.length ? null : kept;
+  });
+  // 발표 평가 점수도 마찬가지입니다 — 없는 발표의 점수는 평균만 흐립니다.
+  await mutateIndex(env, 'scores', (list) => {
+    const kept = list.filter((r) => r.submissionId !== id);
     return kept.length === list.length ? null : kept;
   });
   for (const f of existing.files || []) {
@@ -1338,6 +1437,144 @@ async function castVote(request, env, cors) {
 
   if (denied) return json({ message: denied }, 400, cors);
   return json({ summary: voteSummary(project, result.data, me) }, 200, cors);
+}
+
+/* ====================================================== 발표 평가 == */
+
+/**
+ * AI Build Camp 발표 — 조마다 발표 과제를 하나 뽑고, 참여자가 세 문항으로
+ * 점수를 줍니다(목표 타당성 20점 · 창의성 10점 · 완성도 10점 = 40점).
+ *
+ * 규칙은 `shared/camp.js` 에 모아 두었고, 화면용 사본이
+ * `assets/js/camp.js` 에 있습니다 — 함께 고치세요.
+ */
+
+/**
+ * 발표 과제 선정 — 그룹장이 **자기 조에서** 하나를 뽑습니다(관리자는 모든 조).
+ *
+ * 한 조의 발표 과제는 하나입니다. 다른 것을 뽑으면 먼저 올라가 있던 것이
+ * 자동으로 내려갑니다 — 두 개가 같이 올라가 점수가 갈리지 않게 합니다.
+ * 내려간 발표에 들어와 있던 점수는 함께 지웁니다. 선정되지 않은 제출물에
+ * 점수가 남아 있으면 집계를 믿을 수 없기 때문입니다.
+ */
+async function nominatePresentation(request, env, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  const body = await request.json().catch(() => null);
+  const submissionId = String(body?.submissionId || '');
+  const on = body?.on !== false;
+  if (!submissionId) return json({ message: '대상 제출물이 필요합니다.' }, 400, cors);
+
+  const [{ data: projects }, { data: subs }] = await Promise.all([
+    readIndex(env, 'projects'), readIndex(env, 'submissions'),
+  ]);
+  const sub = subs.find((x) => x.id === submissionId);
+  if (!sub) return json({ message: '제출물을 찾을 수 없습니다.' }, 404, cors);
+  const project = projects.find((p) => p.id === sub.projectId);
+  if (!project) return json({ message: '프로젝트를 찾을 수 없습니다.' }, 404, cors);
+
+  const blocked = nominateBlock(project, sub, me, on);
+  // 남의 조를 건드리려 한 것만 권한 문제이고, 나머지는 요청 내용 문제입니다.
+  if (blocked) return json({ message: blocked }, blocked.includes('자기 조') ? 403 : 400, cors);
+
+  const dropped = [];
+  await mutateIndex(env, 'submissions', (list) => {
+    const target = list.find((x) => x.id === submissionId);
+    if (!target) return null;
+    const touched = applyNominate(list, target, on);
+    if (!touched.length) return null;                    // 이미 그 상태입니다
+    for (const x of touched) if (!x.presenting) dropped.push(x.id);
+    return list;
+  });
+
+  if (dropped.length) {
+    await mutateIndex(env, 'scores', (list) => {
+      const kept = list.filter((r) => !dropped.includes(r.submissionId));
+      return kept.length === list.length ? null : kept;
+    });
+  }
+
+  return json({ ok: true, submissionId, presenting: on, dropped }, 200, cors);
+}
+
+async function scoreSummaryRequest(request, env, url, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+
+  const projectId = String(url.searchParams.get('projectId') || '');
+  const { data: projects } = await readIndex(env, 'projects');
+  const project = projects.find((p) => p.id === projectId);
+  if (!project) return json({ message: '프로젝트를 찾을 수 없습니다.' }, 404, cors);
+
+  const { data: scores } = await readIndex(env, 'scores');
+  return json({ summary: summarizeScores(project, scores, got.member) }, 200,
+    { ...cors, 'Cache-Control': 'no-store' });
+}
+
+/**
+ * 발표에 점수 주기. 한 사람이 한 발표에 한 번이고, 다시 보내면 **덮어씁니다**
+ * (잘못 누른 점수를 고칠 수 있어야 하기 때문입니다).
+ */
+async function castScore(request, env, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  const body = await request.json().catch(() => null);
+  const submissionId = String(body?.submissionId || '');
+  if (!submissionId) return json({ message: '대상 발표가 필요합니다.' }, 400, cors);
+
+  const [{ data: projects }, { data: subs }] = await Promise.all([
+    readIndex(env, 'projects'), readIndex(env, 'submissions'),
+  ]);
+  const sub = subs.find((x) => x.id === submissionId);
+  if (!sub) return json({ message: '제출물을 찾을 수 없습니다.' }, 404, cors);
+  const project = projects.find((p) => p.id === sub.projectId);
+  if (!project) return json({ message: '프로젝트를 찾을 수 없습니다.' }, 404, cors);
+
+  // "자기 조"는 계정이 아니라 이 과제에 낸 자기 제출물의 조로 판단합니다.
+  const mineHere = subs.filter((x) => x.projectId === project.id);
+  const blocked = scoreBlock(project, sub, me, myTeamIn(mineHere, me));
+  if (blocked) return json({ message: blocked }, 400, cors);
+
+  const score = normScore(body);
+  const now = new Date().toISOString();
+  const result = await mutateIndex(env, 'scores', (list) => {
+    const at = list.findIndex((r) => r.projectId === project.id
+      && r.submissionId === submissionId
+      && normEmail(r.voter) === normEmail(me.email));
+    if (at >= 0) list[at] = { ...list[at], ...score, updatedAt: now };
+    else {
+      list.push({
+        id: uid('sc_'),
+        projectId: project.id,
+        submissionId,
+        voter: normEmail(me.email),
+        ...score,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    return list;
+  });
+
+  return json({ summary: summarizeScores(project, result.data, me) }, 200, cors);
+}
+
+/**
+ * 관리자용 원자료 — 누가 어느 발표에 몇 점을 줬는지 한 줄씩.
+ * 집계만으로는 "한 사람이 몰아줬는지"를 볼 수 없어 따로 엽니다.
+ */
+async function listScores(request, env, url, cors) {
+  const admin = await requireAdmin(request, env);
+  if (admin.error) return json({ message: admin.error }, admin.status, cors);
+
+  const projectId = String(url.searchParams.get('projectId') || '');
+  const { data: scores } = await readIndex(env, 'scores');
+  const rows = projectId ? scores.filter((r) => r.projectId === projectId) : scores;
+  return json({ data: rows }, 200, { ...cors, 'Cache-Control': 'no-store' });
 }
 
 /* ============================================================== 업로드 == */

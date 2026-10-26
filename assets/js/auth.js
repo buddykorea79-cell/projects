@@ -8,6 +8,7 @@
  * 화면 코드는 이 모듈만 보면 되고, 어느 쪽인지는 신경 쓰지 않습니다.
  */
 import { store } from './store/index.js';
+import { leaderTeam } from './camp.js';
 
 /** 로그인한 회원. 없으면 null. */
 export function currentUser() {
@@ -17,6 +18,30 @@ export function currentUser() {
 export function isSignedIn() { return Boolean(currentUser()); }
 
 export function isAdmin() { return currentUser()?.role === 'admin'; }
+
+/** 그룹장이 맡은 조 (1~8). 그룹장이 아니면 0 — assets/js/camp.js 참고. */
+export function myLeaderTeam() { return leaderTeam(currentUser()); }
+
+/**
+ * 서버에 지금 내 권한을 다시 물어봅니다.
+ *
+ * 로그인 상태는 화면을 처음 열 때 한 번만 맞춰 둡니다. 그래서 관리자가 방금
+ * **그룹장으로 올려 줘도** 그 사람의 브라우저는 새로고침 전까지 예전 권한을
+ * 들고 있습니다(화면 안에서 주소만 바뀌면 다시 읽지 않습니다). 권한에 따라
+ * 보이는 것이 달라지는 화면은 그리기 전에 이것을 한 번 부릅니다.
+ *
+ * 실패해도 던지지 않습니다 — 잠깐 네트워크가 끊겼다고 화면이 깨지는 것보다
+ * 들고 있던 값으로 그리는 편이 낫습니다.
+ */
+export async function refreshRole() {
+  const before = currentUser()?.role;
+  try { await store?.auth?.refresh(); } catch { /* 들고 있던 값으로 그립니다 */ }
+  if (currentUser()?.role !== before) announceAuthChange();
+  return currentUser();
+}
+
+/** 조를 맡은 그룹장인지. 관리자는 그룹장이 아니어도 모든 조를 봅니다. */
+export function isLeader() { return myLeaderTeam() > 0; }
 
 /** 이 저장소에서 회원 기능을 쓸 수 있는지. */
 export function authSupported() { return Boolean(store?.auth?.supported); }

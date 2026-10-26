@@ -6,7 +6,7 @@
  * 투표판에서 빼는 일은 화면 쪽에서만 하므로 여기서만 잡힙니다.
  */
 import { chromium } from 'playwright';
-import { existsSync } from 'fs';
+import { chromeOptions } from './chrome.mjs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { startServer } from './mock-r2.mjs';
@@ -25,8 +25,7 @@ const eq = (a, b, m) => { if (a !== b) throw new Error(`${m}: ${JSON.stringify(a
 const { server, bucket, origin } = await startServer({ root, env: { PBKDF2_ITERATIONS: 1000 } });
 log(`\n로컬 R2 스텁 서버: ${origin}`);
 
-const executablePath = process.env.CHROME_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
-const browser = await chromium.launch(existsSync(executablePath) ? { executablePath } : {});
+const browser = await chromium.launch(chromeOptions());
 
 const consoleErrors = [];
 const PASSWORD = 'hunter2!hunter2';

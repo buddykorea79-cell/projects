@@ -15,6 +15,11 @@ import {
 } from '../ui.js';
 import { go } from '../router.js';
 import { mergeSessions, computeStats, pct } from '../attendance.js';
+import {
+  isCamp, normTrack, TRACKS, TRACK_LABEL, TEAMS, teamLabel, normTeam,
+  ROLE_LABEL, normRole, presentationOf, presentationPhase, PRESENT_PHASE_LABEL,
+  isNominee, RUBRIC_TOTAL,
+} from '../camp.js';
 
 /* ---------------------------------------------------------- 대시보드 -- */
 
@@ -155,25 +160,37 @@ export async function adminView(mount) {
       holder.innerHTML = `
         <div class="tablewrap">
           <table class="table">
-            <thead><tr><th>제목</th><th>상태</th><th>마감</th><th>제출</th><th>공개</th><th>투표</th><th></th></tr></thead>
+            <thead><tr><th>제목</th><th>종류</th><th>상태</th><th>마감</th><th>제출</th>
+                       <th>공개</th><th>투표 · 발표</th><th></th></tr></thead>
             <tbody>
               ${projects.map((p) => {
                 const open = p.status === 'open' && !isPastDue(p.dueAt);
                 return `
                 <tr>
                   <td><a href="#/p/${attr(p.id)}">${esc(p.title)}</a></td>
+                  <td>${isCamp(p)
+                    ? `<a class="badge badge--gold" href="#/camp/${attr(p.id)}"
+                          style="text-decoration:none">${esc(TRACK_LABEL.buildcamp)}</a>`
+                    : '<span style="color:var(--text-black-mute)">일반</span>'}</td>
                   <td><span class="badge ${open ? 'badge--open' : 'badge--closed'}">${open ? '접수중' : '마감'}</span></td>
                   <td>${esc(fmtDate(p.dueAt, true))}</td>
                   <td class="num"><a href="#/admin/submissions/${attr(p.id)}">${counts.get(p.id) || 0}</a></td>
                   <td>${p.visibility === 'public' ? '공개' : '비공개'}</td>
-                  <td>${votingOf(p)
-                    ? `<a href="#/vote/${attr(p.id)}">${esc(VOTE_PHASE_LABEL[votingPhase(p)])}</a>`
-                    : '—'}</td>
+                  <td>${[
+                    votingOf(p)
+                      ? `<a href="#/vote/${attr(p.id)}">${esc(VOTE_PHASE_LABEL[votingPhase(p)])}</a>`
+                      : '',
+                    presentationOf(p)
+                      ? `<a href="#/admin/scores/${attr(p.id)}">발표 ${esc(PRESENT_PHASE_LABEL[presentationPhase(p)])}</a>`
+                      : '',
+                  ].filter(Boolean).join('<br>') || '—'}</td>
                   <td style="white-space:nowrap">
                     <a class="btn btn--outline btn--sm" href="#/admin/project/${attr(p.id)}">편집</a>
                     <a class="btn btn--quiet btn--sm" href="#/admin/submissions/${attr(p.id)}">제출물</a>
                     <a class="btn btn--quiet btn--sm" href="#/admin/roster/${attr(p.id)}">현황</a>
                     ${votingOf(p) ? `<a class="btn btn--quiet btn--sm" href="#/vote/${attr(p.id)}">투표</a>` : ''}
+                    ${isCamp(p) ? `<a class="btn btn--quiet btn--sm" href="#/camp/${attr(p.id)}">조별</a>` : ''}
+                    ${presentationOf(p) ? `<a class="btn btn--quiet btn--sm" href="#/admin/scores/${attr(p.id)}">발표 결과</a>` : ''}
                   </td>
                 </tr>`;
               }).join('')}
@@ -503,6 +520,7 @@ export async function projectFormView(mount, { id }) {
   const p = isNew ? null : await store.getProject(id);
   if (!isNew && !p) { toastErr('프로젝트를 찾을 수 없습니다.'); go('/admin'); return; }
   const vote = votingOf(p);
+  const present = p?.presentation || null;
 
   mount.innerHTML = `
     <section class="section">
@@ -539,6 +557,21 @@ export async function projectFormView(mount, { id }) {
               </select>
             </label>
           </div>
+
+          <label class="field">
+            <span class="field__label">과제 종류</span>
+            <select class="select" name="track">
+              ${TRACKS.map((t) => `<option value="${attr(t)}"
+                ${normTrack(p?.track) === t ? 'selected' : ''}>${esc(TRACK_LABEL[t])}</option>`).join('')}
+            </select>
+            <span class="field__hint">
+              <strong>${esc(TRACK_LABEL.buildcamp)}</strong> 으로 고르면 상단 메뉴
+              <strong>Build Camp</strong> 에 올라오고, 교육생이 제출할 때
+              <strong>조(1조~8조)</strong>를 함께 고릅니다. 그룹장은 자기 조가 낸 과제를
+              모아 보고 그 중에서 발표 과제를 하나 뽑습니다
+              (그룹장 지정은 <a href="#/admin/members">회원 관리</a>).
+            </span>
+          </label>
 
           <label class="field">
             <span class="field__label">제출물 공개 범위</span>
@@ -604,6 +637,47 @@ export async function projectFormView(mount, { id }) {
             </label>
           </fieldset>
 
+          <fieldset style="border:0;padding:0;margin-top:var(--space-4)" id="presentBox">
+            <legend class="field__label" style="margin-bottom:var(--space-2)">
+              발표 평가 (AI Build Camp)
+            </legend>
+
+            <label class="check">
+              <input type="checkbox" name="presentEnabled" ${present?.enabled ? 'checked' : ''} />
+              <span>선정된 발표 과제를 세 문항(${esc(RUBRIC_TOTAL)}점)으로 평가하게 합니다</span>
+            </label>
+            <p class="field__hint" style="margin-bottom:var(--space-3)">
+              조마다 <strong>그룹장이 발표 과제를 하나</strong> 뽑고, 참여자가
+              <strong>목표 타당성 20점 · 창의성 10점 · 완성도 10점</strong>으로 채점합니다.
+              결과는 <strong>관리자</strong>가 언제든 보고, 평가 결과 화면에서 엑셀로 내려받습니다.
+              이 설정은 과제 종류가 <strong>${esc(TRACK_LABEL.buildcamp)}</strong> 일 때만 켜집니다.
+            </p>
+
+            <div class="field-row field-row--2">
+              <label class="field">
+                <span class="field__label">평가 시작</span>
+                <input class="input" name="presentStartAt" type="datetime-local"
+                       value="${attr(toLocalInput(present?.startAt))}" />
+                <span class="field__hint">비워두면 켜는 즉시 시작합니다.</span>
+              </label>
+              <label class="field">
+                <span class="field__label">평가 마감</span>
+                <input class="input" name="presentEndAt" type="datetime-local"
+                       value="${attr(toLocalInput(present?.endAt))}" />
+                <span class="field__hint">비워두면 마감 없이 계속 받습니다.</span>
+              </label>
+            </div>
+
+            <label class="check">
+              <input type="checkbox" name="presentShowScores" ${present?.showScores ? 'checked' : ''} />
+              <span>평가 중에도 점수를 공개합니다 (끄면 마감 뒤에 공개 — 관리자는 언제나 봅니다)</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" name="presentAllowOwnTeam" ${present?.allowOwnTeam ? 'checked' : ''} />
+              <span>자기 조의 발표에도 점수를 줄 수 있게 합니다 (끄면 다른 조만 채점)</span>
+            </label>
+          </fieldset>
+
           <div class="row row--between" style="margin-top:var(--space-4)">
             ${isNew ? '<a class="btn btn--quiet" href="#/admin">← 취소</a>'
               : '<button type="button" class="btn btn--danger" data-delete>프로젝트 삭제</button>'}
@@ -617,6 +691,15 @@ export async function projectFormView(mount, { id }) {
 
   const form = mount.querySelector('#projForm');
 
+  // 발표 평가는 Build Camp 과제에서만 쓰므로, 일반 과제에서는 상자를 흐리게 둡니다.
+  const presentBox = mount.querySelector('#presentBox');
+  const syncTrack = () => {
+    const camp = form.track.value === 'buildcamp';
+    presentBox.hidden = !camp;
+  };
+  form.track.addEventListener('change', syncTrack);
+  syncTrack();
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     clearErrors(form);
@@ -628,6 +711,12 @@ export async function projectFormView(mount, { id }) {
     const voteEnd = fromLocalInput(form.voteEndAt.value);
     if (form.voteEnabled.checked && voteStart && voteEnd && voteEnd <= voteStart) {
       fieldError(form.voteEndAt, '투표 마감은 시작보다 뒤여야 합니다.');
+      ok = false;
+    }
+    const pStart = fromLocalInput(form.presentStartAt.value);
+    const pEnd = fromLocalInput(form.presentEndAt.value);
+    if (form.presentEnabled.checked && pStart && pEnd && pEnd <= pStart) {
+      fieldError(form.presentEndAt, '평가 마감은 시작보다 뒤여야 합니다.');
       ok = false;
     }
     if (!ok) { focusFirstError(form); return; }
@@ -644,6 +733,15 @@ export async function projectFormView(mount, { id }) {
         visibility: form.visibility.value,
         requireInstitution: form.requireInstitution.checked,
         allowFiles: form.allowFiles.checked,
+        track: normTrack(form.track.value),
+        presentation: {
+          // 발표 평가는 조가 있어야 성립하므로 Build Camp 과제에서만 켭니다.
+          enabled: form.track.value === 'buildcamp' && form.presentEnabled.checked,
+          startAt: fromLocalInput(form.presentStartAt.value),
+          endAt: fromLocalInput(form.presentEndAt.value),
+          showScores: form.presentShowScores.checked,
+          allowOwnTeam: form.presentAllowOwnTeam.checked,
+        },
         voting: {
           enabled: form.voteEnabled.checked,
           startAt: fromLocalInput(form.voteStartAt.value),
@@ -693,6 +791,7 @@ export async function adminSubmissionsView(mount, { projectId }) {
   if (!project) { toastErr('프로젝트를 찾을 수 없습니다.'); go('/admin'); return; }
 
   const all = await store.listSubmissions({ projectId });
+  const camp = isCamp(project);
   // 투표를 받는 프로젝트라면 득표수를 함께 보여줍니다 (관리자는 언제나 볼 수 있습니다).
   const voteCfg = votingOf(project);
   const summary = voteCfg
@@ -716,6 +815,8 @@ export async function adminSubmissionsView(mount, { projectId }) {
           </div>
           <div class="row">
             ${voteCfg ? `<a class="btn btn--primary" href="#/vote/${attr(project.id)}">투표 화면</a>` : ''}
+            ${camp ? `<a class="btn btn--primary" href="#/camp/${attr(project.id)}">조별 제출물</a>` : ''}
+            ${presentationOf(project) ? `<a class="btn btn--outline" href="#/admin/scores/${attr(project.id)}">발표 평가 결과</a>` : ''}
             <a class="btn btn--outline" href="#/admin/roster/${attr(project.id)}">제출 현황</a>
             <button class="btn btn--outline" data-csv>CSV 내려받기</button>
             <a class="btn btn--quiet" href="#/admin/project/${attr(project.id)}">프로젝트 편집</a>
@@ -730,6 +831,7 @@ export async function adminSubmissionsView(mount, { projectId }) {
             <option value="name">성명순</option>
             <option value="inst">기관순</option>
             ${counts ? '<option value="votes">득표순</option>' : ''}
+            ${camp ? '<option value="team">조순</option>' : ''}
           </select>
         </div>
 
@@ -756,6 +858,8 @@ export async function adminSubmissionsView(mount, { projectId }) {
       inst: (a, b) => (a.author?.institution || '').localeCompare(b.author?.institution || '', 'ko'),
       votes: (a, b) => votesOf(b) - votesOf(a)
         || (a.createdAt || '').localeCompare(b.createdAt || ''),
+      team: (a, b) => normTeam(a.team) - normTeam(b.team)
+        || (a.author?.name || '').localeCompare(b.author?.name || '', 'ko'),
     };
     rows = rows.sort(sorters[sortEl.value]);
 
@@ -771,7 +875,8 @@ export async function adminSubmissionsView(mount, { projectId }) {
       <div class="tablewrap">
         <table class="table">
           <thead>
-            <tr><th>#</th><th>기관명</th><th>성명</th><th>이메일</th><th>제목</th>
+            <tr><th>#</th>${camp ? '<th>조</th>' : ''}
+                <th>기관명</th><th>성명</th><th>이메일</th><th>제목</th>
                 ${counts ? '<th>득표</th>' : ''}
                 <th>첨부</th><th>용량</th><th>제출일</th><th></th></tr>
           </thead>
@@ -779,8 +884,11 @@ export async function adminSubmissionsView(mount, { projectId }) {
             ${rows.map((s, i) => {
               const bytes = (s.files || []).reduce((n, f) => n + (f.size || 0), 0);
               return `
-              <tr>
+              <tr${isNominee(s) ? ' style="background:var(--green-light)"' : ''}>
                 <td class="num">${i + 1}</td>
+                ${camp ? `<td>${normTeam(s.team)
+                  ? esc(teamLabel(s.team))
+                  : '<span class="badge badge--due">미지정</span>'}</td>` : ''}
                 <td>${esc(s.author?.institution || '—')}</td>
                 <td>${esc(s.author?.name || '—')}</td>
                 <td><a href="mailto:${attr(s.author?.email || '')}">${esc(s.author?.email || '—')}</a></td>
@@ -788,6 +896,7 @@ export async function adminSubmissionsView(mount, { projectId }) {
                   <a href="#/s/${attr(s.id)}">${esc(s.title)}</a>
                   ${s.late ? ' <span class="badge badge--due">마감 후 등록</span>' : ''}
                   ${s.registeredBy ? ' <span class="badge badge--gold">대신 등록</span>' : ''}
+                  ${isNominee(s) ? ' <span class="badge badge--gold">발표 과제</span>' : ''}
                 </td>
                 ${counts ? `<td class="num">${s.late ? '—' : esc(votesOf(s))}</td>` : ''}
                 <td class="num">${(s.files || []).length}</td>
@@ -828,13 +937,15 @@ export async function adminSubmissionsView(mount, { projectId }) {
   draw();
 
   mount.querySelector('[data-csv]').addEventListener('click', () => {
-    const header = ['번호', '기관명', '성명', '이메일', '제목', '설명',
+    const header = ['번호', ...(camp ? ['조', '발표과제'] : []),
+      '기관명', '성명', '이메일', '제목', '설명',
       ...(counts ? ['득표'] : []), '등록', '대신등록한관리자',
       '첨부수', '첨부목록', '제출일시', '수정일시', '제출ID'];
     const lines = [header.map(csvCell).join(',')];
     all.forEach((s, i) => {
       lines.push([
         i + 1,
+        ...(camp ? [normTeam(s.team) ? teamLabel(s.team) : '', isNominee(s) ? '발표 과제' : ''] : []),
         s.author?.institution || '',
         s.author?.name || '',
         s.author?.email || '',
@@ -1109,6 +1220,7 @@ export async function membersView(mount) {
             <option value="reset">비밀번호 재설정 요청</option>
             <option value="active">이용중만</option>
             <option value="blocked">정지만</option>
+            <option value="leader">그룹장만</option>
             <option value="admin">관리자만</option>
           </select>
         </div>
@@ -1135,6 +1247,7 @@ export async function membersView(mount) {
       if (filterEl.value === 'active' && m.status === 'blocked') return false;
       if (filterEl.value === 'blocked' && m.status !== 'blocked') return false;
       if (filterEl.value === 'admin' && m.role !== 'admin') return false;
+      if (filterEl.value === 'leader' && normRole(m.role) !== 'leader') return false;
       if (filterEl.value === 'reset' && !m.resetRequestedAt) return false;
       if (!q) return true;
       return [m.institution, m.name, m.email].some((v) => String(v || '').toLowerCase().includes(q));
@@ -1168,7 +1281,18 @@ export async function membersView(mount) {
                 <td>${esc(m.institution || '—')}</td>
                 <td>${esc(m.name)}</td>
                 <td><a href="mailto:${attr(m.email)}">${esc(m.email)}</a></td>
-                <td>${m.role === 'admin' ? '<span class="badge badge--gold">관리자</span>' : '회원'}</td>
+                <td>${self
+                  ? `<span class="badge badge--gold">${esc(ROLE_LABEL[normRole(m.role)])}</span>`
+                  : `<select class="select select--sm" data-rolepick="${attr(m.email)}"
+                             aria-label="${attr(m.name)} 권한">
+                      <option value="member" ${normRole(m.role) === 'member' ? 'selected' : ''}>회원</option>
+                      <optgroup label="그룹장">
+                        ${TEAMS.map((n) => `<option value="leader:${attr(n)}"
+                          ${normRole(m.role) === 'leader' && normTeam(m.team) === n ? 'selected' : ''}
+                          >${esc(teamLabel(n))} 그룹장</option>`).join('')}
+                      </optgroup>
+                      <option value="admin" ${normRole(m.role) === 'admin' ? 'selected' : ''}>관리자</option>
+                    </select>`}</td>
                 <td>${m.status === 'blocked'
                   ? '<span class="badge badge--due">정지</span>'
                   : '<span class="badge badge--open">이용중</span>'}
@@ -1180,10 +1304,6 @@ export async function membersView(mount) {
                 <td style="white-space:nowrap">
                   ${self ? '<span style="color:var(--text-black-mute);font-size:1.3rem">본인</span>' : `
                     <button class="btn btn--quiet btn--sm" data-reset="${attr(m.email)}">비밀번호 초기화</button>
-                    <button class="btn btn--quiet btn--sm" data-role="${attr(m.email)}"
-                            data-next="${m.role === 'admin' ? 'member' : 'admin'}">
-                      ${m.role === 'admin' ? '관리자 해제' : '관리자로'}
-                    </button>
                     <button class="btn btn--quiet btn--sm" data-status="${attr(m.email)}"
                             data-next="${m.status === 'blocked' ? 'active' : 'blocked'}"
                             style="color:${m.status === 'blocked' ? 'var(--moss, var(--sb-green))' : 'var(--red)'}">
@@ -1198,27 +1318,56 @@ export async function membersView(mount) {
         </table>
       </div>`;
 
-    rowsEl.querySelectorAll('[data-role], [data-status]').forEach((btn) => {
+    rowsEl.querySelectorAll('[data-status]').forEach((btn) => {
       btn.addEventListener('click', async () => {
-        const email = btn.dataset.role || btn.dataset.status;
-        const change = btn.dataset.role
-          ? { role: btn.dataset.next }
-          : { status: btn.dataset.next };
-        const label = btn.dataset.role
-          ? (change.role === 'admin' ? '관리자로 올릴까요?' : '관리자 권한을 뺄까요?')
-          : (change.status === 'blocked' ? '이용을 정지할까요?' : '정지를 풀까요?');
-
+        const email = btn.dataset.status;
+        const next = btn.dataset.next;
         const ok = await confirmModal({
-          title: label,
+          title: next === 'blocked' ? '이용을 정지할까요?' : '정지를 풀까요?',
           body: `${email}\n정지하면 로그인과 기존 세션이 모두 막힙니다.`,
-          confirmLabel: '적용', danger: change.status === 'blocked',
+          confirmLabel: '적용', danger: next === 'blocked',
         });
         if (!ok) return;
+        try {
+          await store.auth.patchMember(email, { status: next });
+          toastOk('적용되었습니다.');
+          await load();
+        } catch (e) { toastErr(e.message); }
+      });
+    });
+
+    // 권한 — 회원 · 그룹장(조와 함께) · 관리자. 그룹장은 자기 조가 낸 과제를
+    // 모아 보고 그 중에서 발표 과제를 뽑습니다 (assets/js/camp.js).
+    rowsEl.querySelectorAll('[data-rolepick]').forEach((sel) => {
+      const before = sel.value;
+      sel.addEventListener('change', async () => {
+        const email = sel.dataset.rolepick;
+        const [role, team] = sel.value.split(':');
+        const change = { role, team: role === 'leader' ? Number(team) : 0 };
+        const what = role === 'admin'
+          ? '관리자로 올릴까요?'
+          : role === 'leader'
+            ? `${teamLabel(change.team)} 그룹장으로 지정할까요?`
+            : '일반 회원으로 내릴까요?';
+        const ok = await confirmModal({
+          title: what,
+          body: `${email}\n`
+            + (role === 'leader'
+              ? `${teamLabel(change.team)}가 낸 과제를 모두 볼 수 있고, 그 중에서 발표 과제를 하나 뽑게 됩니다.`
+              : role === 'admin'
+                ? '모든 화면과 모든 조를 볼 수 있게 됩니다.'
+                : '맡고 있던 조가 함께 비워집니다.'),
+          confirmLabel: '적용', danger: role === 'admin',
+        });
+        if (!ok) { sel.value = before; return; }
         try {
           await store.auth.patchMember(email, change);
           toastOk('적용되었습니다.');
           await load();
-        } catch (e) { toastErr(e.message); }
+        } catch (e) {
+          sel.value = before;
+          toastErr(e.message);
+        }
       });
     });
 
@@ -1305,12 +1454,13 @@ export async function membersView(mount) {
   filterEl.addEventListener('change', draw);
 
   mount.querySelector('[data-csv]').addEventListener('click', () => {
-    const header = ['번호', '기관명', '성명', '이메일', '권한', '상태', '제출건수', '가입일', '최근 로그인'];
+    const header = ['번호', '기관명', '성명', '이메일', '권한', '조', '상태', '제출건수', '가입일', '최근 로그인'];
     const lines = [header.map(csvCell).join(',')];
     all.forEach((m, i) => {
       lines.push([
         i + 1, m.institution || '', m.name, m.email,
-        m.role === 'admin' ? '관리자' : '회원',
+        ROLE_LABEL[normRole(m.role)],
+        normTeam(m.team) ? teamLabel(m.team) : '',
         m.status === 'blocked' ? '정지' : '이용중',
         subCount.get(normEmail(m.email)) || 0,
         fmtDate(m.createdAt), m.lastLoginAt ? fmtDate(m.lastLoginAt, true) : '',

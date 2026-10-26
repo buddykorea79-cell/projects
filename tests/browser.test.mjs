@@ -6,7 +6,7 @@
  * 서버 인증의 진짜 동작은 auth.test.mjs / r2-browser.test.mjs 가 봅니다.
  */
 import { chromium } from 'playwright';
-import { existsSync } from 'fs';
+import { chromeOptions } from './chrome.mjs';
 
 const BASE = 'http://localhost:8899';
 const errors = [];
@@ -16,10 +16,7 @@ const ADMIN = { email: 'aireader@mois.go.kr', password: 'dlrhd26!!', name: '관�
 const USER = { email: 'hong@example.com', password: 'hong-pass-2026', name: '홍길동', inst: '한국디자인진흥원' };
 let tempPassword = '';
 
-// 이 환경에는 Chromium 이 미리 깔려 있습니다. 다른 곳에서는 CHROME_PATH 로 지정하거나
-// 이 옵션을 지우고 `npx playwright install chromium` 을 쓰세요.
-const executablePath = process.env.CHROME_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
-const browser = await chromium.launch(existsSync(executablePath) ? { executablePath } : {});
+const browser = await chromium.launch(chromeOptions());
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
 // 이 묶음은 UI 흐름 검증용이라 브라우저 저장 모드로 고정합니다.
 // (R2 경로는 r2.test.mjs 와 r2-browser.test.mjs 가 담당합니다.)

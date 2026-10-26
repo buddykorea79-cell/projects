@@ -6,6 +6,10 @@ import {
   fieldError, clearErrors, focusFirstError, busy,
 } from '../ui.js';
 import { isAdmin, currentUser } from '../auth.js';
+import {
+  isCamp, TEAMS, teamLabel, normTeam, isNominee, TRACK_LABEL,
+  presentationOf, PRESENT_PHASE_LABEL, presentationPhase,
+} from '../camp.js';
 import { go } from '../router.js';
 import { renderAttachments } from './project.js';
 
@@ -51,7 +55,8 @@ export async function myView(mount) {
     holder.innerHTML = `
       <div class="tablewrap">
         <table class="table">
-          <thead><tr><th>프로젝트</th><th>제목</th><th>첨부</th><th>최종 수정</th><th></th></tr></thead>
+          <thead><tr><th>프로젝트</th><th>제목</th><th>조</th><th>첨부</th>
+                     <th>최종 수정</th><th></th></tr></thead>
           <tbody>
             ${rows.map((s) => {
               const p = byId.get(s.projectId);
@@ -59,7 +64,9 @@ export async function myView(mount) {
               return `
               <tr>
                 <td>${esc(p?.title || '(삭제된 프로젝트)')}</td>
-                <td><a href="#/s/${attr(s.id)}">${esc(s.title)}</a></td>
+                <td><a href="#/s/${attr(s.id)}">${esc(s.title)}</a>
+                    ${isNominee(s) ? ' <span class="badge badge--gold">발표 과제</span>' : ''}</td>
+                <td>${isCamp(p) ? esc(teamLabel(s.team)) : '—'}</td>
                 <td class="num">${(s.files || []).length}</td>
                 <td>${esc(fmtDate(s.updatedAt || s.createdAt, true))}</td>
                 <td style="white-space:nowrap">
@@ -140,8 +147,20 @@ export async function submissionView(mount, { id }) {
           <a href="#/vote/${attr(project.id)}">투표 화면에서 다른 제출물 보기</a>
         </div>` : ''}
 
+        ${isCamp(project) ? `
+        <div class="notice notice--info">
+          ${esc(TRACK_LABEL.buildcamp)} 과제입니다${presentationOf(project)
+    ? ` (발표 평가 ${esc(PRESENT_PHASE_LABEL[presentationPhase(project)])})` : ''} —
+          <a href="#/camp/${attr(project.id)}">조별 제출물 보기</a>
+        </div>` : ''}
+
         <div class="card">
           <div class="kv" style="margin-bottom:var(--space-4)">
+            ${isCamp(project) ? `
+            <div class="kv__row"><div class="kv__k">조</div><div class="kv__v">
+              <strong>${esc(teamLabel(sub.team))}</strong>
+              ${isNominee(sub) ? ' <span class="badge badge--gold">발표 과제로 선정</span>' : ''}
+            </div></div>` : ''}
             <div class="kv__row"><div class="kv__k">제출일</div><div class="kv__v">${esc(fmtDate(sub.createdAt, true))}</div></div>
             <div class="kv__row"><div class="kv__k">최종 수정</div><div class="kv__v">${esc(fmtDate(sub.updatedAt, true))}</div></div>
           </div>
@@ -225,6 +244,19 @@ export async function editSubmissionView(mount, { id }) {
             </label>
           </div>
 
+          ${isCamp(project) ? `
+          <label class="field">
+            <span class="field__label">조<span class="field__req">*</span></span>
+            <select class="select" name="team">
+              ${TEAMS.map((n) => `<option value="${attr(n)}"
+                ${normTeam(sub.team) === n ? 'selected' : ''}>${esc(teamLabel(n))}</option>`).join('')}
+            </select>
+            <span class="field__hint">
+              처음에 잘못 골랐다면 여기서 고칠 수 있습니다.
+              ${isNominee(sub) ? '이미 발표 과제로 선정된 제출물이라, 조를 옮기면 그룹장이 다시 뽑아야 합니다.' : ''}
+            </span>
+          </label>` : ''}
+
           <label class="field">
             <span class="field__label">제목<span class="field__req">*</span></span>
             <input class="input" name="title" maxlength="120" value="${attr(sub.title)}" />
@@ -262,6 +294,9 @@ export async function editSubmissionView(mount, { id }) {
     if (!form.name.value.trim()) { fieldError(form.name, '성명을 입력하세요.'); ok = false; }
     if (!form.title.value.trim()) { fieldError(form.title, '제목을 입력하세요.'); ok = false; }
     if (!form.body.value.trim()) { fieldError(form.body, '설명을 입력하세요.'); ok = false; }
+    if (isCamp(project) && !normTeam(form.team.value)) {
+      fieldError(form.team, '조를 고르세요.'); ok = false;
+    }
     if (!ok) { focusFirstError(form); return; }
 
     const btn = form.querySelector('button[type="submit"]');
@@ -277,6 +312,7 @@ export async function editSubmissionView(mount, { id }) {
         },
         title: form.title.value.trim(),
         body: form.body.value.trim(),
+        ...(isCamp(project) ? { team: normTeam(form.team.value) } : {}),
         files: picker ? picker.existing : sub.files,
       }, picker ? picker.files : []);
       toastOk('수정되었습니다.');

@@ -4,6 +4,7 @@
  *   data/projects.json      프로젝트 목록
  *   data/submissions.json   제출물 색인(메타데이터)
  *   data/votes.json         상호 투표 (표 한 줄씩)
+ *   data/scores.json        AI Build Camp 발표 평가 (점수 한 줄씩)
  *   uploads/<제출ID>/<파일명>  첨부 파일 원본
  *
  * 읽기 : raw.githubusercontent.com — 인증 없이 누구나. (공개 레포 기준)
@@ -14,6 +15,10 @@ import { CONFIG } from '../config.js';
 import { uid, safeName, fileToBase64, utf8ToBase64 } from '../utils.js';
 import { DemoAuth } from './demo-auth.js';
 import { summarizeVotes, applyVote } from './voting.js';
+import {
+  isCamp, normTeam, summarizeScores, applyScore, myTeamIn,
+  nominateBlock, applyNominate, TEAM_MAX,
+} from '../camp.js';
 
 const TOKEN_KEY = 'ah.gh.token';
 const API = 'https://api.github.com';
@@ -202,6 +207,7 @@ export class GitHubStore {
   get materialsPath()   { return `${this.cfg.dataDir}/materials.json`; }
   get postsPath()       { return `${this.cfg.dataDir}/posts.json`; }
   get votesPath()       { return `${this.cfg.dataDir}/votes.json`; }
+  get scoresPath()      { return `${this.cfg.dataDir}/scores.json`; }
   get rosterPath()      { return `${this.cfg.dataDir}/roster.json`; }
   get attendancePath()  { return `${this.cfg.dataDir}/attendance.json`; }
 
@@ -385,6 +391,11 @@ export class GitHubStore {
         (Array.isArray(list) ? list : []).filter((v) => v.projectId !== id),
       `chore(votes): remove votes for project ${id}`);
     }
+    if ((await this.listScores()).some((r) => r.projectId === id)) {
+      await this.mutateJSON(this.scoresPath, [], (list) =>
+        (Array.isArray(list) ? list : []).filter((r) => r.projectId !== id),
+      `chore(scores): remove scores for project ${id}`);
+    }
     await this.mutateJSON(this.projectsPath, [], (list) =>
       (Array.isArray(list) ? list : []).filter((p) => p.id !== id),
     `chore(projects): remove ${id}`);
@@ -419,6 +430,16 @@ export class GitHubStore {
       rec.author = { institution: me.institution || '', name: me.name, email: me.email };
     }
 
+    // AI Build Camp 과제는 조를 골라야 합니다 (서버와 같은 규칙 — shared/camp.js).
+    const project = await this.getProject(rec.projectId);
+    if (isCamp(project)) {
+      const team = normTeam(rec.team);
+      if (!team) throw new Error(`조를 선택하세요 (1조~${TEAM_MAX}조).`);
+      rec.team = team;
+    } else {
+      delete rec.team;
+    }
+
     await this.attachFiles(rec, newFiles, rec.id);
 
     await this.mutateJSON(this.submissionsPath, [], (list) => {
@@ -443,6 +464,12 @@ export class GitHubStore {
       await this.mutateJSON(this.votesPath, [], (list) =>
         (Array.isArray(list) ? list : []).filter((v) => v.submissionId !== id),
       `chore(votes): remove votes for ${id}`);
+    }
+    // 발표 평가 점수도 함께 — 없는 발표의 점수는 평균만 흐립니다.
+    if ((await this.listScores()).some((r) => r.submissionId === id)) {
+      await this.mutateJSON(this.scoresPath, [], (list) =>
+        (Array.isArray(list) ? list : []).filter((r) => r.submissionId !== id),
+      `chore(scores): remove scores for ${id}`);
     }
   }
 
@@ -485,15 +512,92 @@ export class GitHubStore {
     return summarizeVotes(project, next, me);
   }
 
-  /** 삭제된 회원이 넣은 표를 걷어냅니다 (DemoAuth.deleteMember 가 부릅니다). */
+  /** 삭제된 회원이 넣은 표·점수를 걷어냅니다 (DemoAuth.deleteMember 가 부릅니다). */
   async dropVoter(email) {
     const e = String(email || '').trim().toLowerCase();
     const rows = await this.listVotes();
-    if (!rows.some((v) => String(v.voter || '').toLowerCase() === e)) return;
-    await this.mutateJSON(this.votesPath, [], (list) =>
-      (Array.isArray(list) ? list : [])
-        .filter((v) => String(v.voter || '').toLowerCase() !== e),
-    'chore(votes): drop votes by removed member');
+    if (rows.some((v) => String(v.voter || '').toLowerCase() === e)) {
+      await this.mutateJSON(this.votesPath, [], (list) =>
+        (Array.isArray(list) ? list : [])
+          .filter((v) => String(v.voter || '').toLowerCase() !== e),
+      'chore(votes): drop votes by removed member');
+    }
+    if ((await this.listScores()).some((r) => String(r.voter || '').toLowerCase() === e)) {
+      await this.mutateJSON(this.scoresPath, [], (list) =>
+        (Array.isArray(list) ? list : [])
+          .filter((r) => String(r.voter || '').toLowerCase() !== e),
+      'chore(scores): drop scores by removed member');
+    }
+  }
+
+  /* --------------------------------------------------------- 발표 평가 -- */
+
+  async listScores() {
+    const rows = await this.readJSON(this.scoresPath, []);
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  async scoreSummary(projectId) {
+    const project = await this.getProject(projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+    return summarizeScores(project, await this.listScores(), this.auth?.me() || {});
+  }
+
+  /** 발표 과제 선정 — 조마다 하나. 먼저 올라가 있던 것은 내려갑니다. */
+  async nominate(submissionId, on = true) {
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+    const sub = await this.getSubmission(submissionId);
+    if (!sub) throw new Error('제출물을 찾을 수 없습니다.');
+    const project = await this.getProject(sub.projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+
+    const blocked = nominateBlock(project, sub, me, on);
+    if (blocked) throw new Error(blocked);
+
+    let dropped = [];
+    await this.mutateJSON(this.submissionsPath, [], (list) => {
+      const arr = Array.isArray(list) ? list : [];
+      const target = arr.find((s) => s.id === submissionId);
+      if (!target) return arr;
+      const touched = applyNominate(arr, target, on);
+      dropped = touched.filter((s) => !s.presenting).map((s) => s.id);
+      return arr;
+    }, `${on ? 'feat' : 'chore'}(camp): ${on ? 'nominate' : 'withdraw'} ${submissionId}`);
+
+    // 내려간 발표에 들어와 있던 점수는 갈 곳이 없습니다.
+    if (dropped.length && (await this.listScores()).some((r) => dropped.includes(r.submissionId))) {
+      await this.mutateJSON(this.scoresPath, [], (list) =>
+        (Array.isArray(list) ? list : []).filter((r) => !dropped.includes(r.submissionId)),
+      'chore(scores): drop scores of withdrawn presentation');
+    }
+    return this.getSubmission(submissionId);
+  }
+
+  /** 세 문항 점수 주기. 같은 사람이 다시 주면 덮어씁니다. */
+  async castScore(submissionId, input) {
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+    const sub = await this.getSubmission(submissionId);
+    if (!sub) throw new Error('제출물을 찾을 수 없습니다.');
+    const project = await this.getProject(sub.projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+
+    const here = await this.listSubmissions({ projectId: sub.projectId });
+    const myTeam = myTeamIn(here, me);
+    // 줄 수 없으면 커밋을 만들지 않고 여기서 멈춥니다.
+    applyScore(project, await this.listScores(), me, submissionId, input, sub, myTeam);
+
+    let next = [];
+    await this.mutateJSON(this.scoresPath, [], (list) => {
+      // 읽고 나서 다른 사람 점수가 들어왔을 수 있어 최신 목록 위에 다시 적용합니다.
+      const cur = Array.isArray(list) ? list : [];
+      next = applyScore(project, cur, me, submissionId, input, sub, myTeam)
+        .map((r) => (r.id ? r : { ...r, id: uid('sc_') }));
+      return next;
+    }, `feat(scores): score ${submissionId}`);
+
+    return summarizeScores(project, next, me);
   }
 
   /* --------------------------------------------------------- materials */

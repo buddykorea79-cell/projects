@@ -10,6 +10,10 @@ import {
   focusFirstError, busy, lightbox,
 } from '../ui.js';
 import { isAdmin, currentUser } from '../auth.js';
+import {
+  isCamp, TEAMS, teamLabel, normTeam, isNominee, TRACK_LABEL,
+  presentationOf, presentationPhase, PRESENT_PHASE_LABEL,
+} from '../camp.js';
 import { go } from '../router.js';
 
 /* ------------------------------------------------------- 프로젝트 상세 -- */
@@ -31,6 +35,9 @@ export async function projectView(mount, { id }) {
   const reason = closedReason(project);
   const vote = votingOf(project);
   const votePhase = votingPhase(project);
+  const camp = isCamp(project);
+  const present = presentationOf(project);
+  const presentPhase = presentationPhase(project);
 
   mount.innerHTML = `
     <section class="band" style="padding-block:var(--space-6)">
@@ -42,6 +49,8 @@ export async function projectView(mount, { id }) {
           <span class="badge ${open ? 'badge--open' : 'badge--closed'}">${open ? '접수중' : '마감'}</span>
           ${project.visibility === 'public' ? '<span class="badge badge--gold">제출물 공개</span>' : ''}
           ${vote ? `<span class="badge badge--gold">${esc(VOTE_PHASE_LABEL[votePhase])}</span>` : ''}
+          ${camp ? `<span class="badge badge--gold">${esc(TRACK_LABEL.buildcamp)}</span>` : ''}
+          ${present ? `<span class="badge badge--gold">${esc(PRESENT_PHASE_LABEL[presentPhase])}</span>` : ''}
         </div>
         <h1 style="font-size:3.2rem;color:#fff;font-weight:600">${esc(project.title)}</h1>
         <p style="color:var(--text-white-soft);margin-top:var(--space-2);font-size:1.6rem">
@@ -56,6 +65,8 @@ export async function projectView(mount, { id }) {
               : `<span class="btn btn--ghostDark btn--lg" aria-disabled="true">${esc(reason)}</span>`}
           ${vote ? `<a class="btn btn--onDark btn--lg" href="#/vote/${attr(project.id)}">
             ${votePhase === 'open' ? '투표하기' : '투표 결과 보기'}</a>` : ''}
+          ${camp ? `<a class="btn btn--onDark btn--lg" href="#/camp/${attr(project.id)}">
+            Build Camp 화면</a>` : ''}
           <a class="btn btn--ghostDark btn--lg" href="#/my">내 제출물</a>
         </div>
       </div>
@@ -88,6 +99,17 @@ export async function projectView(mount, { id }) {
               ${esc(VOTE_PHASE_LABEL[votePhase])} · 1인당 ${esc(vote.perMember)}표 —
               <a href="#/vote/${attr(project.id)}">투표 화면으로</a>
             </div></div>` : ''}
+            ${camp ? `
+            <div class="kv__row"><div class="kv__k">과제 종류</div><div class="kv__v">
+              ${esc(TRACK_LABEL.buildcamp)} — 제출할 때 <strong>조(1조~8조)</strong>를 함께 고릅니다.
+              <a href="#/camp/${attr(project.id)}">조별 제출물 보기</a>
+            </div></div>` : ''}
+            ${present ? `
+            <div class="kv__row"><div class="kv__k">발표 평가</div><div class="kv__v">
+              ${esc(PRESENT_PHASE_LABEL[presentPhase])} — 조마다 그룹장이 발표 과제를 하나 뽑고,
+              선정된 발표에 세 문항(40점)으로 점수를 줍니다.
+              <a href="#/camp/${attr(project.id)}?tab=judge">발표 평가 화면으로</a>
+            </div></div>` : ''}
           </div>
         </div>
 
@@ -103,6 +125,7 @@ export async function projectView(mount, { id }) {
 }
 
 async function renderGallery(mount, project) {
+  const camp = isCamp(project);
   mount.innerHTML = `<div class="card">${spinner()}</div>`;
   try {
     const subs = await store.listSubmissions({ projectId: project.id });
@@ -121,11 +144,14 @@ async function renderGallery(mount, project) {
         </div>
         <div class="tablewrap">
           <table class="table">
-            <thead><tr><th>제목</th><th>기관 / 성명</th><th>첨부</th><th>제출일</th></tr></thead>
+            <thead><tr><th>제목</th>${camp ? '<th>조</th>' : ''}
+                       <th>기관 / 성명</th><th>첨부</th><th>제출일</th></tr></thead>
             <tbody>
               ${subs.map((s) => `
                 <tr>
-                  <td><a href="#/s/${attr(s.id)}">${esc(s.title)}</a></td>
+                  <td><a href="#/s/${attr(s.id)}">${esc(s.title)}</a>
+                      ${isNominee(s) ? ' <span class="badge badge--gold">발표 과제</span>' : ''}</td>
+                  ${camp ? `<td>${esc(teamLabel(s.team))}</td>` : ''}
                   <td>${esc(s.author?.institution || '—')} / ${esc(s.author?.name || '—')}</td>
                   <td class="num">${(s.files || []).length}</td>
                   <td>${esc(fmtDate(s.createdAt, true))}</td>
@@ -158,6 +184,8 @@ export async function submitView(mount, { id }) {
   const me = currentUser();
   // 마감 뒤 등록 — 관리자만 여기까지 옵니다. 결과가 달라지므로 미리 알려줍니다.
   const late = submitsLate(project);
+  // AI Build Camp 과제는 조를 골라야 합니다 — 조별로 묶어 보고 발표 과제를 뽑습니다.
+  const camp = isCamp(project);
 
   /**
    * 관리자는 다른 회원 이름으로 등록할 수 있습니다 — 메일로 받은 과제를 대신
@@ -178,6 +206,13 @@ export async function submitView(mount, { id }) {
           <a href="#/p/${attr(project.id)}">${esc(project.title)}</a><span>/</span>제출
         </p>
         <h1 class="page-title" style="margin-bottom:var(--space-4)">${late ? '과제 등록 (마감 뒤)' : '과제 제출'}</h1>
+
+        ${camp ? `
+          <div class="notice notice--info" style="margin-bottom:var(--space-3)">
+            <span><strong>${esc(TRACK_LABEL.buildcamp)}</strong> 과제입니다 —
+            조(1조~8조)를 함께 골라 주세요. 같은 조가 낸 과제는
+            <a href="#/camp/${attr(project.id)}">Build Camp</a> 에서 그룹장이 모아 봅니다.</span>
+          </div>` : ''}
 
         ${late ? `
           <div class="notice notice--warn" style="margin-bottom:var(--space-3)">
@@ -219,6 +254,19 @@ export async function submitView(mount, { id }) {
             <span class="field__label">제목<span class="field__req">*</span></span>
             <input class="input" name="title" maxlength="120" placeholder="과제 제목을 입력하세요" />
           </label>
+          ${camp ? `
+          <label class="field">
+            <span class="field__label">조<span class="field__req">*</span></span>
+            <select class="select" name="team">
+              <option value="">조를 고르세요</option>
+              ${TEAMS.map((n) => `<option value="${attr(n)}">${esc(teamLabel(n))}</option>`).join('')}
+            </select>
+            <span class="field__hint">
+              ${esc(TRACK_LABEL.buildcamp)} 과제입니다. 조별로 묶여 보이고,
+              조마다 그룹장이 발표 과제를 하나 뽑습니다.
+            </span>
+          </label>` : ''}
+
           <label class="field">
             <span class="field__label">설명<span class="field__req">*</span></span>
             <textarea class="textarea" name="body" maxlength="8000"
@@ -272,6 +320,7 @@ export async function submitView(mount, { id }) {
     let ok = true;
     if (!form.title.value.trim()) { fieldError(form.title, '제목을 입력하세요.'); ok = false; }
     if (!form.body.value.trim()) { fieldError(form.body, '설명을 입력하세요.'); ok = false; }
+    if (camp && !normTeam(form.team.value)) { fieldError(form.team, '조를 고르세요.'); ok = false; }
     if (!form.agree.checked) { fieldError(form.agree.closest('.check'), '동의가 필요합니다.'); ok = false; }
     if (!ok) { focusFirstError(form); return; }
 
@@ -285,6 +334,7 @@ export async function submitView(mount, { id }) {
         title: form.title.value,
         body: form.body.value,
         files: [],
+        ...(camp ? { team: normTeam(form.team.value) } : {}),
         // 서버(R2)는 authorEmail 만 보고 명부에서 이름·기관을 채웁니다.
         // 서버 없는 모드(브라우저·GitHub)에서는 author 를 그대로 저장합니다.
         ...(target ? {

@@ -7,6 +7,7 @@
  * 화면을 둘러보거나 시연할 때만 쓰고, 실제 운영은 R2 모드로 하세요.
  */
 import { CONFIG } from '../config.js';
+import { normRole, normTeam, TEAM_MAX } from '../camp.js';
 
 const MEMBERS_KEY = 'ah.demo.members';
 const SESSION_KEY = 'ah.demo.session';
@@ -78,7 +79,9 @@ function publicMember(m) {
     email: m.email,
     name: m.name,
     institution: m.institution || '',
-    role: adminEmails().has(normEmail(m.email)) ? 'admin' : (m.role || 'member'),
+    role: adminEmails().has(normEmail(m.email)) ? 'admin' : normRole(m.role),
+    // 그룹장이 맡은 조 (1~8). 그룹장이 아니면 0 — assets/js/camp.js 참고.
+    team: normRole(m.role) === 'leader' ? normTeam(m.team) : 0,
     status: m.status || 'active',
     createdAt: m.createdAt,
     lastLoginAt: m.lastLoginAt || null,
@@ -235,7 +238,22 @@ export class DemoAuth {
     const list = this.members();
     const m = list.find((x) => normEmail(x.email) === normEmail(email));
     if (!m) throw new Error('해당 회원을 찾을 수 없습니다.');
-    if (changes.role === 'admin' || changes.role === 'member') m.role = changes.role;
+    // 권한은 회원·그룹장·관리자 셋입니다 (서버와 같은 규칙 — shared/r2api.js).
+    if (['admin', 'member', 'leader'].includes(changes.role)) {
+      m.role = changes.role;
+      if (changes.role !== 'leader') m.team = 0;
+    }
+    if (changes.team !== undefined) {
+      const team = normTeam(changes.team);
+      if (!team && Number(changes.team) !== 0) {
+        throw new Error(`조는 1조부터 ${TEAM_MAX}조까지입니다.`);
+      }
+      m.team = team;
+    }
+    // 조 없는 그룹장은 아무 조도 못 보는 빈 권한이라, 조가 없으면 회원으로 둡니다.
+    if (normRole(m.role) === 'leader' && !normTeam(m.team)) m.role = 'member';
+    if (normRole(m.role) !== 'leader') m.team = 0;
+
     if (changes.status === 'active' || changes.status === 'blocked') m.status = changes.status;
     write(MEMBERS_KEY, list);
     return publicMember(m);
