@@ -56,6 +56,8 @@
  *   GET    /scores?projectId=…      (로그인) 발표 평가 집계 + 내가 준 점수
  *   POST   /scores                  (로그인) 세 문항 점수 주기 (덮어쓰기)
  *   GET    /scores/rows?projectId=… (관리자) 누가 몇 점을 줬는지 원자료
+ *   GET    /draw?projectId=…        (로그인) 발표 순서 + 조별 선정 진행 상황
+ *   POST   /draw                    (관리자) 발표 순서 추첨 — 선정이 다 끝난 뒤
  *   GET    /file/<key>              (로그인)
  *   DELETE /file/<key>              (관리자)
  */
@@ -78,6 +80,7 @@ import {
   normTeam, isCamp, normRole, leaderTeam, isNominee,
   presentationOf, presentationPhase, summarizeScores, normScore, scoreBlock, myTeamIn,
   nominateBlock, applyNominate, TEAM_MAX,
+  nomineeProgress, drawBlock, shuffle, drawOf, drawStale,
 } from './camp.js';
 
 /** 이 이메일로 가입하면 자동으로 관리자 권한이 붙습니다. */
@@ -277,6 +280,12 @@ async function route(request, env, url, path, cors, waitUntil) {
     return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
   }
   if (path === '/scores/rows' && method === 'GET') return listScores(request, env, url, cors);
+
+  if (path === '/draw') {
+    if (method === 'GET') return drawRequest(request, env, url, cors);
+    if (method === 'POST') return runDraw(request, env, cors);
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
 
   /* ------------------------------------------------------- 파일 -- */
 
@@ -802,7 +811,7 @@ async function writeIndexRequest(request, env, name, cors) {
   // 프로젝트가 사라졌다면 그 프로젝트에 들어간 표·발표 점수도 갈 곳이 없습니다.
   if (name === 'projects') {
     const alive = new Set(body.data.map((p) => p?.id).filter(Boolean));
-    for (const index of ['votes', 'scores']) {
+    for (const index of ['votes', 'scores', 'draws']) {
       await mutateIndex(env, index, (list) => {
         const kept = list.filter((v) => alive.has(v.projectId));
         return kept.length === list.length ? null : kept;
@@ -1575,6 +1584,94 @@ async function listScores(request, env, url, cors) {
   const { data: scores } = await readIndex(env, 'scores');
   const rows = projectId ? scores.filter((r) => r.projectId === projectId) : scores;
   return json({ data: rows }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+/* ====================================================== 발표 순서 추첨 == */
+
+/**
+ * 조마다 발표 과제가 다 정해지면 **발표 순서를 뽑습니다.**
+ *
+ * 순서는 한 과제에 하나뿐이고 모두가 같은 것을 봐야 하므로, 서버가 섞어서
+ * 저장하고 브라우저는 그 결과를 받아 보여주기만 합니다. 브라우저에서 섞으면
+ * 마음에 드는 결과가 나올 때까지 다시 돌려볼 수 있습니다.
+ */
+
+/** 이 과제의 추첨 한 줄. 없으면 null. */
+function findDraw(list, projectId) {
+  return list.find((d) => d.projectId === projectId) || null;
+}
+
+async function drawRequest(request, env, url, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+
+  const projectId = String(url.searchParams.get('projectId') || '');
+  const [{ data: projects }, { data: subs }, { data: draws }] = await Promise.all([
+    readIndex(env, 'projects'), readIndex(env, 'submissions'), readIndex(env, 'draws'),
+  ]);
+  const project = projects.find((p) => p.id === projectId);
+  if (!project) return json({ message: '프로젝트를 찾을 수 없습니다.' }, 404, cors);
+
+  const here = subs.filter((s) => s.projectId === projectId);
+  const draw = drawOf(findDraw(draws, projectId));
+  const p = nomineeProgress(here);
+
+  return json({
+    draw,
+    // 진행 상황은 모두가 봅니다 — "몇 개 조가 남았나"가 이 화면의 핵심입니다.
+    progress: { teams: p.teams, picked: p.picked, missing: p.missing },
+    stale: drawStale(draw, here),
+  }, 200, { ...cors, 'Cache-Control': 'no-store' });
+}
+
+/**
+ * 발표 순서 추첨 (관리자).
+ *
+ * 이미 뽑아 둔 순서가 있으면 **다시 뽑습니다.** 막지는 않되 몇 번째 추첨인지를
+ * 세어 두고 화면에 그대로 보여줍니다 — 조용히 다시 뽑는 것보다 "두 번 뽑았다"가
+ * 보이는 편이 낫습니다.
+ */
+async function runDraw(request, env, cors) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+  const me = got.member;
+
+  const body = await request.json().catch(() => null);
+  const projectId = String(body?.projectId || '');
+  if (!projectId) return json({ message: '대상 과제가 필요합니다.' }, 400, cors);
+
+  const [{ data: projects }, { data: subs }] = await Promise.all([
+    readIndex(env, 'projects'), readIndex(env, 'submissions'),
+  ]);
+  const project = projects.find((p) => p.id === projectId);
+  if (!project) return json({ message: '프로젝트를 찾을 수 없습니다.' }, 404, cors);
+
+  const here = subs.filter((s) => s.projectId === projectId);
+  const blocked = drawBlock(project, here, me);
+  // 권한이 없는 것만 403 이고, 아직 준비가 안 된 것은 요청 내용 문제입니다.
+  if (blocked) return json({ message: blocked }, blocked.includes('관리자만') ? 403 : 400, cors);
+
+  const order = shuffle(nomineeProgress(here).nominees.map((s) => s.id));
+  const now = new Date().toISOString();
+
+  let saved = null;
+  await mutateIndex(env, 'draws', (list) => {
+    const at = list.findIndex((d) => d.projectId === projectId);
+    const seq = at >= 0 ? Math.max(1, Math.round(Number(list[at].seq)) || 1) + 1 : 1;
+    const row = {
+      id: at >= 0 ? list[at].id : uid('dr_'),
+      projectId,
+      order,
+      seq,
+      drawnAt: now,
+      drawnBy: normEmail(me.email),
+    };
+    if (at >= 0) list[at] = row; else list.push(row);
+    saved = row;
+    return list;
+  });
+
+  return json({ draw: drawOf(saved) }, 200, cors);
 }
 
 /* ============================================================== 업로드 == */

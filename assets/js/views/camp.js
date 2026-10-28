@@ -13,10 +13,12 @@ import {
   isCamp, teamLabel, normTeam, teamRows, isNominee, canNominate,
   presentationOf, presentationPhase, PRESENT_PHASE_LABEL,
   RUBRIC, RUBRIC_TOTAL, scoreBlock, myTeamIn, normScore, TRACK_LABEL,
+  orderedNominees, nomineesComplete,
 } from '../camp.js';
+import { playDraw, seenDraw, markDrawSeen } from './draw.js';
 import { esc, attr, fmtDate, normEmail, downloadBlob } from '../utils.js';
 import { buildXlsx } from '../sheet.js';
-import { spinner, emptyState, toastOk, toastErr, busy } from '../ui.js';
+import { spinner, emptyState, toastOk, toastErr, busy, confirmModal } from '../ui.js';
 import { currentUser, isAdmin, myLeaderTeam, refreshRole } from '../auth.js';
 
 const PHASE_BADGE = {
@@ -194,17 +196,162 @@ export async function campProjectView(mount, { id }, query) {
 
   const body = mount.querySelector('#campBody');
   try {
-    const subs = await store.listSubmissions({ projectId: project.id });
-    if (tabId === 'judge') await renderJudge(body, project, subs);
-    else await renderTeams(body, project, subs);
+    const [subs, info] = await Promise.all([
+      store.listSubmissions({ projectId: project.id }),
+      store.drawOrder(project.id).catch(() => ({ draw: null, progress: null, stale: false })),
+    ]);
+    // 아직 이 추첨을 못 본 사람에게는 순서를 바로 펼치지 않고 "확인하기" 를
+    // 띄웁니다. 열어 보는 순간이 이 기능의 재미라서 미리 흘리지 않고, 그렇다고
+    // 들어오자마자 연출로 화면을 막지도 않습니다 — 누를지는 본인이 정합니다.
+    info.unseen = Boolean(info.draw) && seenDraw(project.id) < info.draw.seq;
+
+    if (tabId === 'judge') await renderJudge(body, project, subs, info);
+    else await renderTeams(body, project, subs, info);
   } catch (e) {
     body.innerHTML = `<div class="notice notice--err">내용을 불러오지 못했습니다 — ${esc(e.message)}</div>`;
   }
 }
 
+/* ------------------------------------------------------ 발표 순서 -- */
+
+/**
+ * 발표 순서 패널 — 한 자리에서 세 가지를 보여줍니다.
+ *   · 아직 선정 중이면  몇 개 조가 남았는지
+ *   · 다 끝났으면       관리자에게 추첨 버튼
+ *   · 뽑았으면          1번부터의 순서
+ *
+ * 진행 상황(progress)은 저장소가 **전체 제출물을 보고** 세어 준 값입니다.
+ * 일반 회원에게는 남의 제출물이 내려오지 않아 화면에서 직접 세면 틀립니다.
+ */
+function orderPanel(project, subs, info, { admin }) {
+  const draw = info?.draw || null;
+  const rows = orderedNominees(draw, subs);
+  const p = info?.progress || null;
+  const done = p ? p.teams > 0 && !p.missing.length : nomineesComplete(subs);
+  const pct = p && p.teams ? Math.round((p.picked / p.teams) * 100) : 0;
+
+  const head = `
+    <div class="page-head" style="margin-bottom:var(--space-3)">
+      <h2 class="page-title" style="font-size:1.9rem">
+        발표 순서
+        ${draw && draw.seq > 1 ? `<span class="badge badge--soft">${esc(draw.seq)}번째 추첨</span>` : ''}
+      </h2>
+      <div class="row">
+        ${rows.length ? '<button class="btn btn--quiet btn--sm" type="button" data-replay>다시 보기</button>' : ''}
+        ${admin && done ? `
+          <button class="btn ${rows.length ? 'btn--outline' : 'btn--primary btn--draw'} btn--sm"
+                  type="button" data-draw>
+            ${rows.length ? '다시 추첨' : '발표 순서 추첨하기'}</button>` : ''}
+      </div>
+    </div>`;
+
+  if (rows.length && info?.unseen) {
+    return `
+      <div class="card card--flat drawtease" style="margin-bottom:var(--space-4)" data-order>
+        <p class="drawtease__kicker">
+          ${draw.seq > 1 ? `${esc(draw.seq)}번째 추첨` : '추첨 완료'}
+        </p>
+        <p class="drawtease__title">발표 순서가 나왔습니다</p>
+        <p class="drawtease__sub">
+          ${esc(rows.length)}개 조의 차례가 정해졌습니다. 아직 열어보지 않으셨습니다.
+        </p>
+        <button class="btn btn--primary btn--lg btn--draw" type="button" data-reveal>
+          순서 확인하기</button>
+      </div>`;
+  }
+
+  if (rows.length) {
+    return `
+      <div class="card card--flat" style="margin-bottom:var(--space-4)" data-order>
+        ${head}
+        ${info?.stale ? `
+          <div class="notice notice--warn" style="margin-bottom:var(--space-3)">
+            추첨한 뒤에 발표 과제가 바뀌었습니다. 지금 순서는 바뀐 내용을 담고 있지 않으니
+            ${admin ? '<strong>다시 추첨</strong>해 주세요.' : '관리자에게 알려 주세요.'}
+          </div>` : ''}
+        <ol class="orderlist">
+          ${rows.map(({ seat, sub }) => `
+            <li class="orderitem">
+              <span class="orderitem__seat">${esc(seat)}</span>
+              <span class="orderitem__team">${esc(teamLabel(sub.team))}</span>
+              <span class="orderitem__title"><a href="#/s/${attr(sub.id)}">${esc(sub.title)}</a></span>
+              <span class="orderitem__who">${esc(sub.author?.name || '—')}</span>
+            </li>`).join('')}
+        </ol>
+        <p class="field__hint" style="margin-top:var(--space-3)">
+          ${esc(fmtDate(draw.drawnAt, true))} 추첨${draw.seq > 1 ? ` · ${esc(draw.seq)}번째` : ''}.
+          순서는 무작위로 뽑았고, 바꾸려면 다시 추첨해야 합니다.
+        </p>
+      </div>`;
+  }
+
+  return `
+    <div class="card card--flat" style="margin-bottom:var(--space-4)" data-order>
+      ${head}
+      ${p ? `
+        <div class="drawmeter" role="img"
+             aria-label="${attr(`${p.teams}개 조 중 ${p.picked}개 조 선정 완료`)}">
+          <div class="drawmeter__fill${done ? ' is-full' : ''}" style="width:${attr(pct)}%"></div>
+        </div>
+        <p style="margin-top:var(--space-2);font-size:1.5rem">
+          <strong>${esc(p.picked)} / ${esc(p.teams)}개 조</strong> 발표 과제 선정 완료
+        </p>` : ''}
+      <p class="field__hint" style="margin-top:var(--space-2)">
+        ${done
+          ? (admin
+            ? '모든 조의 발표 과제가 정해졌습니다. 이제 순서를 뽑을 수 있습니다.'
+            : '모든 조의 발표 과제가 정해졌습니다. 관리자가 추첨하면 이곳에 순서가 뜹니다.')
+          : (p && p.missing.length
+            ? `${esc(p.missing.map(teamLabel).join(' · '))}의 발표 과제가 아직 정해지지 않았습니다.`
+            : '조마다 그룹장이 발표 과제를 하나 뽑으면 순서를 추첨합니다.')}
+      </p>
+    </div>`;
+}
+
+/** 패널의 버튼 두 개를 붙입니다. 추첨은 저장한 뒤에 연출을 돌립니다. */
+function bindOrderPanel(mount, project, subs, info, redraw) {
+  mount.querySelector('[data-reveal]')?.addEventListener('click', async () => {
+    markDrawSeen(project.id, info.draw.seq);
+    await playDraw(orderedNominees(info.draw, subs), { seq: info.draw.seq });
+    info.unseen = false;
+    await redraw();
+  });
+
+  mount.querySelector('[data-replay]')?.addEventListener('click', () => {
+    playDraw(orderedNominees(info.draw, subs), { seq: info.draw?.seq, replay: true });
+  });
+
+  mount.querySelector('[data-draw]')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const again = Boolean(info.draw);
+    if (again) {
+      const ok = await confirmModal({
+        title: '발표 순서를 다시 뽑을까요?',
+        body: '지금 순서는 사라지고 새로 뽑습니다.\n'
+          + '몇 번째 추첨인지는 기록에 남아 모두에게 보입니다.',
+        confirmLabel: '다시 추첨', danger: true,
+      });
+      if (!ok) return;
+    }
+    busy(btn, true, '뽑는 중…');
+    try {
+      // 먼저 저장하고 그 다음에 연출합니다 — 보는 도중에 창을 닫아도
+      // 결과는 이미 남아 있습니다.
+      const fresh = await store.runDraw(project.id);
+      markDrawSeen(project.id, fresh.seq);
+      await playDraw(orderedNominees(fresh, subs), { seq: fresh.seq });
+      toastOk('발표 순서를 뽑았습니다.');
+      await redraw();
+    } catch (err) {
+      busy(btn, false);
+      toastErr(err.message);
+    }
+  });
+}
+
 /* ------------------------------------------------------ 조별 제출물 -- */
 
-async function renderTeams(mount, project, subs) {
+async function renderTeams(mount, project, subs, info = {}) {
   const me = currentUser();
   const admin = isAdmin();
   const myTeam = myLeaderTeam();
@@ -217,6 +364,8 @@ async function renderTeams(mount, project, subs) {
     const visible = admin ? rows : rows.filter((r) => r.team === myTeam);
 
     mount.innerHTML = `
+      ${orderPanel(project, subs, info, { admin })}
+
       ${wide ? `
         <div class="card card--flat" style="margin-bottom:var(--space-4)">
           <h2 class="page-title" style="font-size:1.9rem;margin-bottom:var(--space-3)">조별 현황</h2>
@@ -258,6 +407,21 @@ async function renderTeams(mount, project, subs) {
     mount.querySelectorAll('[data-pick]').forEach((btn) => {
       btn.addEventListener('click', () => pick(btn.dataset.pick, btn.dataset.on === '1', btn));
     });
+    bindOrderPanel(mount, project, subs, info, reload);
+  };
+
+  /** 선정이나 추첨이 바뀌면 제출물과 추첨 정보를 함께 다시 읽습니다. */
+  const reload = async () => {
+    const [fresh, next] = await Promise.all([
+      store.listSubmissions({ projectId: project.id }),
+      store.drawOrder(project.id).catch(() => info),
+    ]);
+    subs.length = 0;
+    subs.push(...fresh);
+    rows.length = 0;
+    rows.push(...teamRows(subs));
+    Object.assign(info, next);
+    draw();
   };
 
   const pick = async (submissionId, on, btn) => {
@@ -266,12 +430,7 @@ async function renderTeams(mount, project, subs) {
       await store.nominate(submissionId, on);
       toastOk(on ? '발표 과제로 선정했습니다.' : '발표 과제 선정을 해제했습니다.');
       // 같은 조의 다른 선정이 함께 내려가므로 목록을 다시 읽습니다.
-      const fresh = await store.listSubmissions({ projectId: project.id });
-      subs.length = 0;
-      subs.push(...fresh);
-      rows.length = 0;
-      rows.push(...teamRows(subs));
-      draw();
+      await reload();
     } catch (e) {
       busy(btn, false);
       toastErr(e.message);
@@ -368,7 +527,7 @@ function myOwn(subs, me, project) {
 
 /* -------------------------------------------------------- 발표 평가 -- */
 
-async function renderJudge(mount, project, subs) {
+async function renderJudge(mount, project, subs, info = {}) {
   const me = currentUser();
   const cfg = presentationOf(project);
   const phase = presentationPhase(project);
@@ -386,8 +545,16 @@ async function renderJudge(mount, project, subs) {
     return;
   }
 
-  const nominees = subs.filter(isNominee)
-    .sort((a, b) => normTeam(a.team) - normTeam(b.team));
+  // 순서를 뽑았으면 **뽑힌 차례대로** 늘어놓습니다 — 발표장에서 보는 순서와
+  // 화면이 같아야 헷갈리지 않습니다. 아직이면 조 번호순입니다.
+  //
+  // 다만 아직 순서를 열어보지 않은 사람에게는 차례도 번호도 보여주지 않습니다 —
+  // 여기서 흘리면 "순서 확인하기" 를 누르기 전에 답을 알게 됩니다.
+  const drawn = info?.unseen ? [] : orderedNominees(info?.draw, subs);
+  const seatOf = new Map(drawn.map(({ seat, sub }) => [sub.id, seat]));
+  const nominees = drawn.length && !info?.stale
+    ? drawn.map(({ sub }) => sub)
+    : subs.filter(isNominee).sort((a, b) => normTeam(a.team) - normTeam(b.team));
   if (!nominees.length) {
     mount.innerHTML = emptyState({
       title: '아직 선정된 발표가 없습니다',
@@ -409,6 +576,8 @@ async function renderJudge(mount, project, subs) {
       closed: '발표 평가가 마감되었습니다. 결과만 볼 수 있습니다.',
     };
     mount.innerHTML = `
+      ${orderPanel(project, subs, info, { admin: isAdmin() })}
+
       <div class="card card--flat" style="margin-bottom:var(--space-4)">
         <div class="stat-row">
           ${stat(nominees.length, '선정된 발표')}
@@ -433,10 +602,16 @@ async function renderJudge(mount, project, subs) {
       </div>
 
       <div class="judge-list">
-        ${nominees.map((s) => judgeCard(s, project, me, myTeam, summary)).join('')}
+        ${nominees.map((s) => judgeCard(s, project, me, myTeam, summary, seatOf.get(s.id))).join('')}
       </div>`;
 
     mount.querySelectorAll('[data-score-form]').forEach(bindForm);
+    bindOrderPanel(mount, project, subs, info, async () => {
+      // 순서가 바뀌면 카드 차례도 함께 바뀌므로 화면을 통째로 다시 엽니다.
+      const next = await store.drawOrder(project.id).catch(() => info);
+      Object.assign(info, next);
+      await renderJudge(mount, project, subs, info);
+    });
   };
 
   const bindForm = (form) => {
@@ -472,7 +647,7 @@ async function renderJudge(mount, project, subs) {
 }
 
 /** 발표 하나 — 점수 입력 또는 줄 수 없는 이유. */
-function judgeCard(s, project, me, myTeam, summary) {
+function judgeCard(s, project, me, myTeam, summary, seat = 0) {
   const blocked = scoreBlock(project, s, me, myTeam);
   const mine = summary.mine?.[s.id] || null;
   const acc = summary.scores?.[s.id] || null;
@@ -482,6 +657,7 @@ function judgeCard(s, project, me, myTeam, summary) {
       <div class="judge__head">
         <div style="min-width:0">
           <div class="row" style="gap:6px">
+            ${seat ? `<span class="badge badge--open">발표 ${esc(seat)}번째</span>` : ''}
             <span class="badge badge--gold">${esc(teamLabel(s.team))}</span>
             ${mine ? `<span class="badge badge--open">채점 완료 ${esc(mine.total)}점</span>` : ''}
           </div>
@@ -546,14 +722,17 @@ export async function campResultView(mount, { projectId }) {
     return;
   }
 
-  const [subs, summary, rows] = await Promise.all([
+  const [subs, summary, rows, info] = await Promise.all([
     store.listSubmissions({ projectId: project.id }),
     store.scoreSummary(project.id),
     // 원자료는 관리자만 볼 수 있습니다. 서버 없는 모드에서는 전체 목록을 걸러 씁니다.
     (store.listScores
       ? store.listScores(project.id)
       : Promise.resolve([])).catch(() => []),
+    store.drawOrder(project.id).catch(() => ({ draw: null })),
   ]);
+  // 뽑아 둔 발표 순서 — 결과표에 "몇 번째로 발표했는지" 를 함께 싣습니다.
+  const seatOf = new Map(orderedNominees(info?.draw, subs).map(({ seat, sub }) => [sub.id, seat]));
   const raw = rows.filter((r) => r.projectId === project.id);
 
   const nominees = subs.filter(isNominee).map((s) => {
@@ -598,7 +777,8 @@ export async function campResultView(mount, { projectId }) {
               <table class="table">
                 <thead>
                   <tr>
-                    <th>순위</th><th>조</th><th>발표 과제</th><th>제출자</th>
+                    <th>순위</th>${seatOf.size ? '<th class="num">발표<br><span style="font-weight:400">순서</span></th>' : ''}
+                    <th>조</th><th>발표 과제</th><th>제출자</th>
                     ${RUBRIC.map((r) => `<th class="num">${esc(r.label)}<br><span style="font-weight:400">(${esc(r.max)}점)</span></th>`).join('')}
                     <th class="num">합계 (${esc(RUBRIC_TOTAL)}점)</th><th class="num">채점</th>
                   </tr>
@@ -607,6 +787,7 @@ export async function campResultView(mount, { projectId }) {
                   ${nominees.map((n) => `
                     <tr>
                       <td><strong>${n.judges ? `${esc(n.rank)}위` : '—'}</strong></td>
+                      ${seatOf.size ? `<td class="num">${esc(seatOf.get(n.sub.id) || '—')}</td>` : ''}
                       <td>${esc(teamLabel(n.sub.team))}</td>
                       <td><a href="#/s/${attr(n.sub.id)}">${esc(n.sub.title)}</a></td>
                       <td>${esc(n.sub.author?.name || '—')}</td>
@@ -660,10 +841,11 @@ export async function campResultView(mount, { projectId }) {
   btn?.addEventListener('click', () => {
     try {
       const summaryRows = [
-        ['순위', '조', '발표 과제', '제출자', '기관',
+        ['순위', '발표 순서', '조', '발표 과제', '제출자', '기관',
           ...RUBRIC.map((r) => `${r.label}(${r.max}점)`), `합계(${RUBRIC_TOTAL}점)`, '채점 인원'],
         ...nominees.map((n) => [
           n.judges ? n.rank : '',
+          seatOf.get(n.sub.id) || '',
           teamLabel(n.sub.team),
           n.sub.title,
           n.sub.author?.name || '',

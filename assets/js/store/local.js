@@ -9,10 +9,11 @@ import { summarizeVotes, applyVote } from './voting.js';
 import {
   isCamp, normTeam, summarizeScores, applyScore, myTeamIn,
   nominateBlock, applyNominate, TEAM_MAX,
+  nomineeProgress, drawBlock, shuffle, drawOf, drawStale,
 } from '../camp.js';
 
 const DB_NAME = 'assignment-hub';
-const DB_VER = 6;
+const DB_VER = 7;
 
 let dbPromise = null;
 
@@ -54,6 +55,10 @@ function openDB() {
       if (!db.objectStoreNames.contains('scores')) {
         const sc = db.createObjectStore('scores', { keyPath: 'id' });
         sc.createIndex('projectId', 'projectId');
+      }
+      // 발표 순서 추첨 — 한 과제에 한 줄.
+      if (!db.objectStoreNames.contains('draws')) {
+        db.createObjectStore('draws', { keyPath: 'id' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -133,6 +138,10 @@ export class LocalStore {
     const strayScores = (await this.listScores()).filter((r) => r.projectId === id);
     if (strayScores.length) {
       await tx('scores', 'readwrite', (os) => { for (const r of strayScores) os.delete(r.id); });
+    }
+    const strayDraws = (await this.listDraws()).filter((d) => d.projectId === id);
+    if (strayDraws.length) {
+      await tx('draws', 'readwrite', (os) => { for (const d of strayDraws) os.delete(d.id); });
     }
     await tx('projects', 'readwrite', (os) => os.delete(id));
   }
@@ -451,6 +460,52 @@ export class LocalStore {
     return summarizeScores(project, next, me);
   }
 
+  /* ------------------------------------------------------ 발표 순서 추첨 */
+
+  async listDraws() {
+    const rows = await tx('draws', 'readonly', (os) => wrap(os.getAll()));
+    return rows || [];
+  }
+
+  /** 발표 순서 + 조별 선정 진행 상황 (서버 모드의 GET /draw 와 같은 모양). */
+  async drawOrder(projectId) {
+    const project = await this.getProject(projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+    const here = await this.listSubmissions({ projectId });
+    const draw = drawOf((await this.listDraws()).find((d) => d.projectId === projectId));
+    const p = nomineeProgress(here);
+    return {
+      draw,
+      progress: { teams: p.teams, picked: p.picked, missing: p.missing },
+      stale: drawStale(draw, here),
+    };
+  }
+
+  /** 발표 순서 추첨. 이미 뽑아 둔 것이 있으면 다시 뽑고 횟수를 올립니다. */
+  async runDraw(projectId) {
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+    const project = await this.getProject(projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+
+    const here = await this.listSubmissions({ projectId });
+    const blocked = drawBlock(project, here, me);
+    if (blocked) throw new Error(blocked);
+
+    const rows = await this.listDraws();
+    const before = rows.find((d) => d.projectId === projectId);
+    const row = {
+      id: before?.id || uid('dr_'),
+      projectId,
+      order: shuffle(nomineeProgress(here).nominees.map((s) => s.id)),
+      seq: before ? Math.max(1, Math.round(Number(before.seq)) || 1) + 1 : 1,
+      drawnAt: new Date().toISOString(),
+      drawnBy: String(me.email || '').toLowerCase(),
+    };
+    await tx('draws', 'readwrite', (os) => os.put(row));
+    return drawOf(row);
+  }
+
   /* --------------------------------------------------------------- files */
 
   async deleteFile(fileRef) {
@@ -487,6 +542,7 @@ export class LocalStore {
       roster: await this.listStudents(),
       attendance: await this.listAttendance(),
       scores: await this.listScores(),
+      draws: await this.listDraws(),
     };
   }
 
@@ -512,6 +568,9 @@ export class LocalStore {
     }
     for (const r of dump.scores || []) {
       await tx('scores', 'readwrite', (os) => os.put(r));
+    }
+    for (const d of dump.draws || []) {
+      await tx('draws', 'readwrite', (os) => os.put(d));
     }
   }
 }

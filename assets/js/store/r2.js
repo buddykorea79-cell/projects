@@ -5,6 +5,7 @@
  *   data/submissions.json                 제출물 — 서버만 고칩니다
  *   data/votes.json                       상호 투표 — 서버만 고칩니다
  *   data/scores.json                      AI Build Camp 발표 평가 — 서버만 고칩니다
+ *   data/draws.json                       발표 순서 추첨 — 서버가 섞어 저장합니다
  *   data/roster.json                      전체 수강생 명단 — 관리자만
  *   data/attendance.json                  회차별 출석·과제 기록 — 관리자만
  *   data/members.json                     회원 명부 — 브라우저로 절대 안 내려옵니다
@@ -397,6 +398,20 @@ export class R2Store {
   async castScore(submissionId, input) {
     const { summary } = await this.post('/scores', { submissionId, ...input });
     return summary;
+  }
+
+  /**
+   * 발표 순서 + 조별 선정 진행 상황.
+   * @returns {Promise<{draw:?object, progress:object, stale:boolean}>}
+   */
+  async drawOrder(projectId) {
+    return this.json(`/draw?projectId=${encodeURIComponent(projectId)}`, { cache: 'no-store' });
+  }
+
+  /** 발표 순서 추첨 (관리자). 섞는 것은 서버가 합니다. */
+  async runDraw(projectId) {
+    const { draw } = await this.post('/draw', { projectId });
+    return draw;
   }
 
   /** 누가 어느 발표에 몇 점을 줬는지 원자료 (관리자만). */

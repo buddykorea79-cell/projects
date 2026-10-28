@@ -356,3 +356,130 @@ export function applyNominate(subs, target, on = true) {
   touched.push(target);
   return touched;
 }
+
+/* ----------------------------------------------------- 발표 순서 추첨 -- */
+
+/** 추첨에는 적어도 두 조가 있어야 합니다 — 한 조뿐이면 뽑을 것이 없습니다. */
+export const DRAW_MIN_TEAMS = 2;
+
+/**
+ * 조별 선정 진행 상황.
+ *
+ * **제출이 하나라도 있는 조**만 셉니다. 아무도 내지 않은 조까지 기다리면
+ * 추첨이 영영 열리지 않기 때문입니다.
+ */
+export function nomineeProgress(subs) {
+  const rows = teamRows(subs).filter((r) => r.count > 0);
+  const done = rows.filter((r) => r.nominee);
+  return {
+    teams: rows.length,
+    picked: done.length,
+    missing: rows.filter((r) => !r.nominee).map((r) => r.team),
+    nominees: done.map((r) => r.nominee),
+  };
+}
+
+/** 선정이 다 끝났는지 — 추첨 버튼을 열어도 되는 때입니다. */
+export function nomineesComplete(subs) {
+  const p = nomineeProgress(subs);
+  return p.teams >= DRAW_MIN_TEAMS && p.missing.length === 0;
+}
+
+/**
+ * 지금 발표 순서를 뽑을 수 없는 이유. 뽑을 수 있으면 null 입니다.
+ *
+ * 추첨은 **관리자만** 합니다. 모두가 같은 하나의 순서를 봐야 하는데, 여럿이
+ * 각자 뽑으면 어느 것이 진짜인지 알 수 없기 때문입니다.
+ */
+export function drawBlock(project, subs, me) {
+  if (!isCamp(project)) return 'AI Build Camp 과제에서만 발표 순서를 뽑습니다.';
+  if (normRole(me?.role) !== 'admin') return '발표 순서 추첨은 관리자만 할 수 있습니다.';
+
+  const p = nomineeProgress(subs);
+  if (!p.teams) return '아직 제출된 과제가 없습니다.';
+  if (p.teams < DRAW_MIN_TEAMS) {
+    return `발표할 조가 ${DRAW_MIN_TEAMS}개 조 이상이어야 추첨할 수 있습니다.`;
+  }
+  if (p.missing.length) {
+    return `${p.missing.map(teamLabel).join(' · ')}의 발표 과제가 아직 정해지지 않았습니다.`;
+  }
+  return null;
+}
+
+/**
+ * 0 이상 max 미만의 정수 하나를 치우침 없이 뽑습니다.
+ *
+ * 나머지 연산으로 자르면 앞쪽 숫자가 조금 더 자주 나옵니다. 추첨에서는 그
+ * "조금"이 1번 순서를 가르므로, 치우침이 생기는 구간의 난수는 버리고 다시 뽑습니다.
+ */
+export function randomBelow(max) {
+  const n = Math.floor(max);
+  if (!Number.isFinite(n) || n <= 1) return 0;
+  const limit = Math.floor(0xFFFFFFFF / n) * n;
+  let r;
+  do {
+    r = crypto.getRandomValues(new Uint32Array(1))[0];
+  } while (r >= limit);
+  return r % n;
+}
+
+/**
+ * Fisher–Yates 섞기. 원본은 건드리지 않고 새 배열을 돌려줍니다.
+ * `pick` 을 주면 그것으로 뽑습니다 — 테스트에서 결과를 고정할 때 씁니다.
+ */
+export function shuffle(list, pick = randomBelow) {
+  const out = [...(list || [])];
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = pick(i + 1);
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+/** 저장된 추첨 한 줄을 화면이 쓰는 모양으로. 없거나 비었으면 null. */
+export function drawOf(row) {
+  const order = Array.isArray(row?.order) ? row.order.map(String).filter(Boolean) : [];
+  if (!order.length) return null;
+  return {
+    projectId: String(row.projectId || ''),
+    order,
+    drawnAt: row.drawnAt || null,
+    drawnBy: String(row.drawnBy || ''),
+    // 몇 번째 추첨인지. 다시 뽑으면 올라갑니다 — 숨기지 않고 그대로 보여줍니다.
+    seq: Math.max(1, Math.round(Number(row.seq)) || 1),
+  };
+}
+
+/**
+ * 뽑아 둔 순서를 제출물과 맞춰 1번부터 늘어놓습니다.
+ * 그 사이 내려간 발표는 빠지고, 번호는 다시 1부터 매깁니다.
+ */
+export function orderedNominees(draw, subs) {
+  if (!draw) return [];
+  const byId = new Map((subs || []).map((s) => [s.id, s]));
+  return draw.order
+    .map((id) => byId.get(id))
+    .filter((s) => s && isNominee(s))
+    .map((sub, i) => ({ seat: i + 1, sub }));
+}
+
+/**
+ * 뽑아 둔 순서가 지금 선정 상태와 어긋났는지.
+ *
+ * 추첨한 뒤에 그룹장이 발표 과제를 바꾸면 순서에 없는 발표가 생깁니다.
+ * 그때는 조용히 고치지 않고 **다시 뽑으라고 알려 줍니다** — 누가 몇 번인지는
+ * 사람들이 이미 외우고 있어서, 말없이 바뀌면 그게 더 혼란스럽습니다.
+ */
+export function drawStale(draw, subs) {
+  if (!draw) return false;
+  const now = (subs || []).filter(isNominee).map((s) => s.id).sort();
+  const was = [...draw.order].sort();
+  return now.join('\u0000') !== was.join('\u0000');
+}
+
+/** 추첨 결과를 사람이 읽는 한 줄로 — "1번 3조 · 2번 1조 …". */
+export function orderSummary(draw, subs) {
+  return orderedNominees(draw, subs)
+    .map(({ seat, sub }) => `${seat}번 ${teamLabel(sub.team)}`)
+    .join(' · ');
+}

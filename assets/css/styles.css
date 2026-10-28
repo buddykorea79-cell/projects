@@ -732,6 +732,182 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 }
 .judge__breakk { color: var(--text-black-soft); }
 
+/* ------------------------------------------------ 발표 순서 추첨 연출 -- */
+
+/* 추첨이 도는 동안에는 뒤 화면이 따라 움직이지 않게 잠급니다. */
+body.is-drawing { overflow: hidden; }
+
+.drawstage {
+  position: fixed; inset: 0; z-index: 120;
+  background: radial-gradient(120% 90% at 50% 0%, #15302a 0%, #0a1a16 55%, #050d0b 100%);
+  display: grid; place-items: center; padding: var(--space-4);
+  animation: drawIn .28s ease both;
+}
+.drawstage.is-leaving { animation: drawOut .2s ease both; }
+@keyframes drawIn  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes drawOut { to { opacity: 0; } }
+
+/* 단계마다 보였다 숨었다 합니다. 아래 블록들이 display 를 직접 쥐고 있어서
+   브라우저 기본값인 [hidden]{display:none} 을 덮어쓰므로 여기서 다시 세웁니다. */
+.drawstage [hidden] { display: none !important; }
+
+.drawstage__inner {
+  width: min(760px, 100%); text-align: center;
+  display: grid; gap: var(--space-4); justify-items: center;
+}
+.drawstage__skip {
+  position: absolute; top: var(--space-3); right: var(--space-3);
+  background: rgba(255,255,255,.08); color: var(--text-white-soft);
+  border: 1px solid rgba(255,255,255,.18); border-radius: 999px;
+  padding: 8px 18px; font-size: 1.4rem; font-weight: 600; cursor: pointer;
+  font-family: inherit; transition: background var(--duration) ease, color var(--duration) ease;
+}
+.drawstage__skip:hover { background: rgba(255,255,255,.16); color: #fff; }
+
+.drawstage__kicker {
+  color: var(--gold); font-size: 1.4rem; font-weight: 700;
+  letter-spacing: .22em; text-transform: uppercase;
+}
+
+/* ── 카운트다운 ───────────────────────────────────────────────────── */
+.drawstage__count {
+  display: grid; place-items: center;
+  width: 180px; height: 180px; border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.14);
+}
+.drawstage__count span {
+  font-size: 8rem; font-weight: 700; color: #fff; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.drawstage__count.is-beat { animation: drawBeat .68s cubic-bezier(.2,.9,.3,1) both; }
+@keyframes drawBeat {
+  0%   { transform: scale(.55); opacity: 0; border-color: rgba(255,255,255,.05); }
+  35%  { transform: scale(1.12); opacity: 1; border-color: var(--gold); }
+  100% { transform: scale(1); opacity: .9; border-color: rgba(255,255,255,.14); }
+}
+
+/* ── 돌아가는 자리 ────────────────────────────────────────────────── */
+.drawstage__slot { display: grid; gap: var(--space-2); justify-items: center; min-height: 190px; }
+.drawstage__seat {
+  font-size: 1.6rem; font-weight: 700; color: var(--gold);
+  letter-spacing: .1em;
+}
+.drawstage__reel {
+  font-size: clamp(4.2rem, 13vw, 7.2rem); font-weight: 700; color: #fff;
+  line-height: 1.05; min-width: 4ch; font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 36px rgba(0,0,0,.5);
+}
+.is-spinning .drawstage__reel { color: var(--text-white-soft); filter: blur(.4px); opacity: .85; }
+.is-hit .drawstage__reel { animation: drawHit .5s cubic-bezier(.2,1.3,.3,1) both; }
+@keyframes drawHit {
+  0%   { transform: scale(1.5); color: var(--gold); text-shadow: 0 0 60px var(--gold); }
+  60%  { transform: scale(.97); }
+  100% { transform: scale(1); color: #fff; }
+}
+.is-hit .drawstage__inner { animation: drawShake .4s ease both; }
+@keyframes drawShake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-7px); }
+  45% { transform: translateX(6px); }
+  70% { transform: translateX(-3px); }
+}
+.drawstage__sub {
+  font-size: 1.6rem; color: var(--text-white-soft); max-width: 46ch;
+  word-break: break-word; min-height: 1.6em;
+}
+
+/* ── 확정된 순서판 ────────────────────────────────────────────────── */
+.drawstage__board { list-style: none; display: grid; gap: 6px; width: 100%; max-width: 560px; }
+.drawrow {
+  display: grid; grid-template-columns: 44px 68px 1fr auto; gap: var(--space-2);
+  align-items: center; text-align: left;
+  background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1);
+  border-radius: var(--radius-field); padding: 10px 14px;
+}
+.drawrow.is-new { animation: drawDrop .45s cubic-bezier(.2,1.2,.3,1) both; }
+@keyframes drawDrop {
+  from { opacity: 0; transform: translateY(-18px) scale(.96); background: rgba(212,175,101,.35); }
+  to   { opacity: 1; transform: none; }
+}
+.drawrow__seat {
+  font-size: 2rem; font-weight: 700; color: var(--gold);
+  font-variant-numeric: tabular-nums; text-align: center;
+}
+.drawrow__team { font-size: 1.5rem; font-weight: 700; color: #fff; }
+.drawrow__title { font-size: 1.5rem; color: var(--text-white-soft); word-break: break-word; }
+.drawrow__who { font-size: 1.3rem; color: rgba(255,255,255,.5); white-space: nowrap; }
+
+/* ── 아직 안 뽑힌 조들 ────────────────────────────────────────────── */
+.drawstage__pool { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.drawchip {
+  font-size: 1.4rem; font-weight: 700; color: #fff;
+  background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.18);
+  border-radius: 999px; padding: 6px 16px;
+  transition: opacity .3s ease, transform .3s ease;
+}
+.drawchip.is-taken { opacity: .18; transform: scale(.9); }
+.drawstage__pool.is-shaking .drawchip { animation: drawJitter .45s ease-in-out infinite alternate; }
+.drawstage__pool.is-shaking .drawchip:nth-child(even) { animation-delay: .2s; }
+@keyframes drawJitter {
+  from { transform: translateY(-3px) rotate(-2deg); }
+  to   { transform: translateY(3px) rotate(2deg); }
+}
+
+.drawstage__done { display: grid; gap: var(--space-3); justify-items: center; }
+.drawstage__donetitle { font-size: 2.2rem; font-weight: 700; color: #fff; }
+
+/* 움직임을 줄여달라고 해 둔 사람에게는 애니메이션을 돌리지 않습니다
+   (연출은 draw.js 가 건너뛰고, 혹시 남은 것도 여기서 멈춥니다). */
+@media (prefers-reduced-motion: reduce) {
+  .drawstage, .drawstage *, .drawstage *::before, .drawstage *::after {
+    animation: none !important; transition: none !important;
+  }
+}
+
+/* ------------------------------------------------ 발표 순서 (본문 안) -- */
+
+.orderlist { list-style: none; display: grid; gap: 6px; }
+.orderitem {
+  display: grid; grid-template-columns: 38px 62px 1fr auto; gap: var(--space-2);
+  align-items: center;
+  border: 1px solid var(--hairline); border-radius: var(--radius-field);
+  padding: 9px 12px; background: var(--white);
+}
+.orderitem__seat {
+  font-size: 1.8rem; font-weight: 700; color: var(--sb-green);
+  font-variant-numeric: tabular-nums; text-align: center;
+}
+.orderitem__team { font-size: 1.4rem; font-weight: 700; }
+.orderitem__title { font-size: 1.5rem; word-break: break-word; }
+.orderitem__title a { color: inherit; }
+.orderitem__who { font-size: 1.3rem; color: var(--text-black-soft); white-space: nowrap; }
+
+/* 아직 순서를 열어보지 않은 사람에게 — 답을 흘리지 않고 눌러보게 합니다. */
+.drawtease { text-align: center; display: grid; gap: 6px; justify-items: center; }
+.drawtease__kicker {
+  font-size: 1.3rem; font-weight: 700; color: var(--gold);
+  letter-spacing: .18em; text-transform: uppercase;
+}
+.drawtease__title { font-size: 2.2rem; font-weight: 700; color: var(--sb-green); }
+.drawtease__sub { font-size: 1.5rem; color: var(--text-black-soft); }
+.drawtease .btn { margin-top: var(--space-2); }
+
+/* 선정 진행 막대 — 몇 개 조가 남았는지 한눈에. */
+.drawmeter { height: 10px; border-radius: 999px; background: var(--neutral-cool); overflow: hidden; }
+.drawmeter__fill {
+  height: 100%; border-radius: 999px; background: var(--green-accent);
+  transition: width var(--duration) ease;
+}
+.drawmeter__fill.is-full { background: var(--gold); }
+
+/* 추첨 버튼이 열렸을 때 — 누르라고 조용히 숨을 쉽니다. */
+.btn--draw { animation: drawPulse 1.9s ease-in-out infinite; }
+@keyframes drawPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(212,175,101,.5); }
+  50%      { box-shadow: 0 0 0 12px rgba(212,175,101,0); }
+}
+@media (prefers-reduced-motion: reduce) { .btn--draw { animation: none; } }
+
 /* -------------------------------------------------------------- loading -- */
 .spinner {
   width: 28px; height: 28px; border-radius: 50%;

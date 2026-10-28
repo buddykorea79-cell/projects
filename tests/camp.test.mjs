@@ -83,6 +83,7 @@ const camp = (over = {}) => ({
 });
 
 const submit = (c, body) => c('/submissions', { method: 'POST', body });
+const normTeamOf = (s) => server.normTeam(s?.team);
 
 /* ===================================================== 규칙 사본 == */
 
@@ -420,6 +421,157 @@ await t('원자료는 관리자만 볼 수 있음', async () => {
   eq((await park('/scores/rows?projectId=p_camp')).status, 403, '일반 회원');
   eq((await leader2('/scores/rows?projectId=p_camp')).status, 403, '그룹장');
   eq((await admin('/scores/rows?projectId=p_camp')).status, 200, '관리자');
+});
+
+/* ================================================ 발표 순서 추첨 == */
+
+console.log('\n== 발표 순서 추첨 ==');
+
+/** 추첨만 보려고 따로 쓰는 과제 — 앞 단계가 남긴 상태에 기대지 않습니다. */
+const DRAW = 'p_draw';
+const plain = {
+  id: 'p_plain', title: '일반 과제', description: '-', status: 'open',
+  visibility: 'private', dueAt: null, allowFiles: true, createdAt: '2026-01-01T00:00:00.000Z',
+};
+const drawOrder = (c, id = DRAW) => c(`/draw?projectId=${id}`);
+const runDraw = (c, id = DRAW) => c('/draw', { method: 'POST', body: { projectId: id } });
+
+let seat2 = '';
+let seat3 = '';
+let seat5 = '';
+let spare2 = '';
+
+await t('치우침 없이 섞고 원본은 건드리지 않음', () => {
+  const src = ['a', 'b', 'c', 'd'];
+  const out = server.shuffle(src, () => 0);
+  eq(src.join(''), 'abcd', '원본');
+  eq(out.length, 4, '길이');
+  eq([...out].sort().join(''), 'abcd', '같은 것들');
+
+  // 많이 돌려보면 모든 값이 모든 자리에 한 번씩은 갑니다.
+  const seen = new Map(src.map((v) => [v, new Set()]));
+  for (let i = 0; i < 400; i += 1) {
+    server.shuffle(src).forEach((v, at) => seen.get(v).add(at));
+  }
+  for (const [v, places] of seen) eq(places.size, 4, `${v} 가 간 자리 수`);
+});
+
+await t('세 조가 과제를 낸 Build Camp 과제 준비', async () => {
+  await putProjects(admin, [camp(), camp({ id: DRAW, title: '추첨용 과제' }), plain]);
+  const mk = async (c, team, title) => {
+    const r = await submit(c, { projectId: DRAW, title, body: '내용', team });
+    eq(r.status, 200, `${title} 제출`);
+    return r.data.submission.id;
+  };
+  seat2 = await mk(kim, 2, '2조 작품');
+  spare2 = await mk(lee, 2, '2조 다른 작품');
+  seat3 = await mk(lee, 3, '3조 작품');
+  seat5 = await mk(park, 5, '5조 작품');
+});
+
+await t('아무도 안 뽑았으면 진행 상황이 0', async () => {
+  const r = await drawOrder(admin);
+  eq(r.status, 200, 'status');
+  eq(r.data.draw, null, '아직 추첨 전');
+  eq(r.data.progress.teams, 3, '제출이 있는 조 수');
+  eq(r.data.progress.picked, 0, '선정된 조 수');
+  eq(r.data.progress.missing.join(','), '2,3,5', '남은 조');
+});
+
+await t('제출이 없는 조는 기다리지 않음', async () => {
+  // 1·4·6·7·8조는 아무도 내지 않았습니다 — 그 조들 때문에 막히면 안 됩니다.
+  eq((await drawOrder(admin)).data.progress.teams, 3, '제출이 있는 조만 셈');
+});
+
+await t('선정이 덜 끝났으면 추첨이 막힘', async () => {
+  eq((await nominate(admin, seat2)).status, 200, '2조 선정');
+  eq((await nominate(admin, seat3)).status, 200, '3조 선정');
+
+  const info = await drawOrder(admin);
+  eq(info.data.progress.picked, 2, '선정된 조 수');
+  eq(info.data.progress.missing.join(','), '5', '남은 조');
+
+  const r = await runDraw(admin);
+  eq(r.status, 400, 'status');
+  ok(r.data.message.includes('5조'), `문구: ${r.data.message}`);
+});
+
+await t('마지막 조까지 뽑으면 추첨이 열림', async () => {
+  eq((await nominate(admin, seat5)).status, 200, '5조 선정');
+  const info = await drawOrder(admin);
+  eq(info.data.progress.picked, 3, '선정된 조 수');
+  eq(info.data.progress.missing.length, 0, '남은 조');
+});
+
+await t('일반 회원과 그룹장은 추첨할 수 없음', async () => {
+  eq((await runDraw(park)).status, 403, '일반 회원');
+  eq((await runDraw(leader2)).status, 403, '그룹장');
+});
+
+let firstOrder = [];
+
+await t('관리자가 뽑으면 선정된 발표가 한 번씩 들어감', async () => {
+  const r = await runDraw(admin);
+  eq(r.status, 200, 'status');
+  firstOrder = r.data.draw.order;
+  eq(firstOrder.length, 3, '자리 수');
+  eq(new Set(firstOrder).size, 3, '겹치지 않음');
+  eq(r.data.draw.seq, 1, '첫 추첨');
+  ok(r.data.draw.drawnAt, '추첨 시각');
+  eq(r.data.draw.drawnBy, ADMIN, '뽑은 사람');
+  eq([...firstOrder].sort().join(','), [seat2, seat3, seat5].sort().join(','), '선정된 것들');
+});
+
+await t('뽑히지 않은 제출물은 순서에 들어가지 않음', () => {
+  eq(firstOrder.includes(spare2), false, '2조의 다른 작품');
+});
+
+await t('뽑은 순서는 모두에게 같게 보임', async () => {
+  for (const [who, c] of [['박', park], ['그룹장', leader2]]) {
+    const r = await drawOrder(c);
+    eq(r.status, 200, `${who} status`);
+    eq(r.data.draw.order.join(','), firstOrder.join(','), `${who} 순서`);
+  }
+});
+
+await t('다시 뽑으면 횟수가 올라가고 줄은 하나로 유지됨', async () => {
+  const r = await runDraw(admin);
+  eq(r.status, 200, 'status');
+  eq(r.data.draw.seq, 2, '두 번째 추첨');
+  eq(r.data.draw.order.length, 3, '자리 수');
+  const raw = JSON.parse(await (await bucket.get('data/draws.json')).text());
+  eq(raw.filter((d) => d.projectId === DRAW).length, 1, '저장된 줄 수');
+});
+
+await t('추첨 뒤에 발표 과제가 바뀌면 어긋났다고 알려줌', async () => {
+  eq((await drawOrder(admin)).data.stale, false, '사전 조건');
+  eq((await nominate(leader2, spare2)).status, 200, '2조에서 다른 것을 뽑음');
+  eq((await drawOrder(admin)).data.stale, true, 'stale');
+});
+
+await t('다시 뽑으면 어긋남이 풀림', async () => {
+  eq((await runDraw(admin)).status, 200, '재추첨');
+  const r = await drawOrder(admin);
+  eq(r.data.stale, false, 'stale');
+  ok(r.data.draw.order.includes(spare2), '바뀐 발표가 들어감');
+  eq(r.data.draw.order.includes(seat2), false, '내려간 발표는 빠짐');
+});
+
+await t('일반 과제에서는 추첨하지 않음', async () => {
+  const r = await runDraw(admin, 'p_plain');
+  eq(r.status, 400, 'status');
+  ok(r.data.message.includes('Build Camp'), `문구: ${r.data.message}`);
+});
+
+await t('없는 과제는 404', async () => {
+  eq((await runDraw(admin, 'p_nope')).status, 404, 'POST');
+  eq((await drawOrder(admin, 'p_nope')).status, 404, 'GET');
+});
+
+await t('프로젝트를 지우면 추첨도 함께 사라짐', async () => {
+  await putProjects(admin, [camp(), plain]);
+  const raw = JSON.parse(await (await bucket.get('data/draws.json')).text());
+  eq(raw.some((d) => d.projectId === DRAW), false, '남은 추첨');
 });
 
 /* ======================================================== 정리 == */

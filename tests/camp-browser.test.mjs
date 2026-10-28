@@ -196,6 +196,7 @@ await step('조를 고르지 않으면 제출이 막힘', async () => {
 
 await step('조를 고르면 제출되고 상세에 조가 보임', async () => {
   kimId = await submitWork(kim, CAMP, '김 작품', 2);
+  await submitWork(leader, CAMP, '그룹장 작품', 2);   // 같은 조의 다른 작품
   const kv = (await kim.locator('.kv').first().innerText()).replace(/\s+/g, ' ');
   ok(kv.includes('2조'), `상세: ${kv}`);
   parkId = await submitWork(park, CAMP, '박 작품', 5);
@@ -239,7 +240,8 @@ await step('일반 회원에게는 선정 버튼이 없음', async () => {
 await step('그룹장이 발표 과제로 선정하면 배지가 붙음', async () => {
   await leader.goto(`${origin}/#/camp/${CAMP}`, { waitUntil: 'networkidle' });
   await leader.waitForSelector('[data-pick]', { timeout: 10000 });
-  await leader.locator('[data-pick]').first().click();
+  // 2조에는 '김 작품' 과 '그룹장 작품' 이 있습니다 — 어느 것을 뽑는지 분명히 합니다.
+  await leader.locator('.table tbody tr', { hasText: '김 작품' }).locator('[data-pick]').click();
   await leader.waitForSelector('.toast--ok', { timeout: 10000 });
   await leader.waitForSelector('.badge--gold:text-is("발표 과제")', { timeout: 8000 });
 
@@ -255,6 +257,174 @@ await step('관리자는 다른 조도 선정할 수 있음', async () => {
   await admin.waitForSelector('.toast--ok', { timeout: 10000 });
   const rows = JSON.parse(await (await bucket.get('data/submissions.json')).text());
   eq(rows.find((s) => s.id === parkId).presenting, true, '저장된 선정');
+});
+
+log('\n== 5-2. 발표 순서 추첨 ==');
+
+await step('선정이 덜 끝났으면 진행 상황만 보이고 버튼이 없음', async () => {
+  // 지금은 2조·5조가 뽑혔고, 아직 아무 조도 빠지지 않았습니다 — 먼저 한 조를
+  // 내려 "덜 끝난" 상태를 만듭니다.
+  await admin.goto(`${origin}/#/camp/${CAMP}?tab=teams`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('[data-order]', { timeout: 10000 });
+  const row = admin.locator('.table tbody tr', { hasText: '박 작품' });
+  await row.locator('[data-pick]').click();
+  await admin.waitForSelector('.toast--ok', { timeout: 10000 });
+
+  // 선정이 풀리면 추첨 버튼이 사라집니다 — 그게 다시 그려졌다는 신호입니다.
+  await admin.waitForSelector('[data-draw]', { state: 'detached', timeout: 8000 });
+  const text = (await admin.locator('[data-order]').innerText()).replace(/\s+/g, ' ');
+  ok(text.includes('1 / 2개 조'), `진행 상황: ${text}`);
+  ok(text.includes('5조'), `남은 조 안내: ${text}`);
+});
+
+await step('모두 뽑히면 관리자에게 추첨 버튼이 열림', async () => {
+  const row = admin.locator('.table tbody tr', { hasText: '박 작품' });
+  await row.locator('[data-pick]').click();
+  await admin.waitForSelector('.toast--ok', { timeout: 10000 });
+  await admin.waitForSelector('[data-draw]', { timeout: 8000 });
+  eq((await admin.locator('[data-draw]').innerText()).trim(), '발표 순서 추첨하기', '버튼 문구');
+  const text = (await admin.locator('[data-order]').innerText()).replace(/\s+/g, ' ');
+  ok(text.includes('2 / 2개 조'), `진행 상황: ${text}`);
+});
+
+await step('일반 회원에게는 추첨 버튼이 없고 기다리라고 안내', async () => {
+  await kim.goto(`${origin}/#/camp/${CAMP}?tab=teams`, { waitUntil: 'networkidle' });
+  await kim.waitForSelector('[data-order]', { timeout: 10000 });
+  eq(await kim.locator('[data-draw]').count(), 0, '버튼');
+  const text = (await kim.locator('[data-order]').innerText()).replace(/\s+/g, ' ');
+  ok(text.includes('관리자가 추첨하면'), `안내: ${text}`);
+});
+
+await step('추첨을 누르면 연출이 뜨고 순서가 하나씩 확정됨', async () => {
+  await admin.goto(`${origin}/#/camp/${CAMP}?tab=teams`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('[data-draw]', { timeout: 10000 });
+  await admin.locator('[data-draw]').click();
+
+  // 연출 화면이 뜨고, 뽑을 조들이 먼저 모여 있습니다.
+  await admin.waitForSelector('.drawstage', { timeout: 10000 });
+  eq(await admin.locator('.drawchip').count(), 2, '뽑을 조 수');
+  // 카운트다운 → 슬롯 → 결과까지는 몇 초 걸립니다.
+  await admin.waitForSelector('.drawstage.is-done', { timeout: 30000 });
+  eq(await admin.locator('.drawrow').count(), 2, '확정된 자리 수');
+
+  const seats = await admin.locator('.drawrow__seat').allInnerTexts();
+  eq(seats.join(','), '1,2', '번호');
+  const teams = await admin.locator('.drawrow__team').allInnerTexts();
+  eq([...teams].sort().join(','), '2조,5조', '뽑힌 조들');
+});
+
+await step('확인을 누르면 닫히고 본문에 순서가 남음', async () => {
+  await admin.locator('.drawstage [data-close]').click();
+  await admin.waitForSelector('.drawstage', { state: 'detached', timeout: 8000 });
+  await admin.waitForSelector('.orderlist .orderitem', { timeout: 8000 });
+  eq(await admin.locator('.orderitem').count(), 2, '본문 순서');
+
+  const rows = JSON.parse(await (await bucket.get('data/draws.json')).text());
+  const one = rows.find((d) => d.projectId === CAMP);
+  eq(one.order.length, 2, '저장된 자리 수');
+  eq(one.seq, 1, '첫 추첨');
+});
+
+await step('아직 안 본 사람에게는 순서를 감추고 확인하기만 보여줌', async () => {
+  // 해시만 같으면 화면이 다시 그려지지 않습니다 — 홈을 거쳐 들어갑니다.
+  await kim.goto(`${origin}/#/`, { waitUntil: 'networkidle' });
+  await kim.goto(`${origin}/#/camp/${CAMP}?tab=teams`, { waitUntil: 'networkidle' });
+  await kim.waitForSelector('[data-reveal]', { timeout: 12000 });
+  eq(await kim.locator('.drawstage').count(), 0, '묻지도 않고 연출이 뜸');
+  eq(await kim.locator('.orderitem').count(), 0, '순서를 미리 흘림');
+  const text = (await kim.locator('[data-order]').innerText()).replace(/\s+/g, ' ');
+  ok(text.includes('발표 순서가 나왔습니다'), `안내: ${text}`);
+});
+
+await step('평가 화면에서도 열어보기 전에는 순번을 흘리지 않음', async () => {
+  await kim.goto(`${origin}/#/camp/${CAMP}?tab=judge`, { waitUntil: 'networkidle' });
+  await kim.waitForSelector('.judge', { timeout: 10000 });
+  eq(await kim.locator('.judge .badge--open:text-matches("발표 \\d+번째")').count(), 0, '순번 배지');
+});
+
+await step('확인하기를 누르면 연출이 돌고 그 뒤에는 순서가 펼쳐짐', async () => {
+  await kim.goto(`${origin}/#/camp/${CAMP}?tab=teams`, { waitUntil: 'networkidle' });
+  await kim.waitForSelector('[data-reveal]', { timeout: 10000 });
+  await kim.locator('[data-reveal]').click();
+  await kim.waitForSelector('.drawstage', { timeout: 10000 });
+  await kim.locator('.drawstage [data-skip]').click();        // 건너뛰기 → 결과
+  await kim.waitForSelector('.drawstage.is-done', { timeout: 8000 });
+  await kim.locator('.drawstage [data-close]').click();
+  await kim.waitForSelector('.drawstage', { state: 'detached', timeout: 8000 });
+  await kim.waitForSelector('.orderitem', { timeout: 8000 });
+  eq(await kim.locator('.orderitem').count(), 2, '펼쳐진 순서');
+});
+
+await step('한 번 본 뒤에는 다시 묻지 않음', async () => {
+  await kim.goto(`${origin}/#/`, { waitUntil: 'networkidle' });
+  await kim.goto(`${origin}/#/camp/${CAMP}?tab=teams`, { waitUntil: 'networkidle' });
+  await kim.waitForSelector('[data-order]', { timeout: 10000 });
+  eq(await kim.locator('[data-reveal]').count(), 0, '다시 물음');
+  eq(await kim.locator('[data-replay]').count(), 1, '다시 보기 버튼');
+});
+
+await step('발표 평가 화면이 뽑힌 순서대로 정렬되고 순번이 붙음', async () => {
+  const order = (await admin.locator('.orderitem__team').allInnerTexts()).map((t) => t.trim());
+  await admin.goto(`${origin}/#/camp/${CAMP}?tab=judge`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('.judge', { timeout: 10000 });
+  const badges = await admin.locator('.judge .badge--open').allInnerTexts();
+  eq(badges[0].trim(), '발표 1번째', `첫 배지: ${badges[0]}`);
+
+  const teams = await admin.locator('.judge .badge--gold').allInnerTexts();
+  eq(teams.map((t) => t.trim()).join(','), order.join(','), '카드 차례가 순서와 같음');
+});
+
+await step('선정을 바꾸면 순서가 어긋났다고 알려줌', async () => {
+  await leader.goto(`${origin}/#/camp/${CAMP}?tab=teams`, { waitUntil: 'networkidle' });
+  await leader.waitForSelector('[data-pick]', { timeout: 10000 });
+  // 그룹장도 아직 순서를 안 봤으므로 먼저 열어 둡니다(가려진 상태에서는 어긋남
+  // 안내도 함께 가려집니다).
+  if (await leader.locator('[data-reveal]').count()) {
+    await leader.locator('[data-reveal]').click();
+    await leader.waitForSelector('.drawstage', { timeout: 10000 });
+    await leader.locator('.drawstage [data-skip]').click();
+    await leader.waitForSelector('.drawstage.is-done', { timeout: 8000 });
+    await leader.locator('.drawstage [data-close]').click();
+    await leader.waitForSelector('.drawstage', { state: 'detached', timeout: 8000 });
+  }
+  // 2조의 발표 과제를 '김 작품' 에서 '그룹장 작품' 으로 바꿉니다.
+  const row = leader.locator('.table tbody tr', { hasText: '그룹장 작품' });
+  await row.locator('[data-pick]').click();
+  await leader.waitForSelector('.toast--ok', { timeout: 10000 });
+  await leader.waitForSelector('[data-order] .notice--warn', { timeout: 8000 });
+
+  const text = (await leader.locator('[data-order]').innerText()).replace(/\s+/g, ' ');
+  ok(text.includes('발표 과제가 바뀌었습니다'), `안내: ${text}`);
+});
+
+await step('되돌려 놓으면 어긋남 안내도 사라짐', async () => {
+  const row = leader.locator('.table tbody tr', { hasText: '김 작품' });
+  await row.locator('[data-pick]').click();
+  await leader.waitForSelector('.toast--ok', { timeout: 10000 });
+  await leader.waitForSelector('[data-order] .notice--warn', { state: 'detached', timeout: 8000 });
+});
+
+await step('다시 추첨하면 횟수가 올라가고 어긋남이 풀림', async () => {
+  await admin.goto(`${origin}/#/camp/${CAMP}?tab=teams`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('[data-draw]', { timeout: 10000 });
+  eq((await admin.locator('[data-draw]').innerText()).trim(), '다시 추첨', '버튼 문구');
+  await admin.locator('[data-draw]').click();
+  // 다시 뽑기 전에 한 번 묻습니다.
+  await admin.waitForSelector('.modal', { timeout: 8000 });
+  await admin.locator('.modal').getByText('다시 추첨', { exact: true }).click();
+
+  await admin.waitForSelector('.drawstage', { timeout: 12000 });
+  await admin.locator('.drawstage [data-skip]').click();
+  await admin.waitForSelector('.drawstage.is-done', { timeout: 8000 });
+  await admin.locator('.drawstage [data-close]').click();
+  await admin.waitForSelector('.drawstage', { state: 'detached', timeout: 8000 });
+
+  await admin.waitForSelector('[data-order]', { timeout: 8000 });
+  const text = (await admin.locator('[data-order]').innerText()).replace(/\s+/g, ' ');
+  ok(text.includes('2번째 추첨'), `횟수: ${text}`);
+
+  const rows = JSON.parse(await (await bucket.get('data/draws.json')).text());
+  eq(rows.find((d) => d.projectId === CAMP).seq, 2, '저장된 횟수');
 });
 
 log('\n== 6. 발표 평가 (세 문항) ==');
@@ -368,6 +538,7 @@ await step('마감하면 입력칸이 사라지고 모두에게 점수가 공개
 });
 
 await step('마감 뒤에는 선정도 바꿀 수 없음', async () => {
+  await leader.goto(`${origin}/#/`, { waitUntil: 'networkidle' });
   await leader.goto(`${origin}/#/camp/${CAMP}?tab=teams`, { waitUntil: 'networkidle' });
   await leader.waitForSelector('#campBody', { timeout: 8000 });
   eq(await leader.locator('[data-pick]').count(), 0, '버튼');

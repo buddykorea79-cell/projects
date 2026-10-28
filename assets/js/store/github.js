@@ -5,6 +5,7 @@
  *   data/submissions.json   제출물 색인(메타데이터)
  *   data/votes.json         상호 투표 (표 한 줄씩)
  *   data/scores.json        AI Build Camp 발표 평가 (점수 한 줄씩)
+ *   data/draws.json         발표 순서 추첨 (과제마다 한 줄)
  *   uploads/<제출ID>/<파일명>  첨부 파일 원본
  *
  * 읽기 : raw.githubusercontent.com — 인증 없이 누구나. (공개 레포 기준)
@@ -18,6 +19,7 @@ import { summarizeVotes, applyVote } from './voting.js';
 import {
   isCamp, normTeam, summarizeScores, applyScore, myTeamIn,
   nominateBlock, applyNominate, TEAM_MAX,
+  nomineeProgress, drawBlock, shuffle, drawOf, drawStale,
 } from '../camp.js';
 
 const TOKEN_KEY = 'ah.gh.token';
@@ -208,6 +210,7 @@ export class GitHubStore {
   get postsPath()       { return `${this.cfg.dataDir}/posts.json`; }
   get votesPath()       { return `${this.cfg.dataDir}/votes.json`; }
   get scoresPath()      { return `${this.cfg.dataDir}/scores.json`; }
+  get drawsPath()       { return `${this.cfg.dataDir}/draws.json`; }
   get rosterPath()      { return `${this.cfg.dataDir}/roster.json`; }
   get attendancePath()  { return `${this.cfg.dataDir}/attendance.json`; }
 
@@ -396,6 +399,11 @@ export class GitHubStore {
         (Array.isArray(list) ? list : []).filter((r) => r.projectId !== id),
       `chore(scores): remove scores for project ${id}`);
     }
+    if ((await this.listDraws()).some((d) => d.projectId === id)) {
+      await this.mutateJSON(this.drawsPath, [], (list) =>
+        (Array.isArray(list) ? list : []).filter((d) => d.projectId !== id),
+      `chore(draws): remove draw for project ${id}`);
+    }
     await this.mutateJSON(this.projectsPath, [], (list) =>
       (Array.isArray(list) ? list : []).filter((p) => p.id !== id),
     `chore(projects): remove ${id}`);
@@ -572,6 +580,60 @@ export class GitHubStore {
       'chore(scores): drop scores of withdrawn presentation');
     }
     return this.getSubmission(submissionId);
+  }
+
+  /* ------------------------------------------------------ 발표 순서 추첨 -- */
+
+  async listDraws() {
+    const rows = await this.readJSON(this.drawsPath, []);
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /** 발표 순서 + 조별 선정 진행 상황 (서버 모드의 GET /draw 와 같은 모양). */
+  async drawOrder(projectId) {
+    const project = await this.getProject(projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+    const here = await this.listSubmissions({ projectId });
+    const draw = drawOf((await this.listDraws()).find((d) => d.projectId === projectId));
+    const p = nomineeProgress(here);
+    return {
+      draw,
+      progress: { teams: p.teams, picked: p.picked, missing: p.missing },
+      stale: drawStale(draw, here),
+    };
+  }
+
+  /** 발표 순서 추첨. 이미 뽑아 둔 것이 있으면 다시 뽑고 횟수를 올립니다. */
+  async runDraw(projectId) {
+    const me = this.auth?.me();
+    if (!me) throw new Error('로그인이 필요합니다.');
+    const project = await this.getProject(projectId);
+    if (!project) throw new Error('프로젝트를 찾을 수 없습니다.');
+
+    const here = await this.listSubmissions({ projectId });
+    const blocked = drawBlock(project, here, me);
+    if (blocked) throw new Error(blocked);
+
+    const order = shuffle(nomineeProgress(here).nominees.map((s) => s.id));
+    let saved = null;
+    await this.mutateJSON(this.drawsPath, [], (list) => {
+      const arr = Array.isArray(list) ? list : [];
+      const at = arr.findIndex((d) => d.projectId === projectId);
+      const before = at >= 0 ? arr[at] : null;
+      const row = {
+        id: before?.id || uid('dr_'),
+        projectId,
+        order,
+        seq: before ? Math.max(1, Math.round(Number(before.seq)) || 1) + 1 : 1,
+        drawnAt: new Date().toISOString(),
+        drawnBy: String(me.email || '').toLowerCase(),
+      };
+      if (at >= 0) arr[at] = row; else arr.push(row);
+      saved = row;
+      return arr;
+    }, `feat(draws): draw presentation order for ${projectId}`);
+
+    return drawOf(saved);
   }
 
   /** 세 문항 점수 주기. 같은 사람이 다시 주면 덮어씁니다. */
