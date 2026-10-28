@@ -13,7 +13,7 @@ import {
   isCamp, teamLabel, normTeam, teamRows, isNominee, canNominate,
   presentationOf, presentationPhase, PRESENT_PHASE_LABEL,
   RUBRIC, RUBRIC_TOTAL, scoreBlock, myTeamIn, normScore, TRACK_LABEL,
-  orderedNominees, nomineesComplete,
+  orderedNominees, nomineeProgress, DRAW_MIN_TEAMS,
 } from '../camp.js';
 import { playDraw, seenDraw, markDrawSeen } from './draw.js';
 import { esc, attr, fmtDate, normEmail, downloadBlob } from '../utils.js';
@@ -226,9 +226,16 @@ export async function campProjectView(mount, { id }, query) {
 function orderPanel(project, subs, info, { admin }) {
   const draw = info?.draw || null;
   const rows = orderedNominees(draw, subs);
-  const p = info?.progress || null;
-  const done = p ? p.teams > 0 && !p.missing.length : nomineesComplete(subs);
-  const pct = p && p.teams ? Math.round((p.picked / p.teams) * 100) : 0;
+  // 진행 상황은 저장소가 전체 제출물을 보고 세어 준 값입니다. 못 받았을 때만
+  // 화면에 있는 것으로 세는데, 일반 회원에게는 남의 제출물이 안 내려와 틀립니다.
+  const p = info?.progress || nomineeProgress(subs);
+  const done = p.teams > 0 && !p.missing.length;
+  const pct = p.teams ? Math.round((p.picked / p.teams) * 100) : 0;
+  // 모든 조가 정해지기를 기다리지 않습니다 — 둘만 정해지면 언제든 뽑습니다.
+  // 대신 지금 뽑으면 어느 조가 빠지는지 아래에서 분명히 알려 줍니다.
+  const canDraw = admin && p.picked >= DRAW_MIN_TEAMS;
+  const partial = canDraw && p.missing.length > 0;
+  const missingText = p.missing.map(teamLabel).join(' · ');
 
   const head = `
     <div class="page-head" style="margin-bottom:var(--space-3)">
@@ -238,7 +245,7 @@ function orderPanel(project, subs, info, { admin }) {
       </h2>
       <div class="row">
         ${rows.length ? '<button class="btn btn--quiet btn--sm" type="button" data-replay>다시 보기</button>' : ''}
-        ${admin && done ? `
+        ${canDraw ? `
           <button class="btn ${rows.length ? 'btn--outline' : 'btn--primary btn--draw'} btn--sm"
                   type="button" data-draw>
             ${rows.length ? '다시 추첨' : '발표 순서 추첨하기'}</button>` : ''}
@@ -268,7 +275,12 @@ function orderPanel(project, subs, info, { admin }) {
           <div class="notice notice--warn" style="margin-bottom:var(--space-3)">
             추첨한 뒤에 발표 과제가 바뀌었습니다. 지금 순서는 바뀐 내용을 담고 있지 않으니
             ${admin ? '<strong>다시 추첨</strong>해 주세요.' : '관리자에게 알려 주세요.'}
-          </div>` : ''}
+          </div>`
+          : (p.missing.length ? `
+          <div class="notice notice--info" style="margin-bottom:var(--space-3)">
+            ${esc(missingText)}는 발표 과제가 정해지기 전에 뽑아서 이 순서에 없습니다.
+            ${admin ? '지금 정해졌다면 <strong>다시 추첨</strong>해 주세요.' : ''}
+          </div>` : '')}
         <ol class="orderlist">
           ${rows.map(({ seat, sub }) => `
             <li class="orderitem">
@@ -301,9 +313,14 @@ function orderPanel(project, subs, info, { admin }) {
           ? (admin
             ? '모든 조의 발표 과제가 정해졌습니다. 이제 순서를 뽑을 수 있습니다.'
             : '모든 조의 발표 과제가 정해졌습니다. 관리자가 추첨하면 이곳에 순서가 뜹니다.')
-          : (p && p.missing.length
-            ? `${esc(p.missing.map(teamLabel).join(' · '))}의 발표 과제가 아직 정해지지 않았습니다.`
-            : '조마다 그룹장이 발표 과제를 하나 뽑으면 순서를 추첨합니다.')}
+          : partial
+            ? `${esc(missingText)}의 발표 과제가 아직 없습니다.
+               기다렸다 뽑아도 되고, <strong>지금 뽑으면 그 조는 순서에서 빠집니다.</strong>`
+            : p.missing.length
+              ? `${esc(missingText)}의 발표 과제가 아직 정해지지 않았습니다.`
+              : '조마다 그룹장이 발표 과제를 하나 뽑으면 순서를 추첨합니다.'}
+        ${admin && !canDraw && p.teams
+          ? `발표 과제가 ${esc(DRAW_MIN_TEAMS)}개 조 이상 정해져야 추첨할 수 있습니다.` : ''}
       </p>
     </div>`;
 }
@@ -324,12 +341,26 @@ function bindOrderPanel(mount, project, subs, info, redraw) {
   mount.querySelector('[data-draw]')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     const again = Boolean(info.draw);
-    if (again) {
+    const missing = (info.progress?.missing || []).map(teamLabel);
+
+    // 다시 뽑거나, 아직 안 정해진 조를 두고 뽑을 때는 한 번 묻습니다.
+    // 둘 다 "모르고 눌렀다" 가 생기면 곤란한 일이라서입니다.
+    if (again || missing.length) {
       const ok = await confirmModal({
-        title: '발표 순서를 다시 뽑을까요?',
-        body: '지금 순서는 사라지고 새로 뽑습니다.\n'
-          + '몇 번째 추첨인지는 기록에 남아 모두에게 보입니다.',
-        confirmLabel: '다시 추첨', danger: true,
+        title: again ? '발표 순서를 다시 뽑을까요?' : '아직 정해지지 않은 조가 있습니다',
+        body: [
+          again
+            ? '지금 순서는 사라지고 새로 뽑습니다.\n'
+              + '몇 번째 추첨인지는 기록에 남아 모두에게 보입니다.'
+            : '',
+          missing.length
+            ? `${missing.join(' · ')}의 발표 과제가 아직 없습니다.\n`
+              + '지금 뽑으면 그 조는 순서에서 빠집니다.\n'
+              + '나중에 정해지면 "순서가 어긋났다"고 떠서, 그때 다시 뽑으면 됩니다.'
+            : '',
+        ].filter(Boolean).join('\n\n'),
+        confirmLabel: again ? '다시 추첨' : '이대로 추첨',
+        danger: true,
       });
       if (!ok) return;
     }

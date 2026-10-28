@@ -261,28 +261,26 @@ await step('관리자는 다른 조도 선정할 수 있음', async () => {
 
 log('\n== 5-2. 발표 순서 추첨 ==');
 
-await step('선정이 덜 끝났으면 진행 상황만 보이고 버튼이 없음', async () => {
-  // 지금은 2조·5조가 뽑혔고, 아직 아무 조도 빠지지 않았습니다 — 먼저 한 조를
-  // 내려 "덜 끝난" 상태를 만듭니다.
+await step('한 조가 비어도 관리자에게는 추첨 버튼이 그대로 있음', async () => {
+  // 5조 선정을 내려 "한 조가 아직 안 정해진" 상태를 만듭니다.
   await admin.goto(`${origin}/#/camp/${CAMP}?tab=teams`, { waitUntil: 'networkidle' });
   await admin.waitForSelector('[data-order]', { timeout: 10000 });
   const row = admin.locator('.table tbody tr', { hasText: '박 작품' });
   await row.locator('[data-pick]').click();
   await admin.waitForSelector('.toast--ok', { timeout: 10000 });
-
-  // 선정이 풀리면 추첨 버튼이 사라집니다 — 그게 다시 그려졌다는 신호입니다.
+  // 조가 하나뿐이면 뽑을 것이 없어 버튼이 사라집니다 — 그게 다시 그려졌다는 신호입니다.
   await admin.waitForSelector('[data-draw]', { state: 'detached', timeout: 8000 });
+
   const text = (await admin.locator('[data-order]').innerText()).replace(/\s+/g, ' ');
   ok(text.includes('1 / 2개 조'), `진행 상황: ${text}`);
-  ok(text.includes('5조'), `남은 조 안내: ${text}`);
+  ok(text.includes('2개 조 이상'), `안내: ${text}`);
 });
 
-await step('모두 뽑히면 관리자에게 추첨 버튼이 열림', async () => {
+await step('둘 이상 정해지면 남은 조가 있어도 버튼이 열리고 빠진다고 알려줌', async () => {
   const row = admin.locator('.table tbody tr', { hasText: '박 작품' });
-  await row.locator('[data-pick]').click();
+  await row.locator('[data-pick]').click();            // 5조 다시 선정 → 2개 조
   await admin.waitForSelector('.toast--ok', { timeout: 10000 });
   await admin.waitForSelector('[data-draw]', { timeout: 8000 });
-  eq((await admin.locator('[data-draw]').innerText()).trim(), '발표 순서 추첨하기', '버튼 문구');
   const text = (await admin.locator('[data-order]').innerText()).replace(/\s+/g, ' ');
   ok(text.includes('2 / 2개 조'), `진행 상황: ${text}`);
 });
@@ -544,6 +542,72 @@ await step('마감 뒤에는 선정도 바꿀 수 없음', async () => {
   eq(await leader.locator('[data-pick]').count(), 0, '버튼');
   const text = (await leader.locator('#campBody').innerText()).replace(/\s+/g, ' ');
   ok(text.includes('마감되어 선정을 바꿀 수 없습니다'), `안내: ${text}`);
+});
+
+log('\n== 8-2. 한 조가 비어 있을 때 뽑기 ==');
+
+// 조가 중간에 없어지거나 그룹장이 끝내 안 뽑는 일이 있어서, 한 조가 비어도
+// 관리자는 뽑을 수 있어야 합니다. 앞 흐름을 건드리지 않게 과제를 따로 씁니다.
+const CAMP2 = 'pc2';
+
+await step('세 조가 낸 과제를 따로 준비하고 두 조만 선정', async () => {
+  await putProjects([campProject(), campProject({ id: CAMP2, title: '한 조가 빈 과제' })]);
+  await submitWork(kim, CAMP2, '1조 작품', 1);
+  await submitWork(park, CAMP2, '3조 작품', 3);
+  await submitWork(admin, CAMP2, '6조 작품', 6);
+
+  await admin.goto(`${origin}/#/camp/${CAMP2}?tab=teams`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('[data-order]', { timeout: 10000 });
+  for (const title of ['1조 작품', '3조 작품']) {
+    await admin.locator('.table tbody tr', { hasText: title }).locator('[data-pick]').click();
+    await admin.waitForSelector('.toast--ok', { timeout: 10000 });
+    await admin.waitForTimeout(250);
+  }
+});
+
+await step('6조가 비어 있어도 추첨 버튼이 뜨고 빠진다고 알려줌', async () => {
+  await admin.waitForSelector('[data-draw]', { timeout: 10000 });
+  const text = (await admin.locator('[data-order]').innerText()).replace(/\s+/g, ' ');
+  ok(text.includes('2 / 3개 조'), `진행 상황: ${text}`);
+  ok(text.includes('6조'), `빠지는 조 안내: ${text}`);
+  ok(text.includes('순서에서 빠집니다'), `안내 문구: ${text}`);
+});
+
+await step('누르면 한 번 묻고, 뽑힌 순서에는 두 조만 들어감', async () => {
+  await admin.locator('[data-draw]').click();
+  await admin.waitForSelector('.modal', { timeout: 8000 });
+  const body = (await admin.locator('.modal').innerText()).replace(/\s+/g, ' ');
+  ok(body.includes('6조'), `확인 문구: ${body}`);
+  await admin.locator('.modal').getByText('이대로 추첨', { exact: true }).click();
+
+  await admin.waitForSelector('.drawstage', { timeout: 12000 });
+  eq(await admin.locator('.drawchip').count(), 2, '뽑을 조 수');
+  await admin.locator('.drawstage [data-skip]').click();
+  await admin.waitForSelector('.drawstage.is-done', { timeout: 8000 });
+  await admin.locator('.drawstage [data-close]').click();
+  await admin.waitForSelector('.drawstage', { state: 'detached', timeout: 8000 });
+
+  await admin.waitForSelector('.orderitem', { timeout: 8000 });
+  eq(await admin.locator('.orderitem').count(), 2, '순서 자리 수');
+  const teams = await admin.locator('.orderitem__team').allInnerTexts();
+  eq([...teams].map((t) => t.trim()).sort().join(','), '1조,3조', '들어간 조');
+
+  const rows = JSON.parse(await (await bucket.get('data/draws.json')).text());
+  eq(rows.find((d) => d.projectId === CAMP2).order.length, 2, '저장된 자리 수');
+});
+
+await step('뽑은 뒤에도 빠진 조가 있다고 남겨 둠', async () => {
+  const text = (await admin.locator('[data-order]').innerText()).replace(/\s+/g, ' ');
+  ok(text.includes('6조'), `안내: ${text}`);
+  ok(text.includes('이 순서에 없습니다'), `안내: ${text}`);
+});
+
+await step('6조가 뒤늦게 정해지면 어긋났다고 알려줌', async () => {
+  await admin.locator('.table tbody tr', { hasText: '6조 작품' }).locator('[data-pick]').click();
+  await admin.waitForSelector('.toast--ok', { timeout: 10000 });
+  await admin.waitForSelector('[data-order] .notice--warn', { timeout: 8000 });
+  const text = (await admin.locator('[data-order] .notice--warn').innerText()).replace(/\s+/g, ' ');
+  ok(text.includes('발표 과제가 바뀌었습니다'), `안내: ${text}`);
 });
 
 log('\n== 9. 옛 투표 화면 ==');

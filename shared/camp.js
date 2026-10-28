@@ -359,7 +359,7 @@ export function applyNominate(subs, target, on = true) {
 
 /* ----------------------------------------------------- 발표 순서 추첨 -- */
 
-/** 추첨에는 적어도 두 조가 있어야 합니다 — 한 조뿐이면 뽑을 것이 없습니다. */
+/** 추첨에는 뽑힌 발표가 적어도 둘 있어야 합니다 — 하나뿐이면 뽑을 것이 없습니다. */
 export const DRAW_MIN_TEAMS = 2;
 
 /**
@@ -379,17 +379,17 @@ export function nomineeProgress(subs) {
   };
 }
 
-/** 선정이 다 끝났는지 — 추첨 버튼을 열어도 되는 때입니다. */
-export function nomineesComplete(subs) {
-  const p = nomineeProgress(subs);
-  return p.teams >= DRAW_MIN_TEAMS && p.missing.length === 0;
-}
-
 /**
  * 지금 발표 순서를 뽑을 수 없는 이유. 뽑을 수 있으면 null 입니다.
  *
  * 추첨은 **관리자만** 합니다. 모두가 같은 하나의 순서를 봐야 하는데, 여럿이
  * 각자 뽑으면 어느 것이 진짜인지 알 수 없기 때문입니다.
+ *
+ * 모든 조가 정해지기를 **기다리지 않습니다.** 조가 중간에 없어지거나 그룹장이
+ * 끝내 안 뽑는 일이 있어서, 한 조라도 비면 버튼이 영영 안 열리기 때문입니다.
+ * 뽑힌 발표가 둘 이상이면 언제든 뽑을 수 있고, 아직 안 정해진 조는 그 순서에서
+ * 빠집니다(나중에 정해지면 `drawStale` 이 "어긋났다"고 알려 다시 뽑게 합니다).
+ * 지금 뽑으면 어느 조가 빠지는지는 화면이 미리 일러 줍니다.
  */
 export function drawBlock(project, subs, me) {
   if (!isCamp(project)) return 'AI Build Camp 과제에서만 발표 순서를 뽑습니다.';
@@ -397,11 +397,9 @@ export function drawBlock(project, subs, me) {
 
   const p = nomineeProgress(subs);
   if (!p.teams) return '아직 제출된 과제가 없습니다.';
-  if (p.teams < DRAW_MIN_TEAMS) {
-    return `발표할 조가 ${DRAW_MIN_TEAMS}개 조 이상이어야 추첨할 수 있습니다.`;
-  }
-  if (p.missing.length) {
-    return `${p.missing.map(teamLabel).join(' · ')}의 발표 과제가 아직 정해지지 않았습니다.`;
+  if (p.picked < DRAW_MIN_TEAMS) {
+    return `발표 과제가 ${DRAW_MIN_TEAMS}개 조 이상 정해져야 추첨할 수 있습니다`
+      + `${p.picked ? ` (지금 ${p.picked}개 조)` : ''}.`;
   }
   return null;
 }
