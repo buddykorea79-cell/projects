@@ -36,6 +36,7 @@ export async function adminView(mount) {
           </div>
           <div class="row">
             <a class="btn btn--primary" href="#/admin/project/new">＋ 프로젝트 개설</a>
+            <a class="btn btn--festa" href="#/admin/festa">페스타 접수·평가 관리</a>
             <a class="btn btn--outline" href="#/admin/attendance">수강 현황</a>
             <a class="btn btn--outline" href="#/admin/members">회원 관리</a>
           </div>
@@ -565,8 +566,7 @@ export async function projectFormView(mount, { id }) {
                 ${normTrack(p?.track) === t ? 'selected' : ''}>${esc(TRACK_LABEL[t])}</option>`).join('')}
             </select>
             <span class="field__hint">
-              <strong>${esc(TRACK_LABEL.buildcamp)}</strong> 으로 고르면 상단 메뉴
-              <strong>Build Camp</strong> 에 올라오고, 교육생이 제출할 때
+              <strong>${esc(TRACK_LABEL.buildcamp)}</strong>로 고르면 교육생이 제출할 때
               <strong>조(1조~8조)</strong>를 함께 고릅니다. 그룹장은 자기 조가 낸 과제를
               모아 보고 그 중에서 발표 과제를 하나 뽑습니다
               (그룹장 지정은 <a href="#/admin/members">회원 관리</a>).

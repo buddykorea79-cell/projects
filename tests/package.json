@@ -7,6 +7,7 @@
     "test:auth": "node auth.test.mjs",
     "test:vote": "node vote.test.mjs",
     "test:camp": "node camp.test.mjs",
+    "test:festa": "node festa.test.mjs",
     "test:attendance": "node attendance.test.mjs",
     "test:telegram": "node telegram.test.mjs",
     "test:r2": "node r2.test.mjs",
@@ -16,7 +17,8 @@
     "test:attendance-browser": "node attendance-browser.test.mjs",
     "test:late-browser": "node late-browser.test.mjs",
     "test:camp-browser": "node camp-browser.test.mjs",
-    "test": "npm run test:parse && npm run test:auth && npm run test:vote && npm run test:camp && npm run test:attendance && npm run test:telegram && npm run test:r2 && npm run test:github && npm run test:r2-browser && npm run test:attendance-browser && npm run test:late-browser && npm run test:camp-browser"
+    "test:festa-browser": "node festa-browser.test.mjs",
+    "test": "npm run test:parse && npm run test:auth && npm run test:vote && npm run test:camp && npm run test:festa && npm run test:attendance && npm run test:telegram && npm run test:r2 && npm run test:github && npm run test:r2-browser && npm run test:attendance-browser && npm run test:late-browser && npm run test:camp-browser && npm run test:festa-browser"
   },
   "devDependencies": {
     "acorn": "^8.14.0",

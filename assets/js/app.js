@@ -7,6 +7,7 @@ import { toastErr, toastOk, emptyState } from './ui.js';
 import * as R from './router.js';
 
 import { homeView } from './views/home.js';
+import { festaView, festaAdminView } from './views/festa.js';
 import { projectView, submitView } from './views/project.js';
 import { myView, submissionView, editSubmissionView } from './views/my.js';
 import { guideView } from './views/guide.js';
@@ -60,7 +61,7 @@ function renderNavLinks() {
   const signed = isSignedIn();
   document.querySelectorAll('.gnav__links a, .gnav__drawer a').forEach((a) => {
     const href = a.getAttribute('href') || '';
-    const memberOnly = ['#/materials', '#/camp', '#/board', '#/my'].includes(href);
+    const memberOnly = ['#/materials', '#/board', '#/my'].includes(href);
     a.hidden = memberOnly && !signed;
   });
 }
@@ -71,7 +72,7 @@ function markActiveNav(path) {
     const nav = a.dataset.nav;
     const active = (nav === 'home' && (key === 'home' || key === 'p'))
       || (nav === 'materials' && key === 'materials')
-      || (nav === 'camp' && key === 'camp')
+      || (nav === 'festa' && key === 'festa')
       || (nav === 'board' && key === 'board')
       || (nav === 'my' && (key === 'my' || key === 's'))
       || (nav === 'guide' && key === 'guide');
@@ -102,7 +103,7 @@ async function updateFrap(path) {
   const frap = $('#frap');
   if (!isSignedIn() || path.startsWith('/admin') || path.startsWith('/materials')
       || path.startsWith('/board') || path.startsWith('/vote')
-      || path.startsWith('/camp')
+      || path.startsWith('/camp') || path.startsWith('/festa')
       || path.includes('/submit') || PUBLIC_PATHS.has(path)) {
     frap.hidden = true;
     return;
@@ -126,10 +127,10 @@ function signInWall(path) {
   main.innerHTML = `<section class="section"><div class="wrap wrap--narrow">
     ${emptyState({
     title: '로그인이 필요합니다',
-    body: '과제 제출과 강의자료는 회원만 이용할 수 있습니다.',
+    body: path === '/festa' ? '로그인하면 페스타에 작품을 접수하고 평가할 수 있습니다.' : '과제 제출과 강의자료는 회원만 이용할 수 있습니다.',
     action: `<div class="row" style="justify-content:center">
         <a class="btn btn--primary" href="#/login?next=${attr(encodeURIComponent(path))}">로그인</a>
-        <a class="btn btn--outline" href="#/signup">회원가입</a>
+        <a class="btn btn--outline" href="#/signup?next=${attr(encodeURIComponent(path))}">회원가입</a>
       </div>`,
   })}
   </div></section>`;
@@ -181,10 +182,11 @@ function registerRoutes() {
   R.route('/my', view((m) => myView(m)));
 
   R.route('/camp', view((m) => campHomeView(m)));
+  R.route('/festa', view(festaView));
+  R.route('/admin/festa', view(festaAdminView, { admin: true }));
   R.route('/camp/:id', view((m, p, q) => campProjectView(m, p, q)));
 
-  // 상호 투표는 상단 메뉴에서 내렸지만(그 자리에 Build Camp 가 들어갔습니다)
-  // 기능은 그대로입니다 — 프로젝트 상세에서 들어가고 옛 주소도 계속 열립니다.
+  // 기존 과제의 상호 투표와 조별 발표는 프로젝트 상세에서 접근합니다.
   R.route('/vote', view((m) => voteHomeView(m)));
   R.route('/vote/:id', view((m, p) => voteProjectView(m, p)));
 

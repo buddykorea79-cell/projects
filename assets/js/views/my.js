@@ -31,7 +31,10 @@ export async function myView(mount) {
             <h1 class="page-title">내 제출물</h1>
             <p class="page-sub">${esc(me.institution || '')} · ${esc(me.name)} · ${esc(me.email)}</p>
           </div>
-          <a class="btn btn--quiet" href="#/account">내 계정</a>
+          <div class="row">
+            <a class="btn btn--outline" href="#/festa">내 페스타 접수 확인</a>
+            <a class="btn btn--quiet" href="#/account">내 계정</a>
+          </div>
         </div>
         <div id="myResult">${spinner()}</div>
       </div>

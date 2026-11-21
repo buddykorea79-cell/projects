@@ -49,6 +49,7 @@ export async function homeView(mount) {
     : '과제 제출과 강의자료는 로그인이 필요합니다.'}
           </p>
           <div class="row">
+            <a class="btn btn--festa btn--lg" href="#/festa">말하는 대로, 바이브 코딩 페스타 접수</a>
             ${signed ? `
               <button class="btn btn--primary btn--lg" type="button" data-scroll-projects>
                 진행중 프로젝트 보기
@@ -113,7 +114,10 @@ export async function homeView(mount) {
             <h2 class="page-title">프로젝트</h2>
             <p class="page-sub">${signed ? '참여할 과제를 선택하세요.' : '로그인하면 과제 목록이 보입니다.'}</p>
           </div>
-          ${isAdmin() ? '<a class="btn btn--outline" href="#/admin/project/new">＋ 프로젝트 개설</a>' : ''}
+          <div class="row">
+            <a class="btn btn--festa" href="#/festa">말하는 대로, 바이브 코딩 페스타 접수</a>
+            ${isAdmin() ? '<a class="btn btn--outline" href="#/admin/project/new">＋ 프로젝트 개설</a>' : ''}
+          </div>
         </div>
         <div id="projectGrid">${spinner()}</div>
       </div>

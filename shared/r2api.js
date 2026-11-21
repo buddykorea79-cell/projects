@@ -76,6 +76,7 @@ import {
   handleTelegramWebhook,
 } from './telegram.js';
 import { sendResetEmail } from './email.js';
+import { handleFesta } from './festa.js';
 import {
   normTeam, isCamp, normRole, leaderTeam, isNominee,
   presentationOf, presentationPhase, summarizeScores, normScore, scoreBlock, myTeamIn,
@@ -285,6 +286,14 @@ async function route(request, env, url, path, cors, waitUntil) {
     if (method === 'GET') return drawRequest(request, env, url, cors);
     if (method === 'POST') return runDraw(request, env, cors);
     return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+  }
+
+  /* ------------------------------------------------------- 개인 페스타 -- */
+
+  if (path === '/festa' || path.startsWith('/festa/')) {
+    const got = await requireMember(request, env);
+    if (got.error) return json({ message: got.error }, got.status, cors);
+    return handleFesta(request, env, { path, member: got.member, cors });
   }
 
   /* ------------------------------------------------------- 파일 -- */

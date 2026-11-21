@@ -107,16 +107,16 @@ const campProject = (over = {}) => ({
 
 log('\n== 1. 메뉴 ==');
 
-await step('상단 메뉴에 과제 투표가 없고 Build Camp 가 있음', async () => {
+await step('상단 메뉴에 과제 투표·Build Camp 대신 Festa 접수가 있음', async () => {
   await signup(admin, 'aireader@mois.go.kr', '관리자');
   const links = await admin.locator('.gnav__links a').allInnerTexts();
   eq(links.includes('과제 투표'), false, `과제 투표가 남아 있음: ${links.join(' / ')}`);
-  eq(links.includes('Build Camp'), true, `Build Camp 없음: ${links.join(' / ')}`);
-  eq(await admin.locator('.gnav__links a[href="#/camp"]').count(), 1, '링크');
+  eq(links.includes('Build Camp'), false, `Build Camp 메뉴가 남아 있음: ${links.join(' / ')}`);
+  eq(await admin.locator('.gnav__links a[href="#/festa"]').count(), 1, 'Festa 링크');
 });
 
-await step('Build Camp 메뉴를 누르면 목록이 열림', async () => {
-  await admin.locator('.gnav__links a[href="#/camp"]').click();
+await step('기존 Build Camp 주소에서 목록이 계속 열림', async () => {
+  await admin.goto(`${origin}/#/camp`, { waitUntil: 'networkidle' });
   await admin.waitForSelector('.page-title', { timeout: 8000 });
   eq(await admin.locator('h1.page-title').innerText(), 'Build Camp', '제목');
   await admin.waitForSelector('.empty h3', { timeout: 8000 });

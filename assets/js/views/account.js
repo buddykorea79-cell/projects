@@ -53,7 +53,7 @@ export function loginView(mount) {
 
         <p style="text-align:center;margin-top:var(--space-4);color:var(--text-black-soft);font-size:1.4rem">
           아직 계정이 없으신가요?
-          <a href="#/signup">회원가입</a>
+          <a href="#/signup${currentQuery().has('next') ? '?next=' + encodeURIComponent(nextPath()) : ''}">회원가입</a>
         </p>
         <p style="text-align:center;margin-top:var(--space-2);font-size:1.3rem;color:var(--text-black-soft)">
           <a href="#/forgot">비밀번호를 잊으셨나요?</a>
@@ -347,7 +347,7 @@ export function resetView(mount) {
 /* ----------------------------------------------------------- 회원가입 -- */
 
 export function signupView(mount) {
-  if (currentUser()) { go('/', { replace: true }); return; }
+  if (currentUser()) { go(nextPath(), { replace: true }); return; }
 
   mount.innerHTML = `
     <section class="section">
@@ -396,7 +396,7 @@ export function signupView(mount) {
         </form>
 
         <p style="text-align:center;margin-top:var(--space-4);color:var(--text-black-soft);font-size:1.4rem">
-          이미 계정이 있으신가요? <a href="#/login">로그인</a>
+          이미 계정이 있으신가요? <a href="#/login${currentQuery().has('next') ? '?next=' + encodeURIComponent(nextPath()) : ''}">로그인</a>
         </p>
       </div>
     </section>`;
@@ -428,7 +428,7 @@ export function signupView(mount) {
         password: form.password.value,
       });
       toastOk(`${me.name}님, 가입이 완료되었습니다.`);
-      go('/');
+      go(nextPath());
     } catch (err) {
       busy(btn, false);
       // 서버가 항목별 오류를 주면 그 자리에 표시합니다.

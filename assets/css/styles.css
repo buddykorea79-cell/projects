@@ -200,6 +200,28 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 
 .btn--primary   { background: var(--green-accent); color: #fff; border-color: var(--green-accent); }
 .btn--primary:hover { background: #00623d; border-color: #00623d; }
+.btn--festa {
+  background: #a51e57; color: #fff; border-color: #a51e57;
+  white-space: normal; text-align: center; word-break: keep-all;
+}
+.btn--festa:hover { background: #861644; border-color: #861644; color: #fff; }
+
+.band.festa-hero { padding-block: var(--space-4); }
+.festa-stack { display: grid; gap: var(--space-4); min-width: 0; overflow-wrap: anywhere; }
+.festa-stack > * { min-width: 0; }
+.festa-form-grid, .festa-score-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4);
+}
+.festa-description { white-space: pre-wrap; overflow-wrap: anywhere; }
+.festa-entry-head, .festa-file-row { display: flex; align-items: flex-start; gap: var(--space-3); }
+.festa-entry-head { flex-wrap: wrap; justify-content: space-between; }
+.festa-entry-head > * { min-width: 0; max-width: 100%; }
+.festa-file-row > :first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.card.festa-receipt { background: #f3faf6; border: 1px solid #8ab69d; }
+.festa-total { font-weight: 700; font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) {
+  .festa-form-grid, .festa-score-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .btn--outline   { background: transparent; color: var(--green-accent); border-color: var(--green-accent); }
 .btn--outline:hover { background: rgba(0,117,74,.06); }
 .btn--dark      { background: var(--ink-black); color: #fff; border-color: var(--ink-black); }
