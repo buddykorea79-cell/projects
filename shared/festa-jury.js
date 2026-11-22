@@ -2,7 +2,7 @@
 import { readState, updateState, fail, reply, jsonBody, requireAdmin, entryInstitution, validEmail,
   judgeCanScore, validJuryScores as validScores } from './festa.js';
 import { normEmail, hashPassword, verifyPassword, signSession, readSession, cookieValue, safeEqual, sessionSecret, conditionFor } from './auth.js';
-import { publishClosedFinalIfReady } from './festa-awards.js';
+import { publishClosedFinalIfReady, finalBallots } from './festa-awards.js';
 
 export const JURY_KEYS = ['mois', 'iwest', 'final'];
 export const JURY_LABELS = { mois: '행정안전부 1차 평가', iwest: '한국서부발전 1차 평가', final: '2차 본선 평가' };
@@ -46,14 +46,15 @@ function panelOf(state, key, create = false) {
   }
   const panel = state.juryPanels[key];
   if (!panel || !['draft', 'open', 'closed'].includes(panel.status)
-      || !Array.isArray(panel.entryIds) || !Array.isArray(panel.judges) || !Array.isArray(panel.scores)) {
+      || !Array.isArray(panel.entryIds) || !Array.isArray(panel.judges) || !Array.isArray(panel.scores)
+      || (panel.memberScores !== undefined && !Array.isArray(panel.memberScores))) {
     fail(503, '심사위원 데이터 형식이 올바르지 않습니다.');
   }
   return panel;
 }
 
 function draftOnly(panel) {
-  if (panel.status !== 'draft' || panel.scores.length) fail(409, '심사를 시작한 뒤에는 작품과 위원 배정을 변경할 수 없습니다.');
+  if (panel.status !== 'draft' || panel.scores.length || panel.memberScores?.length) fail(409, '심사를 시작한 뒤에는 작품과 위원 배정을 변경할 수 없습니다.');
 }
 
 function entryList(state, key, entryIds, opening = false) {
@@ -121,9 +122,25 @@ function publicEntry(entry, judge, rows) {
 function adminPanel(state, key) {
   const panel = panelOf(state, key);
   const entries = entryList(state, key, panel.entryIds);
-  const rows = scoreRows(panel, entries);
+  let rows = key === 'final' ? finalBallots(panel, entries).rows : scoreRows(panel, entries);
+  const people = new Map();
+  if (key === 'final') {
+    for (const row of rows) {
+      const previous = people.get(row.email);
+      if (!previous || (row.member && !previous.member)
+          || String(row.memberCreatedAt || '') > String(previous.memberCreatedAt || '')) people.set(row.email, row);
+    }
+    // 이전 PIN·재가입 이력이 있어도 관리자 참여 인원은 같은 이메일을 한 사람으로 표시합니다.
+    rows = rows.map((row) => ({ ...row, judgeId: people.get(row.email).judgeId }));
+  }
+  const participants = [...people.values()].map((row) => ({
+    id: row.judgeId, name: row.name, email: row.email, member: row.member,
+    scoredCount: rows.filter((score) => score.email === row.email).length,
+    eligibleCount: entries.filter((entry) => normEmail(entry.author?.email) !== row.email).length,
+  }));
   return {
     key, label: JURY_LABELS[key], status: panel.status, entryIds: [...panel.entryIds],
+    ...(key === 'final' ? { memberVoting: true, participants, minimumBallots: 1 } : {}),
     judges: panel.judges.map((judge) => ({
       id: judge.id, name: judge.name, email: judge.email, expiresAt: judge.expiresAt || null,
       revoked: Boolean(judge.revoked), hasInvite: Boolean(judge.tokenHash && judge.pinHash),
@@ -159,6 +176,7 @@ async function configure(request, env, member, cors) {
   const key = panelKey(body.panel);
   const { state } = await updateState(env, (current) => {
     const panel = panelOf(current, key, true);
+    if (key === 'final' && current.awardsPublication) fail(409, '공개된 본선 결과는 변경할 수 없습니다.');
     draftOnly(panel);
     entryList(current, key, body.entryIds);
     panel.entryIds = [...body.entryIds];
@@ -263,25 +281,36 @@ async function changeStatus(request, env, member, cors) {
   const { state } = await updateState(env, (current) => {
     const panel = panelOf(current, key, true);
     if (body.status === 'open') {
+      if (key === 'final' && current.awardsPublication) fail(409, '공개된 본선 결과는 변경할 수 없습니다.');
       draftOnly(panel);
       if (current.phase === 'open') fail(409, '출품 접수를 수동 마감한 뒤 심사를 시작하세요.');
       const entries = entryList(current, key, panel.entryIds, true);
-      if (!panel.judges.length || panel.judges.some((judge) => !judge.tokenHash || !judge.pinHash
-          || judge.revoked || judge.expiresAt <= Date.now())) fail(409, '모든 배정 위원에게 유효한 개별 초대를 먼저 발급하세요.');
-      if (entries.some((entry) => !panel.judges.some((judge) => judgeCanScore(judge, entry)))) {
-        fail(409, '본인 평가를 제외한 유효 심사위원이 없는 작품이 있습니다. 위원 배정을 확인하세요.');
+      if (key !== 'final') {
+        if (!panel.judges.length || panel.judges.some((judge) => !judge.tokenHash || !judge.pinHash
+            || judge.revoked || judge.expiresAt <= Date.now())) fail(409, '모든 배정 위원에게 유효한 개별 초대를 먼저 발급하세요.');
+        if (entries.some((entry) => !panel.judges.some((judge) => judgeCanScore(judge, entry)))) {
+          fail(409, '본인 평가를 제외한 유효 심사위원이 없는 작품이 있습니다. 위원 배정을 확인하세요.');
+        }
       }
       panel.status = 'open';
       panel.openedAt = new Date().toISOString();
     } else {
       if (panel.status !== 'open') fail(409, '진행 중인 심사만 마감할 수 있습니다.');
       const entries = entryList(current, key, panel.entryIds, true);
-      const rows = scoreRows(panel, entries);
-      const scored = new Set(rows.map((row) => `${row.judgeId}/${row.entryId}`));
-      if (entries.some((entry) => {
-        const eligible = panel.judges.filter((judge) => judgeCanScore(judge, entry));
-        return !eligible.length || eligible.some((judge) => !scored.has(`${judge.id}/${entry.id}`));
-      })) fail(409, '모든 배정 위원의 평가가 완료된 뒤 마감하세요.');
+      if (key === 'final') {
+        const ballots = finalBallots(panel, entries);
+        if (ballots.issues.length) fail(409, ballots.issues.join(' '));
+        if (entries.some((entry) => !ballots.rows.some((row) => row.entryId === entry.id))) {
+          fail(409, '모든 본선 작품에 본인 평가를 제외한 유효 평가가 최소 1건 있어야 마감할 수 있습니다.');
+        }
+      } else {
+        const rows = scoreRows(panel, entries);
+        const scored = new Set(rows.map((row) => `${row.judgeId}/${row.entryId}`));
+        if (entries.some((entry) => {
+          const eligible = panel.judges.filter((judge) => judgeCanScore(judge, entry));
+          return !eligible.length || eligible.some((judge) => !scored.has(`${judge.id}/${entry.id}`));
+        })) fail(409, '모든 배정 위원의 평가가 완료된 뒤 마감하세요.');
+      }
       panel.status = 'closed';
       panel.closedAt = new Date().toISOString();
       if (key === 'final') publishClosedFinalIfReady(current);
@@ -380,6 +409,7 @@ async function issueSession(request, env, key, judge, cors) {
 
 async function unlockCommon(request, env, body, cors) {
   const key = panelKey(body.panel);
+  if (key === 'final') fail(409, '2차 본선 평가는 회원 로그인 후 참여해 주세요. 심사 코드는 필요하지 않습니다.');
   // Cloudflare가 덮어쓰는 실제 접속 주소만 신뢰합니다. 임의 X-Forwarded-For로 제한을 우회할 수 없습니다.
   const source = await privateSelector(env, 'source', key, (request.headers.get('CF-Connecting-IP') || 'unknown').slice(0, 64));
   const { state } = await readState(env);
@@ -409,6 +439,7 @@ async function unlock(request, env, cors) {
   const body = await jsonBody(request);
   if (!Object.hasOwn(body, 'token')) return unlockCommon(request, env, body, cors);
   const context = await invitationContext(env, body.token);
+  if (context.key === 'final') fail(409, '2차 본선 평가는 회원 로그인 후 참여해 주세요. 심사 코드는 필요하지 않습니다.');
   if (body.panel !== undefined && body.panel !== context.key) fail(400, '초대와 심사 단계가 일치하지 않습니다.');
   if (context.panel.status !== 'open') fail(409, '현재 진행 중인 심사가 아닙니다.');
   if (Number(context.judge.lockedUntil || 0) > Date.now()) fail(429, 'PIN 입력 시도가 많습니다. 10분 후 다시 시도하세요.');
@@ -451,6 +482,7 @@ async function authenticatedContext(request, env, credentials, mustBeOpen = fals
   const legacy = credentials.token !== undefined;
   let context = legacy ? await invitationContext(env, credentials.token) : null;
   const key = context?.key || panelKey(credentials.panel);
+  if (key === 'final') fail(409, '2차 본선 평가는 회원 로그인 후 참여해 주세요. 심사 코드는 필요하지 않습니다.');
   if (credentials.panel !== undefined && credentials.panel !== key) fail(401, '심사 로그인 정보가 일치하지 않습니다.');
   const signed = cookieValue(request.headers.get('Cookie'), `fj_${key}`);
   const session = await readSession(signed, env);
@@ -507,10 +539,14 @@ async function score(request, env, cors) {
 
 async function download(request, env, rawKey, cors) {
   const context = await authenticatedContext(request, env, queryCredentials(request), true, true);
+  return downloadAssigned(env, context.state, context.panel, rawKey, cors);
+}
+
+async function downloadAssigned(env, state, panel, rawKey, cors) {
   let key;
   try { key = decodeURIComponent(rawKey); } catch { fail(400, '파일 경로가 올바르지 않습니다.'); }
   if (!FILE_RE.test(key)) fail(400, '파일 경로가 올바르지 않습니다.');
-  const entry = context.state.entries.find((row) => context.panel.entryIds.includes(row.id)
+  const entry = state.entries.find((row) => panel.entryIds.includes(row.id)
     && row.files?.some((file) => file.key === key));
   if (!entry) fail(403, '배정된 작품의 첨부파일만 열 수 있습니다.');
   const obj = await env.BUCKET.get(key);
@@ -525,8 +561,63 @@ async function download(request, env, rawKey, cors) {
   } });
 }
 
+async function memberIdentity(env, member) {
+  if (!member || (member.status || 'active') !== 'active' || !validEmail(normEmail(member.email))) {
+    fail(401, '회원 로그인 후 2차 본선 평가에 참여해 주세요.');
+  }
+  const email = normEmail(member.email);
+  const memberCreatedAt = String(member.createdAt || '');
+  return { id: `fm_${await privateSelector(env, 'member', 'final', JSON.stringify([email, memberCreatedAt]))}`,
+    email, name: String(member.name || ''), memberCreatedAt };
+}
+
+async function memberFinal(env, member, cors) {
+  const identity = await memberIdentity(env, member);
+  const { state } = await readState(env);
+  const panel = panelOf(state, 'final');
+  const entries = panel.status === 'open' ? entryList(state, 'final', panel.entryIds) : [];
+  // 재가입한 계정에는 이전 가입의 비공개 점수를 보여 주지 않습니다.
+  const own = (panel.memberScores || []).filter((row) => row.memberId === identity.id)
+    .map((row) => ({ ...row, judgeId: identity.id }));
+  return reply({ panel: 'final', label: JURY_LABELS.final, status: panel.status,
+    judgeId: identity.id, judgeName: identity.name,
+    entries: entries.map((entry) => publicEntry(entry, identity, own)) }, 200, cors);
+}
+
+async function memberScore(request, env, member, cors) {
+  const identity = await memberIdentity(env, member);
+  const body = await jsonBody(request);
+  if (body.expectedMemberId !== undefined && body.expectedMemberId !== identity.id) {
+    fail(409, '로그인한 회원이 바뀌었습니다. 현재 계정을 확인한 뒤 평가해 주세요.');
+  }
+  if (typeof body.entryId !== 'string' || !validScores(body.scores)) fail(400, '각 배점(40·30·20·10) 안에서 네 항목의 정수 점수를 입력하세요.');
+  await updateState(env, (state) => {
+    const panel = panelOf(state, 'final');
+    if (panel.status !== 'open' || state.awardsPublication) fail(409, '현재 진행 중인 2차 본선 평가가 아닙니다.');
+    if (!panel.entryIds.includes(body.entryId)) fail(403, '본선에 선정된 작품만 평가할 수 있습니다.');
+    const entry = state.entries.find((row) => row.id === body.entryId);
+    if (!entry || !judgeCanScore(identity, entry)) fail(403, '자신의 작품은 평가할 수 없습니다.');
+    panel.memberScores ??= [];
+    // 이전 가입/동일 이메일의 표도 작품당 한 표로 교체합니다. 신원은 요청 본문에서 받지 않습니다.
+    panel.memberScores = panel.memberScores.filter((row) => !(normEmail(row.email) === identity.email && row.entryId === entry.id));
+    panel.memberScores.push({ memberId: identity.id, email: identity.email, memberCreatedAt: identity.memberCreatedAt,
+      name: identity.name, entryId: entry.id, scores: [...body.scores], updatedAt: new Date().toISOString() });
+  });
+  return reply({ ok: true, entryId: body.entryId, myScores: [...body.scores] }, 200, cors);
+}
+
+async function memberDownload(env, member, rawKey, cors) {
+  await memberIdentity(env, member);
+  const { state } = await readState(env);
+  const panel = panelOf(state, 'final');
+  if (panel.status !== 'open' || state.awardsPublication) fail(409, '현재 진행 중인 2차 본선 평가가 아닙니다.');
+  return downloadAssigned(env, state, panel, rawKey, cors);
+}
+
 export async function handleJury(request, env, { path, member, cors = {} }) {
   if (request.method === 'GET') {
+    if (path === '/festa/jury/member-final') return memberFinal(env, member, cors);
+    if (path.startsWith('/festa/jury/member-file/')) return memberDownload(env, member, path.slice('/festa/jury/member-file/'.length), cors);
     if (path === '/festa/jury/admin') return overview(env, member, cors);
     if (path === '/festa/jury/invitation') {
       const credentials = queryCredentials(request);
@@ -539,6 +630,7 @@ export async function handleJury(request, env, { path, member, cors = {} }) {
     if (path.startsWith('/festa/jury/file/')) return download(request, env, path.slice('/festa/jury/file/'.length), cors);
   }
   if (request.method === 'POST') {
+    if (path === '/festa/jury/member-score') return memberScore(request, env, member, cors);
     if (path === '/festa/jury/panel') return configure(request, env, member, cors);
     if (path === '/festa/jury/judge') return saveJudge(request, env, member, cors);
     if (path === '/festa/jury/judge/remove') return removeJudge(request, env, member, cors);

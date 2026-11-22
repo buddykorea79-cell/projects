@@ -85,7 +85,7 @@ await test('마감 전·누락 평가·유효 심사위원 없음은 공개 준�
     (s) => { s.juryPanels.final.judges[0].email = s.entries[0].author.email; s.juryPanels.final.scores = s.juryPanels.final.scores.filter((r) => r.entryId !== s.entries[0].id); },
   ]) { const state = fixture(); mutate(state); assert.equal(calculateAwards(state).ready, false); }
 });
-await test('자기평가를 제외한 모든 배정 심사가 필요하며 평균은 실제 유효 평가 수로 계산', () => {
+await test('부분 참여 회원·이전 위원도 작품별 실제 유효 평가 수로 평균을 계산', () => {
   const state = fixture();
   state.juryPanels.final.judges.push({ id: 'fj_judge2', email: state.entries[0].author.email, name: '참가 심사위원' });
   for (const entry of state.entries.slice(1)) state.juryPanels.final.scores.push({ judgeId: 'fj_judge2', entryId: entry.id, scores: [0, 0, 0, 0] });
@@ -93,6 +93,45 @@ await test('자기평가를 제외한 모든 배정 심사가 필요하며 평�
   assert.equal(result.ready, true, result.issues.join(' '));
   assert.equal(result.ranking.find((row) => row.entryId === state.entries[0].id).average, 80);
   assert.equal(result.ranking.find((row) => row.entryId === state.entries[3].id).average, 47.5);
+});
+await test('최종 위원 지정 없이 회원 평가만으로 작품당 한 표 정족수를 충족', () => {
+  const state = fixture();
+  const panel = state.juryPanels.final;
+  panel.memberScores = panel.scores.map((row) => ({ memberId: `fm_${'a'.repeat(64)}`, email: 'audience@example.com',
+    memberCreatedAt: '2026-01-01T00:00:00Z', name: '회원 평가자', entryId: row.entryId, scores: row.scores }));
+  panel.judges = []; panel.scores = [];
+  const result = calculateAwards(state);
+  assert.equal(result.ready, true, result.issues.join(' '));
+  assert.deepEqual(result.recipients, calculateAwards(fixture()).recipients);
+  assert.ok(result.ranking.every((row) => row.ballotCount === 1));
+});
+await test('같은 이메일의 회원표는 이전 위원표를 대체하며 다른 부분 참여자는 별도 한 표', () => {
+  const state = fixture();
+  state.juryPanels.final.judges.push({ id: 'fj_unused', email: 'not-participating@example.com' });
+  state.juryPanels.final.memberScores = [
+    { memberId: `fm_${'a'.repeat(64)}`, email: 'JUDGE@example.com', memberCreatedAt: '', name: '기존 위원 회원', entryId: state.entries[0].id, scores: [0, 0, 0, 0] },
+    { memberId: `fm_${'b'.repeat(64)}`, email: 'audience@example.com', memberCreatedAt: '', name: '부분 참여', entryId: state.entries[0].id, scores: [40, 30, 20, 10] },
+  ];
+  const result = calculateAwards(state);
+  assert.equal(result.ready, true, result.issues.join(' '));
+  const first = result.ranking.find((row) => row.entryId === state.entries[0].id);
+  assert.equal(first.average, 50); assert.equal(first.ballotCount, 2);
+  assert.equal(result.ranking.find((row) => row.entryId === state.entries[1].id).ballotCount, 1);
+});
+await test('회원 평가도 중복·자기평가·미선정·잘못된 신원·범위초과 점수를 수상 계산에서 차단', () => {
+  const seed = { memberId: `fm_${'a'.repeat(64)}`, email: 'audience@example.com', memberCreatedAt: '', name: '회원',
+    entryId: 'fe_final_1', scores: [1, 2, 3, 4] };
+  for (const mutate of [
+    (rows) => rows.push(structuredClone(rows[0])),
+    (rows) => { rows[0].email = 'candidate1@example.com'; },
+    (rows) => { rows[0].entryId = 'not-selected'; },
+    (rows) => { rows[0].memberId = 'invalid'; },
+    (rows) => { rows[0].scores[0] = 41; },
+  ]) {
+    const state = fixture(); state.juryPanels.final.memberScores = [structuredClone(seed)];
+    mutate(state.juryPanels.final.memberScores);
+    assert.equal(calculateAwards(state).ready, false);
+  }
 });
 await test('후보는 정확히6개·서로다른사람·필요기관을 만족해야 함', () => {
   for (const mutate of [
@@ -237,6 +276,29 @@ await test('미리보기 이후 후보 정보가 바뀌면 재검토해야 함',
   const result = await ctx.admin('/festa/awards/publish', { revision: preview.body.revision, confirm: true });
   assert.equal(result.status, 409);
   assert.equal((await ctx.guest('/festa/awards')).status, 404);
+});
+await test('미리보기 이후 회원 평가가 바뀌어도 재검토하고 동시 마감은 마지막 유효표를 동결', async () => {
+  const ctx = await setup();
+  const preview = await ctx.admin('/festa/awards/preview');
+  const changed = fixture();
+  changed.juryPanels.final.memberScores = [{ memberId: `fm_${'a'.repeat(64)}`, email: 'audience@example.com',
+    memberCreatedAt: '', name: '회원', entryId: changed.entries[0].id, scores: [0, 0, 0, 0] }];
+  await ctx.bucket.put('data/festa.json', JSON.stringify(changed));
+  assert.equal((await ctx.admin('/festa/awards/publish', { revision: preview.body.revision, confirm: true })).status, 409);
+
+  const state = fixture(); state.juryPanels.final.status = 'open';
+  const concurrent = await setup(state);
+  const [score, close] = await Promise.all([
+    concurrent.member('/festa/jury/member-score', { entryId: state.entries[0].id, scores: [0, 0, 0, 0] }),
+    concurrent.admin('/festa/jury/status', { panel: 'final', status: 'closed' }),
+  ]);
+  assert.ok([200, 409].includes(score.status)); assert.equal(close.status, 200);
+  const stored = JSON.parse(await (await concurrent.bucket.get('data/festa.json')).text());
+  const published = await concurrent.guest('/festa/awards');
+  assert.equal(published.status, 200);
+  assert.deepEqual(published.body.recipients, calculateAwards(stored).recipients);
+  assert.equal((await concurrent.member('/festa/jury/member-score', { entryId: state.entries[0].id, scores: [40, 30, 20, 10] })).status, 409);
+  assert.deepEqual((await concurrent.guest('/festa/awards')).body, published.body);
 });
 await test('동시 발행 요청은 한 번만 성공', async () => {
   const ctx = await setup();

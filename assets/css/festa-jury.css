@@ -46,12 +46,17 @@
 .fj-note { color: var(--text-black-soft); font-size: 1.4rem; }
 .fj-unlock { width:100%; margin-inline:auto; }
 .main:has(.fj-unlock) > .fj-hero { display:none; }
+.main:has(.fj-member) > .fj-hero { display:none; }
+.fj-member-heading { gap:var(--space-3); }
 .section:has(.fj-unlock) { padding-block:2.4rem; }
 .fj-unlock .page-title { margin-top:var(--space-2); font-size:clamp(2.2rem,5vw,3rem); }
 .fj-code-input { max-width:24rem; font-size:2.4rem; letter-spacing:.3em; font-variant-numeric:tabular-nums; }
+.fj-rehearsal-source { display:grid; grid-template-columns:minmax(0,1fr) minmax(160px,220px); gap:var(--space-3); align-items:center; }
+.fj-rehearsal-source .field { margin:0; }
 .festa-jury .btn { max-width: 100%; }
 @media (max-width: 640px) {
   .fj-form-grid, .fj-assign-row { grid-template-columns: minmax(0,1fr); }
+  .fj-rehearsal-source { grid-template-columns:minmax(0,1fr); }
   .fj-assign-row button { justify-self: start; }
   .fj-entry-nav { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .fj-score-row { grid-template-columns: minmax(0,1fr) 80px; gap: 12px; }

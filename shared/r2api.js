@@ -78,6 +78,7 @@ import {
 import { sendResetEmail } from './email.js';
 import { handleFesta, FestaError, reply as festaReply } from './festa.js';
 import { handleJury } from './festa-jury.js';
+import { handleRehearsal } from './festa-rehearsal.js';
 import { handleAwards } from './festa-awards.js';
 import {
   normTeam, isCamp, normRole, leaderTeam, isNominee,
@@ -295,6 +296,7 @@ async function route(request, env, url, path, cors, waitUntil) {
 
   if (path === '/festa' || path.startsWith('/festa/')) {
     const context = { path, member: await currentMember(request, env), cors };
+    if (path.startsWith('/festa/rehearsal/')) return handleRehearsal(request, env, context);
     if (path.startsWith('/festa/jury/')) return handleJury(request, env, context);
     if (path === '/festa/awards' || path.startsWith('/festa/awards/')) return handleAwards(request, env, context);
     return handleFesta(request, env, context);

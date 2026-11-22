@@ -101,10 +101,10 @@ try {
     assert.equal((await outsider.request.get(`${origin}/api/festa/jury/admin`)).status(), 401);
     await outsider.close();
   });
-  await step('세 기관별 공용 주소는 발급 전에도 개인 코드 폼으로 바로 입장', async () => {
+  await step('두 기관 1차 공용 주소는 코드 폼, 본선은 회원 로그인 안내', async () => {
     const guest = await browser.newContext();
     const screen = await guest.newPage();
-    for (const [key, title] of [['mois', '행정안전부'], ['iwest', '한국서부발전'], ['final', '2차 본선']]) {
+    for (const [key, title] of [['mois', '행정안전부'], ['iwest', '한국서부발전']]) {
       await screen.goto(`${origin}/#/festa/jury/${key}`);
       await screen.getByTestId('juror-unlock-form').waitFor();
       assert.ok((await screen.getByTestId('juror-panel-title').innerText()).includes(title));
@@ -129,6 +129,10 @@ try {
       await admin.getByTestId('jury-panel-url').waitFor();
       assert.equal(await admin.getByTestId('jury-panel-url').inputValue(), `${origin}/#/festa/jury/${key}`);
     }
+    await screen.goto(`${origin}/#/festa/jury/final`);
+    await screen.getByText('로그인이 필요합니다', {exact:true}).waitFor();
+    assert.equal(await screen.locator('[name=pin]').count(), 0);
+    assert.equal(await screen.locator('a[href="#/login?next=%2Ffesta%2Fjury%2Ffinal"]').count(), 1);
     await admin.locator('[data-panel=mois]').click();
     await admin.getByTestId('jury-roster-form').waitFor();
     await guest.close();
@@ -360,18 +364,69 @@ try {
     assert.equal(await westPage.locator('[data-juror-entry]').count(), 1);
     assert.equal((await westContext.request.get(new URL(await westPage.getByTestId('jury-file').getAttribute('href'), origin).href)).status(), 200);
     await post(adminContext, '/festa/jury/panel', { panel: 'final', entryIds: entries.slice(0, 6).map((entry) => entry.id) });
-    const { judge: finalJudge } = await post(adminContext, '/festa/jury/judge', { panel: 'final', name: '본선 심사위원', email: 'final-judge@example.com' });
-    await post(adminContext, '/festa/jury/invite', { panel: 'final', judgeId: finalJudge.id, pin: '234567' });
     await post(adminContext, '/festa/jury/status', { panel: 'final', status: 'open' });
+    await post(westContext, '/auth/signup', {email:'final-learner@example.com',name:'본선 참여 회원',institution:'행정안전부',password:'Jury-browser-2026!'});
     const finalPage = await westContext.newPage();
     await finalPage.goto(`${origin}/#/festa/jury/final`);
-    await finalPage.locator('[name=pin]').fill('234567');
-    await apiClick(finalPage, 'unlock', () => finalPage.getByTestId('juror-unlock').click());
-    await finalPage.getByTestId('juror-identity').getByText('본선 심사위원').waitFor();
+    await finalPage.getByTestId('juror-identity').getByText('본선 참여 회원').waitFor();
+    assert.equal(await finalPage.locator('[name=pin]').count(), 0);
     assert.equal(await finalPage.locator('[data-juror-entry]').count(), 6);
     await apiClick(westPage, 'logout', () => westPage.getByTestId('juror-signout').click());
-    assert.equal((await westContext.request.get(`${origin}/api/festa/jury/session?panel=final&judgeId=${finalJudge.id}`)).status(), 200);
+    assert.equal((await westContext.request.get(`${origin}/api/festa/jury/member-final`)).status(), 200);
     await westContext.close();
+  });
+  await step('회원 로그인 복귀·선택 참여·본인 제외·작품별 최소 평가 후 본선 마감', async () => {
+    await admin.locator('[data-panel=final]').click();
+    await admin.getByTestId('jury-member-setup').waitFor();
+    assert.equal(await admin.getByTestId('jury-add-judge-form').count(), 0);
+    assert.equal(await admin.locator('[data-invite-judge]').count(), 0);
+    assert.ok((await admin.getByTestId('jury-member-participants').innerText()).includes('아직 평가를 저장한 회원이 없습니다'));
+    const memberContext = await browser.newContext({ viewport: { width: 375, height: 800 } });
+    const memberPage = await memberContext.newPage();
+    memberPage.on('pageerror', (error) => errors.push(error.message));
+    await memberPage.goto(`${origin}/#/festa/jury/final`);
+    await memberPage.locator('a[href="#/login?next=%2Ffesta%2Fjury%2Ffinal"]').click();
+    await memberPage.locator('#loginForm [name=email]').fill('final-learner@example.com');
+    await memberPage.locator('#loginForm [name=password]').fill('Jury-browser-2026!');
+    await memberPage.locator('#loginForm button[type=submit]').click();
+    await memberPage.getByTestId('juror-score-form').waitFor();
+    assert.ok(memberPage.url().endsWith('#/festa/jury/final'));
+    assert.equal(await memberPage.locator('[name=pin]').count(), 0);
+    assert.equal(await memberPage.getByTestId('juror-signout').count(), 0);
+    const fileUrl = new URL(await memberPage.getByTestId('jury-file').getAttribute('href'), origin).href;
+    assert.ok(fileUrl.includes('/jury/member-file/'));
+    assert.equal((await memberContext.request.get(fileUrl)).status(), 200);
+    const anonymous = await browser.newContext();
+    assert.equal((await anonymous.request.get(fileUrl)).status(), 401);
+    await anonymous.close();
+    for (let i = 0; i < 4; i += 1) await memberPage.locator(`[name=score${i}]`).fill('0');
+    await apiClick(memberPage, 'member-score', () => memberPage.getByTestId('juror-score-save').click());
+    await memberPage.getByTestId('juror-progress').getByText('평가 1 / 6건 완료').waitFor();
+    await memberPage.locator('[name=score0]').fill('1');
+    await apiClick(memberPage, 'member-score', () => memberPage.getByTestId('juror-score-save').click());
+    const privateSession = await (await memberContext.request.get(`${origin}/api/festa/jury/member-final`)).json();
+    assert.equal(privateSession.entries[0].myScores[0], 1);
+    assert.ok(privateSession.entries.every((entry) => !('average' in entry) && !('email' in entry.author)));
+    const earlyClose = await adminContext.request.post(`${origin}/api/festa/jury/status`, {data:{panel:'final',status:'closed'}});
+    assert.equal(earlyClose.status(), 409);
+    await admin.locator('[data-jury-refresh]').click();
+    await admin.getByTestId('jury-member-participants').getByText('본선 참여 회원', {exact:true}).waitFor();
+    const ownContext = await browser.newContext();
+    await post(ownContext, '/auth/login', {email:'entrant0@example.com',password:'Jury-browser-2026!'});
+    const ownPage = await ownContext.newPage();
+    await ownPage.goto(`${origin}/#/festa/jury/final`);
+    await ownPage.locator(`[data-juror-entry="${entries[0].id}"]`).click();
+    await ownPage.getByTestId('juror-score-blocked').waitFor();
+    assert.equal(await ownPage.getByTestId('juror-score-form').count(), 0);
+    assert.equal((await ownContext.request.post(`${origin}/api/festa/jury/member-score`, {data:{entryId:entries[0].id,scores:[40,30,20,10]}})).status(), 403);
+    await ownContext.close();
+    for (const [index, entry] of entries.slice(1, 6).entries()) await post(memberContext, '/festa/jury/member-score', {entryId:entry.id,scores:[20+index,20,10,5]});
+    await confirmStage(admin, 'closed');
+    await admin.getByTestId('jury-results-link').waitFor();
+    await memberPage.getByTestId('member-final-refresh').click();
+    await memberPage.getByTestId('juror-closed').waitFor();
+    assert.equal((await memberContext.request.get(fileUrl)).status(), 409);
+    await memberContext.close();
   });
   await step('브라우저 예외가 없음', () => assert.deepEqual(errors, []));
 } finally {

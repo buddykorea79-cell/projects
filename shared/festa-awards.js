@@ -1,6 +1,6 @@
 /** 최종 시상: 검토용 계산과 발행된 공개 스냅샷을 명확히 분리합니다. */
 import { readState, updateState, fail, reply, jsonBody, requireAdmin, entryInstitution,
-  judgeCanScore, juryScoreLimits as LIMITS, validJuryScores as validScores } from './festa.js';
+  judgeCanScore, juryScoreLimits as LIMITS, validJuryScores as validScores, validEmail } from './festa.js';
 import { normEmail } from './auth.js';
 
 const TITLE = '말하는 대로, 바이브 코딩 페스타';
@@ -43,6 +43,49 @@ function recipient(row, award) {
   };
 }
 
+/** 기존 위원표와 회원표를 이메일·작품별 한 표로 합칩니다. 회원표는 같은 사람의 이전 위원표를 대체합니다. */
+export function finalBallots(panel, entries) {
+  const issues = [];
+  const judges = Array.isArray(panel?.judges) ? panel.judges : [];
+  const works = new Map(entries.map((entry) => [entry.id, entry]));
+  const byJudge = new Map(judges.map((judge) => [judge?.id, judge]));
+  if (judges.some((judge) => !judge?.id || !validEmail(normEmail(judge.email)))
+      || byJudge.size !== judges.length || new Set(judges.map((judge) => normEmail(judge.email))).size !== judges.length) {
+    issues.push('이전 최종 심사위원 명단에 중복·누락이 있습니다.');
+  }
+  const ballots = new Map();
+  const seenLegacy = new Set();
+  for (const row of Array.isArray(panel?.scores) ? panel.scores : []) {
+    const judge = byJudge.get(row?.judgeId);
+    const entry = works.get(row?.entryId);
+    const duplicate = `${row?.judgeId}/${row?.entryId}`;
+    if (!judge || !entry || !judgeCanScore(judge, entry) || !validScores(row?.scores) || seenLegacy.has(duplicate)) {
+      issues.push('최종 평가에 중복·미배정·자기평가 또는 범위를 벗어난 점수가 있습니다. 심사 기록을 확인해 주세요.');
+      continue;
+    }
+    seenLegacy.add(duplicate);
+    const email = normEmail(judge.email);
+    ballots.set(`${email}/${entry.id}`, { judgeId: judge.id, email, name: judge.name || '',
+      entryId: entry.id, scores: [...row.scores], member: false });
+  }
+  if (panel?.memberScores !== undefined && !Array.isArray(panel.memberScores)) issues.push('회원 평가 기록 형식이 올바르지 않습니다.');
+  const seenMembers = new Set();
+  for (const row of Array.isArray(panel?.memberScores) ? panel.memberScores : []) {
+    const email = normEmail(row?.email);
+    const entry = works.get(row?.entryId);
+    const unique = `${email}/${row?.entryId}`;
+    if (!/^fm_[a-f0-9]{64}$/.test(row?.memberId) || typeof row.memberCreatedAt !== 'string'
+        || !entry || !judgeCanScore({ id: row.memberId, email }, entry) || !validScores(row?.scores) || seenMembers.has(unique)) {
+      issues.push('회원 평가에 중복·미배정·자기평가 또는 범위를 벗어난 점수가 있습니다. 심사 기록을 확인해 주세요.');
+      continue;
+    }
+    seenMembers.add(unique);
+    ballots.set(unique, { judgeId: row.memberId, email, name: row.name || '', entryId: entry.id,
+      scores: [...row.scores], member: true, memberCreatedAt: row.memberCreatedAt });
+  }
+  return { rows: [...ballots.values()], issues: [...new Set(issues)] };
+}
+
 /** 관리자 전용 계산 결과. 운영 상태는 변경하지 않습니다. */
 export function calculateAwards(state, suppliedOrder) {
   const issues = [];
@@ -64,34 +107,14 @@ export function calculateAwards(state, suppliedOrder) {
       || existing.filter((entry) => entryInstitution(entry) === '한국서부발전').length < 1) {
     issues.push('상위 수상자 선정을 위해 행정안전부 후보 2명 이상과 한국서부발전 후보 1명 이상이 필요합니다.');
   }
-  const judges = Array.isArray(panel?.judges) ? panel.judges : [];
-  if (!judges.length || judges.some((judge) => !judge?.id || !normEmail(judge.email))
-      || new Set(judges.map((judge) => judge.id)).size !== judges.length
-      || new Set(judges.map((judge) => normEmail(judge.email))).size !== judges.length) {
-    issues.push('최종 심사위원 명단이 없거나 중복·누락이 있습니다.');
-  }
-  const rows = Array.isArray(panel?.scores) ? panel.scores : [];
-  const seen = new Set();
-  const votes = new Map();
-  for (const row of rows) {
-    const judge = judges.find((item) => item.id === row?.judgeId);
-    const entry = existing.find((item) => item.id === row?.entryId);
-    const key = `${row?.judgeId}:${row?.entryId}`;
-    if (!judge || !entry || !judgeCanScore(judge, entry) || !validScores(row?.scores) || seen.has(key)) {
-      issues.push('최종 평가에 중복·미배정·자기평가 또는 범위를 벗어난 점수가 있습니다. 심사 기록을 확인해 주세요.');
-      continue;
-    }
-    seen.add(key);
-    votes.set(key, row.scores);
-  }
+  const votes = finalBallots(panel, existing);
+  issues.push(...votes.issues);
   const candidates = existing.map((entry) => {
-    const eligible = judges.filter((judge) => judgeCanScore(judge, entry));
-    const completed = eligible.map((judge) => votes.get(`${judge.id}:${entry.id}`)).filter(Boolean);
-    if (!eligible.length) issues.push(`“${entry.title}”에 자기평가를 제외한 심사위원이 최소 1명 필요합니다.`);
-    if (completed.length !== eligible.length) issues.push(`“${entry.title}”의 배정 심사가 완료되지 않았습니다 (${completed.length}/${eligible.length}).`);
+    const completed = votes.rows.filter((row) => row.entryId === entry.id).map((row) => row.scores);
+    if (!completed.length) issues.push(`“${entry.title}”에 본인 평가를 제외한 유효 평가가 최소 1건 필요합니다.`);
     return {
       id: entry.id, institution: entryInstitution(entry), name: String(entry.author?.name || '').trim(), title: String(entry.title || '').trim(),
-      expected: eligible.length, count: completed.length,
+      expected: Math.max(1, completed.length), count: completed.length,
       sum: completed.reduce((sum, scores) => sum + total(scores), 0),
       items: LIMITS.map((_, i) => completed.reduce((sum, scores) => sum + scores[i], 0)),
     };
@@ -146,6 +169,10 @@ function fingerprint(state) {
     judges: (Array.isArray(panel?.judges) ? panel.judges : []).map((judge) => ({ id: String(judge?.id || ''), email: normEmail(judge?.email) })).sort((a, b) => a.id.localeCompare(b.id)),
     scores: (Array.isArray(panel?.scores) ? panel.scores : []).map((row) => ({ judgeId: row?.judgeId, entryId: row?.entryId, scores: row?.scores }))
       .sort((a, b) => `${a.judgeId}:${a.entryId}`.localeCompare(`${b.judgeId}:${b.entryId}`)),
+    memberScores: (Array.isArray(panel?.memberScores) ? panel.memberScores : []).map((row) => ({
+      memberId: row?.memberId, email: normEmail(row?.email), memberCreatedAt: row?.memberCreatedAt,
+      name: row?.name, entryId: row?.entryId, scores: row?.scores,
+    })).sort((a, b) => `${a.memberId}:${a.entryId}`.localeCompare(`${b.memberId}:${b.entryId}`)),
     entries: ids.map((id) => state.entries.find((entry) => entry.id === id)).filter(Boolean)
       .map((entry) => ({ id: entry.id, owner: normEmail(entry.author?.email), institution: entryInstitution(entry), name: entry.author?.name, title: entry.title }))
       .sort((a, b) => a.id.localeCompare(b.id)),

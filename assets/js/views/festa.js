@@ -129,7 +129,7 @@ function shell(mount, admin = false) {
     <h1 style="font-size:clamp(2.4rem,5vw,3.4rem);color:inherit">${TITLE}</h1>
     <p style="margin-top:var(--space-2)">${admin ? '접수 현황과 심사 결과를 확인하고 운영 단계를 변경합니다.' : '개인 작품을 접수하고 제출 내역을 확인하세요.'}</p>
     <div class="row" style="margin-top:var(--space-3)">${admin
-      ? '<a class="btn btn--ghostDark" href="#/admin">관리자 홈</a><a class="btn btn--ghostDark" href="#/festa">회원 화면 보기</a><a class="btn btn--ghostDark" href="#/admin/festa/jury">심사위원·평가 대상 관리</a><a class="btn btn--ghostDark" href="#/admin/festa/awards">수상작 확정·발표</a><a class="btn btn--ghostDark" href="#/admin/festa/practice" data-testid="festa-practice-link">샘플 작품 10건 · 평가 연습</a>'
+      ? '<a class="btn btn--ghostDark" href="#/admin">관리자 홈</a><a class="btn btn--ghostDark" href="#/festa">회원 화면 보기</a><a class="btn btn--ghostDark" href="#/admin/festa/jury">심사위원·평가 대상 관리</a><a class="btn btn--ghostDark" href="#/admin/festa/awards">수상작 확정·발표</a><a class="btn btn--ghostDark" href="#/admin/festa/rehearsal" data-testid="festa-rehearsal-link">AI Build Camp 본선 테스트·초기화</a><a class="btn btn--ghostDark" href="#/admin/festa/practice" data-testid="festa-practice-link">샘플 작품 10건 · 평가 연습</a>'
       : (isAdmin() ? '<a class="btn btn--ghostDark" href="#/admin/festa">페스타 관리</a>' : '')}</div>
   </div></section><section class="section"><div class="wrap festa-stack" data-festa-root>${spinner()}</div></section>`;
   return mount.querySelector('[data-festa-root]');
@@ -314,13 +314,14 @@ export async function festaView(mount) {
     stopDeadline?.();
     activeEditor = null;
     activeKey = null;
-    root.innerHTML = `${deadlineHtml(state)}
+    root.innerHTML = `${state.finalStatus === 'open' ? '<section class="card"><h2>본선 회원 평가 진행 중</h2><p class="page-sub">참여하고 싶은 작품을 골라 네 항목으로 채점해 주세요. 내 작품은 평가 대상에서 제외됩니다.</p><a class="btn btn--festa" href="#/festa/jury/final">본선 작품 평가하기</a></section>' : ''}
+      ${deadlineHtml(state)}
       <section class="festa-stack" aria-labelledby="festaMyEntriesTitle"><div class="festa-entry-head"><h2 id="festaMyEntriesTitle" class="page-title" style="font-size:2.2rem"><span aria-hidden="true">🎟️</span> 내 작품 ${myEntries.length} / 2</h2>${canCreate && myEntries.length ? '<button type="button" class="btn btn--primary" data-testid="festa-add-entry"><span aria-hidden="true">＋</span> 두 번째 작품 추가</button>' : ''}</div>
         ${entryBlocked ? `<p class="notice notice--info" data-testid="festa-entry-blocked">${esc(entryBlocked)}</p>` : myEntries.length >= MAX_ENTRIES ? `<p class="notice notice--info" data-entry-limit-message>최대 2작품을 모두 접수했습니다. ${submissionsOpen(state) ? '각 작품의 수정 버튼으로 해당 작품만 수정할 수 있습니다.' : '두 작품의 접수증을 확인할 수 있습니다.'}</p>` : ''}
         <div class="festa-stack" data-testid="festa-my-entries">${receipts.length ? receipts.join('') : `<section class="card"><p class="notice notice--info">${canCreate ? '아직 제출한 작품이 없습니다. 아래에서 첫 작품을 접수해 주세요.' : entryBlocked ? '현재 계정으로 확인할 수 있는 접수증이 없습니다.' : '접수한 작품이 없습니다. 현재는 접수가 마감되었습니다.'}</p></section>`}</div>
       </section><div data-festa-editor-host></div>
       ${rubricHtml()}
-      ${state.awardsPublished ? '<a class="btn btn--festa" href="#/festa/results">🏆 시상식 보기</a>' : '<p class="field__hint">심사위원은 해당 기관 또는 본선 심사 주소에서 개인 코드로 입장합니다.</p>'}`;
+      ${state.awardsPublished ? '<a class="btn btn--festa" href="#/festa/results">🏆 시상식 보기</a>' : '<p class="field__hint">1차는 기관별 심사위원이 개인 코드로 평가합니다. 2차 본선은 로그인한 회원 누구나 참여할 수 있습니다.</p>'}`;
     const host = root.querySelector('[data-festa-editor-host]');
     const rememberDraft = () => { if (activeEditor && activeKey) drafts.set(activeKey, activeEditor.snapshot()); };
     const openEditor = (entry, focus = true) => {

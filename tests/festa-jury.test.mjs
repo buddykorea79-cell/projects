@@ -81,6 +81,13 @@ const commonScore = (call, invitation, entryId, scores = [40, 30, 20, 10]) => ca
   panel: invitation.panel, judgeId: invitation.judgeId, entryId, scores,
 });
 const commonFile = (file, invitation) => `/festa/jury/file/${encodeURIComponent(file.key)}?panel=${invitation.panel}&judgeId=${invitation.judgeId}`;
+const memberScore = (call, entryId, scores = [40, 30, 20, 10], extras = {}) => call('/festa/jury/member-score', { entryId, scores, ...extras });
+const memberFile = (file) => `/festa/jury/member-file/${encodeURIComponent(file.key)}`;
+async function memberClient(f, email = 'audience@example.com') {
+  const call = client(f.env);
+  ok(await call('/auth/signup', { email, name: '회원 평가자', institution: MOIS, password: 'Member-vote-2026!' }));
+  return call;
+}
 
 await test('관리자 전용 작업은 일반회원·비회원이 사용할 수 없음', async () => {
   const f = await fixture();
@@ -302,9 +309,8 @@ await test('본선은 기관별 예선과 독립 개시되며 서로 다른 6명
   assert.equal(overview.panels[0].status, 'draft');
   assert.equal(overview.panels[1].status, 'draft');
   assert.equal(overview.panels[2].status, 'open');
-  const ca = client(f.env);
-  await authenticate(ca, a);
-  assert.equal(ok(await session(ca, a)).entries.length, 6);
+  ok(await f.anonymous('/festa/jury/unlock', { token: a.token, pin: a.pin }), 409);
+  assert.equal(ok(await f.member('/festa/jury/member-final')).entries.length, 6);
 
   const missing = await fixture({ entries: Array.from({ length: 6 }, (_, i) => entry(i, i === 0 ? MOIS : IWEST)) });
   await configure(missing, 'final', missing.entries.map((row) => row.id));
@@ -325,7 +331,7 @@ await test('본선은 기관별 예선과 독립 개시되며 서로 다른 6명
   ok(await tooFew.admin('/festa/jury/status', { panel: 'final', status: 'open' }), 409);
 });
 
-await test('공통 주소 안내는 명부를 노출하지 않고 세 단계에서 같은 코드도 독립 인증', async () => {
+await test('공통 주소 안내는 명부를 노출하지 않고 1차 코드는 독립, 2차는 회원 로그인 안내', async () => {
   const f = await fixture();
   const browser = client(f.env, '198.51.100.1');
   const invitations = [];
@@ -337,14 +343,15 @@ await test('공통 주소 안내는 명부를 노출하지 않고 세 단계에�
     const metadata = ok(await f.anonymous(`/festa/jury/invitation?panel=${panel}`));
     assert.deepEqual(Object.keys(metadata).sort(), ['label', 'panel', 'status']);
     assert.equal(metadata.panel, panel);
-    const unlocked = ok(await commonUnlock(browser, invitation));
-    assert.equal(unlocked.judgeId, invitation.judgeId);
+    if (panel === 'final') ok(await commonUnlock(browser, invitation), 409);
+    else assert.equal(ok(await commonUnlock(browser, invitation)).judgeId, invitation.judgeId);
   }
   for (const invitation of invitations) {
+    if (invitation.panel === 'final') { ok(await commonSession(browser, invitation), 409); continue; }
     const response = ok(await commonSession(browser, invitation));
     assert.equal(response.panel, invitation.panel);
     assert.equal(response.judgeId, invitation.judgeId);
-    assert.equal(response.entries.length, invitation.panel === 'final' ? 6 : 1);
+    assert.equal(response.entries.length, 1);
   }
   const state = JSON.parse(await (await f.bucket.get('data/festa.json')).text());
   const selectors = invitations.map((invitation) => state.juryPanels[invitation.panel].judges[0].pinLookup);
@@ -554,6 +561,142 @@ await test('인증 제한 상태 손상은 덮어쓰지 않고 차단하며 일�
   assert.equal(await (await f.bucket.get('data/festa-jury-attempts-mois.json')).text(), '{invalid');
   ok(await f.member('/data/festa-jury-attempts-mois'), 404);
   ok(await f.member('/file/data%2Ffesta-jury-attempts-mois.json'), 400);
+});
+
+await test('2차는 PIN·지정위원 없이 활성 회원에게 열리고 비회원·정지 회원은 차단', async () => {
+  const f = await fixture();
+  await configure(f, 'final', f.entries.map((row) => row.id));
+  assert.deepEqual(ok(await f.member('/festa/jury/member-final')).entries, []);
+  ok(await memberScore(f.member, f.entries[1].id), 409);
+  ok(await f.member(memberFile(f.file)), 409);
+  await open(f, 'final');
+  const overview = ok(await f.admin('/festa/jury/admin')).panels[2];
+  assert.equal(overview.memberVoting, true); assert.equal(overview.judges.length, 0);
+  const result = ok(await f.member('/festa/jury/member-final'));
+  assert.equal(result.status, 'open'); assert.equal(result.entries.length, 6);
+  assert.ok(result.entries[0].scoreBlocked); assert.match(result.judgeId, /^fm_[a-f0-9]{64}$/);
+  ok(await f.anonymous('/festa/jury/member-final'), 401);
+  ok(await memberScore(f.anonymous, f.entries[0].id), 401);
+  ok(await f.anonymous(memberFile(f.file)), 401);
+  const members = JSON.parse(await (await f.bucket.get('data/members.json')).text());
+  members.find((row) => row.email === 'author-0@example.com').status = 'suspended';
+  await f.bucket.put('data/members.json', JSON.stringify(members));
+  ok(await f.member('/festa/jury/member-final'), 401);
+  ok(await memberScore(f.member, f.entries[1].id), 401);
+  ok(await f.member(memberFile(f.file)), 401);
+});
+
+await test('회원 신원은 본문으로 위조할 수 없고 자기평가·타인 점수 노출·동시 중복표를 차단', async () => {
+  const f = await fixture();
+  await configure(f, 'final', f.entries.map((row) => row.id)); await open(f, 'final');
+  const audience = await memberClient(f);
+  const spoof = { email: 'someone@example.com', memberId: 'fm_fake', judgeId: 'fj_fake', panel: 'mois' };
+  ok(await memberScore(f.member, f.entries[0].id, [40, 30, 20, 10], spoof), 403);
+  const results = await Promise.all([
+    memberScore(audience, f.entries[0].id, [40, 30, 20, 10], spoof),
+    memberScore(audience, f.entries[0].id, [0, 0, 0, 0], spoof),
+  ]);
+  results.forEach((response) => ok(response));
+  const state = JSON.parse(await (await f.bucket.get('data/festa.json')).text());
+  assert.equal(state.juryPanels.final.memberScores.length, 1);
+  assert.equal(state.juryPanels.final.memberScores[0].email, 'audience@example.com');
+  assert.match(state.juryPanels.final.memberScores[0].memberId, /^fm_[a-f0-9]{64}$/);
+  const own = ok(await audience('/festa/jury/member-final'));
+  assert.ok(Array.isArray(own.entries[0].myScores));
+  const other = ok(await f.member('/festa/jury/member-final'));
+  assert.equal(other.entries[0].myScores, null);
+  ok(await memberScore(f.member, f.entries[1].id, [1, 2, 3, 4], { expectedMemberId: own.judgeId }), 409);
+  assert.equal(ok(await f.member('/festa/jury/member-final')).entries[1].myScores, null);
+  for (const privateField of ['average', 'scoreCount', 'participants', 'memberScores', 'audience@example.com', 'author-0@example.com']) {
+    assert.equal(JSON.stringify(other).includes(privateField), false, privateField);
+  }
+  for (const values of [[41, 0, 0, 0], [1, 2, 3], [1.5, 0, 0, 0], ['1', 0, 0, 0]]) ok(await memberScore(audience, f.entries[1].id, values), 400);
+  ok(await memberScore(audience, 'fe_not_final'), 403);
+  const panel = ok(await f.admin('/festa/jury/admin')).panels[2];
+  assert.equal(panel.results[0].scoreCount, 1); assert.equal(panel.participants.length, 1);
+  assert.equal(panel.participants[0].email, 'audience@example.com');
+});
+
+await test('2차 회원 파일 다운로드는 회원 로그인·본선 배정·열린 평가만 허용', async () => {
+  const entries = Array.from({ length: 7 }, (_, i) => entry(i));
+  const foreign = { key: 'festa/uploads/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.txt', name: '비선정.txt', size: 7 };
+  entries[6].files = [foreign];
+  const f = await fixture({ entries });
+  await f.bucket.put(foreign.key, 'outside');
+  await configure(f, 'final', f.entries.slice(0, 6).map((row) => row.id)); await open(f, 'final');
+  const audience = await memberClient(f);
+  const downloaded = await audience(memberFile(f.file));
+  assert.equal(downloaded.status, 200); assert.equal(await downloaded.response.text(), 'contents');
+  assert.match(downloaded.headers.get('Content-Disposition'), /filename\*=UTF-8/);
+  assert.equal(downloaded.headers.get('Cache-Control'), 'private, no-store');
+  ok(await audience(memberFile(foreign)), 403);
+  ok(await audience('/festa/jury/member-file/data%2Ffesta.json'), 400);
+  ok(await audience(`/file/${encodeURIComponent(f.file.key)}`), 400);
+  ok(await audience(`/festa/file/${encodeURIComponent(f.file.key)}`), 404);
+});
+
+await test('2차는 각 작품 한 표 이상이면 부분참여·미참여 회원이 있어도 마감하고 발표를 동결', async () => {
+  const f = await fixture();
+  await configure(f, 'final', f.entries.map((row) => row.id)); await open(f, 'final');
+  const audience = await memberClient(f);
+  await memberClient(f, 'not-voting@example.com');
+  for (let i = 0; i < 5; i += 1) ok(await memberScore(audience, f.entries[i].id, [40 - i, 30, 20, 10]));
+  ok(await f.admin('/festa/jury/status', { panel: 'final', status: 'closed' }), 409);
+  // 참가자도 자기 작품 외의 한 작품만 평가할 수 있습니다. 나머지 전 작품 평가를 요구하지 않습니다.
+  ok(await memberScore(f.member, f.entries[5].id, [35, 30, 20, 10]));
+  ok(await f.admin('/festa/jury/status', { panel: 'final', status: 'closed' }));
+  const published = ok(await f.anonymous('/festa/awards'));
+  assert.equal(published.recipients.length, 6);
+  assert.equal(/memberId|judgeId|scores|average|example.com/.test(JSON.stringify(published)), false);
+  ok(await memberScore(audience, f.entries[0].id, [0, 0, 0, 0]), 409);
+  ok(await audience(memberFile(f.file)), 409);
+  assert.deepEqual(ok(await audience('/festa/jury/member-final')).entries, []);
+  ok(await f.admin('/festa/jury/status', { panel: 'final', status: 'open' }), 409);
+  assert.deepEqual(ok(await f.anonymous('/festa/awards')), published);
+});
+
+await test('이전 최종 위원 점수를 보존하고 같은 이메일 회원의 새 표로 대체하여 한 표만 집계', async () => {
+  const f = await fixture();
+  await configure(f, 'final', f.entries.map((row) => row.id));
+  const previous = await invite(f, 'final', 'audience@example.com');
+  await open(f, 'final');
+  const state = JSON.parse(await (await f.bucket.get('data/festa.json')).text());
+  state.juryPanels.final.scores = f.entries.map((entry, i) => ({ judgeId: previous.judgeId, entryId: entry.id, scores: [40 - i, 30, 20, 10] }));
+  await f.bucket.put('data/festa.json', JSON.stringify(state));
+  const audience = await memberClient(f);
+  assert.equal(ok(await audience('/festa/jury/member-final')).entries[0].myScores, null, 'legacy credential does not prove member incarnation');
+  ok(await commonUnlock(client(f.env), previous), 409);
+  ok(await f.anonymous('/festa/jury/unlock', { token: previous.token, pin: previous.pin }), 409);
+  ok(await memberScore(audience, f.entries[0].id, [0, 0, 0, 0]));
+  const panel = ok(await f.admin('/festa/jury/admin')).panels[2];
+  assert.equal(panel.results[0].average, 0); assert.equal(panel.results[0].scoreCount, 1);
+  assert.equal(panel.results[1].average, 99); assert.equal(panel.results[1].scoreCount, 1);
+  assert.equal(panel.scores.length, 6);
+  assert.equal(panel.participants.length, 1); assert.equal(panel.participants[0].scoredCount, 6);
+  assert.ok(panel.scores.every((row) => row.judgeId === panel.participants[0].id));
+  assert.equal(JSON.parse(await (await f.bucket.get('data/festa.json')).text()).juryPanels.final.scores.length, 6, 'historical scores are retained');
+});
+
+await test('탈퇴 후 같은 이메일 재가입은 이전 표를 읽지 못하며 새 표가 기존 한 표를 교체', async () => {
+  const f = await fixture();
+  await configure(f, 'final', f.entries.map((row) => row.id)); await open(f, 'final');
+  const audience = await memberClient(f);
+  const members = JSON.parse(await (await f.bucket.get('data/members.json')).text());
+  members.find((row) => row.email === 'audience@example.com').createdAt = '2025-01-01T00:00:00.000Z';
+  await f.bucket.put('data/members.json', JSON.stringify(members));
+  ok(await memberScore(audience, f.entries[0].id, [40, 30, 20, 10]));
+  const oldId = ok(await audience('/festa/jury/member-final')).judgeId;
+  await f.bucket.put('data/members.json', JSON.stringify(members.filter((row) => row.email !== 'audience@example.com')));
+  ok(await audience('/festa/jury/member-final'), 401);
+  const rejoined = await memberClient(f);
+  const before = ok(await rejoined('/festa/jury/member-final'));
+  assert.notEqual(before.judgeId, oldId); assert.equal(before.entries[0].myScores, null);
+  ok(await memberScore(rejoined, f.entries[0].id, [0, 0, 0, 0]));
+  const panel = ok(await f.admin('/festa/jury/admin')).panels[2];
+  assert.equal(panel.results[0].scoreCount, 1); assert.equal(panel.results[0].average, 0);
+  const state = JSON.parse(await (await f.bucket.get('data/festa.json')).text());
+  assert.equal(state.juryPanels.final.memberScores.length, 1);
+  assert.equal(state.juryPanels.final.memberScores[0].memberId, before.judgeId);
 });
 
 Date.now = originalNow;

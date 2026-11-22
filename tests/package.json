@@ -23,7 +23,9 @@
     "test:festa-jury-browser": "node festa-jury-browser.test.mjs",
     "test:festa-awards-browser": "node festa-awards-browser.test.mjs",
     "test:festa-practice": "node festa-practice-browser.test.mjs",
-    "test": "npm run test:parse && npm run test:auth && npm run test:vote && npm run test:camp && npm run test:festa && npm run test:attendance && npm run test:telegram && npm run test:r2 && npm run test:github && npm run test:r2-browser && npm run test:attendance-browser && npm run test:late-browser && npm run test:camp-browser && npm run test:festa-browser && npm run test:festa-practice && npm run test:festa-jury && npm run test:festa-awards && npm run test:festa-jury-browser && npm run test:festa-awards-browser"
+    "test:festa-rehearsal": "node festa-rehearsal.test.mjs",
+    "test:festa-rehearsal-browser": "node festa-rehearsal-browser.test.mjs",
+    "test": "npm run test:parse && npm run test:auth && npm run test:vote && npm run test:camp && npm run test:festa && npm run test:attendance && npm run test:telegram && npm run test:r2 && npm run test:github && npm run test:r2-browser && npm run test:attendance-browser && npm run test:late-browser && npm run test:camp-browser && npm run test:festa-browser && npm run test:festa-practice && npm run test:festa-jury && npm run test:festa-awards && npm run test:festa-jury-browser && npm run test:festa-awards-browser && npm run test:festa-rehearsal && npm run test:festa-rehearsal-browser"
   },
   "devDependencies": {
     "acorn": "^8.14.0",

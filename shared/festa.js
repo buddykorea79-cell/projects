@@ -215,6 +215,7 @@ async function overview(env, member, cors) {
     entryBlocked: existing.some((entry) => !isMine(entry, member)) ? DUPLICATE_ENTRY : '',
     entries: isAdmin(member) ? state.entries.map((entry) => entryView(entry, member)) : [],
     awardsPublished: Boolean(state.awardsPublication),
+    finalStatus: state.juryPanels?.final?.status || 'draft',
     email: contactEmail(state, env),
   }, 200, cors);
 }
