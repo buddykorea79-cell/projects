@@ -12,11 +12,27 @@ export const FESTA_FILE_EXTENSIONS = new Set([
   'xls', 'xlsx', 'hwp', 'hwpx', 'zip', 'txt', 'md', 'csv', 'mp4', 'mov', 'webm',
 ]);
 const PHASES = ['open', 'closed', 'judging', 'finished'];
-const SCORE_LIMITS = [40, 30, 20, 10];
+const INSTITUTIONS = ['행정안전부', '한국서부발전'];
+export function entryInstitution(entry) {
+  const value = entry?.institution ?? entry?.author?.institution;
+  return INSTITUTIONS.includes(value) ? value : '';
+}
+function checkInstitutionChange(state, entry, institution) {
+  if (entryInstitution(entry) === institution) return;
+  if (Object.values(state.juryPanels || {}).some((panel) =>
+    panel.status !== 'draft' && panel.entryIds.includes(entry.id))) {
+    fail(409, '심사가 시작된 작품의 소속기관은 변경할 수 없습니다.');
+  }
+  // 접수 중 미리 배정한 작품의 기관을 바꿔도 잘못된 기관의 예선 초안에 남지 않습니다.
+  const previousPanel = state.juryPanels?.[institution === '행정안전부' ? 'iwest' : 'mois'];
+  if (previousPanel?.status === 'draft') {
+    previousPanel.entryIds = previousPanel.entryIds.filter((id) => id !== entry.id);
+  }
+}
 const KEY_RE = /^festa\/uploads\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.[a-z0-9]+$/;
 const REQUEST_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
-class FestaError extends Error {
+export class FestaError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 const fail = (status, message) => { throw new FestaError(status, message); };
@@ -28,21 +44,19 @@ const ownerOf = (entry) => normEmail(entry?.author?.email);
 const isAdmin = (member) => member.role === 'admin';
 const incarnationOf = (member) => String(member.createdAt || '');
 const DUPLICATE_ENTRY = '이 이메일로 이미 접수된 작품이 있습니다. 기존 접수 확인은 운영자에게 문의해 주세요.';
-const DUPLICATE_SCORE = '이 이메일로 이미 평가한 작품입니다. 평가 확인은 운영자에게 문의해 주세요.';
-const SELF_SCORE = '자신의 작품은 평가할 수 없습니다.';
 // 이메일을 삭제 후 재가입해도 예전 회원의 비공개 작품·파일·점수를 넘겨받지 않습니다.
 const isMine = (entry, member) => ownerOf(entry) === normEmail(member.email)
   && entry?.author?.memberCreatedAt === incarnationOf(member);
-const published = (state) => state.phase === 'judging' || state.phase === 'finished';
 const requireOpen = (state) => {
   if (state.phase !== 'open') fail(409, '출품이 마감되어 작품과 파일을 변경할 수 없습니다.');
   if (deadlinePassed(state)) fail(409, '접수 마감일이 지나 작품과 파일을 변경할 수 없습니다.');
 };
 const requireAdmin = (member) => {
+  if (!member) fail(401, '관리자 로그인이 필요합니다.');
   if (!isAdmin(member)) fail(403, '관리자만 할 수 있습니다.');
 };
 
-function validEmail(value) {
+export function validEmail(value) {
   return typeof value === 'string' && value.length <= 254
     && /^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]{2,}$/.test(value);
 }
@@ -164,61 +178,32 @@ function webUrl(value, label, required, github = false) {
   return url.href;
 }
 
-function scoreIndex(state, member) {
-  const index = new Map();
-  const email = normEmail(member.email);
-  for (const row of state.scores) {
-    if (!row) continue;
-    let summary = index.get(row.entryId);
-    if (!summary) {
-      summary = { count: 0, total: 0, myScores: null };
-      index.set(row.entryId, summary);
-    }
-    summary.count += 1;
-    summary.total += row.scores.reduce((a, b) => a + b, 0);
-    if (row.rater === email) {
-      if (row.raterCreatedAt === incarnationOf(member)) summary.myScores = [...row.scores];
-      else summary.previousAccountScored = true;
-    }
-  }
-  return index;
-}
-
-function entryView(entry, summaries, member) {
+function entryView(entry, member) {
   const mine = isMine(entry, member);
   const admin = isAdmin(member);
-  const summary = summaries.get(entry.id);
   const author = { name: entry.author?.name || '', institution: entry.author?.institution || '' };
   if (mine || admin) author.email = ownerOf(entry);
-  const view = {
-    id: entry.id, title: entry.title, description: entry.description,
+  return {
+    id: entry.id, institution: entryInstitution(entry), title: entry.title, description: entry.description,
     localOnly: Boolean(entry.localOnly), deployUrl: entry.deployUrl || '', githubUrl: entry.githubUrl,
     files: (entry.files || []).map(({ key, name, size }) => ({ key, name, size })),
     createdAt: entry.createdAt, updatedAt: entry.updatedAt, author, isMine: mine,
-    myScores: summary?.myScores || null,
-    scoreBlocked: ownerOf(entry) === normEmail(member.email) ? SELF_SCORE
-      : (summary?.previousAccountScored ? DUPLICATE_SCORE : ''),
   };
-  if (admin) {
-    view.scoreCount = summary?.count || 0;
-    view.average = summary?.count ? summary.total / summary.count : null;
-  }
-  return view;
 }
 
 async function overview(env, member, cors) {
   const { state } = await readState(env);
-  const summaries = scoreIndex(state, member);
   const existing = state.entries.filter((entry) => ownerOf(entry) === normEmail(member.email));
   const own = existing.filter((entry) => isMine(entry, member));
-  const myEntries = own.map((entry) => entryView(entry, summaries, member));
+  const myEntries = own.map((entry) => entryView(entry, member));
   return reply({
     phase: state.phase,
     deadline: deadlineOf(state), deadlinePassed: deadlinePassed(state),
     mine: myEntries[0] || null,
     myEntries,
     entryBlocked: existing.some((entry) => !isMine(entry, member)) ? DUPLICATE_ENTRY : '',
-    entries: isAdmin(member) || published(state) ? state.entries.map((entry) => entryView(entry, summaries, member)) : [],
+    entries: isAdmin(member) ? state.entries.map((entry) => entryView(entry, member)) : [],
+    awardsPublished: Boolean(state.awardsPublication),
     email: contactEmail(state, env),
   }, 200, cors);
 }
@@ -267,6 +252,7 @@ async function checkedFiles(files, env, member) {
 
 async function saveEntry(request, env, member, cors) {
   const body = await jsonBody(request);
+  if (!INSTITUTIONS.includes(body.institution)) fail(400, '작품의 소속기관을 선택해 주세요.');
   const title = textField(body.title, '작품명', 160);
   const description = textField(body.description, '작품 설명', 10000);
   if (typeof body.localOnly !== 'boolean') fail(400, '로컬 동작 여부를 선택하세요.');
@@ -288,7 +274,7 @@ async function saveEntry(request, env, member, cors) {
   // 응답을 받지 못해 재시도한 초안은, 그 후 파일이 교체/정리됐더라도 최신 저장본을 돌려줍니다.
   const checked = await checkedFiles(body.files, env, member)
     .then((files) => ({ files }), (error) => ({ error }));
-  const { state, result } = await updateState(env, (current) => {
+  const { result } = await updateState(env, (current) => {
     requireOpen(current);
     const sameEmail = current.entries.filter((entry) => ownerOf(entry) === email);
     if (sameEmail.some((entry) => !isMine(entry, member))) fail(409, DUPLICATE_ENTRY);
@@ -317,7 +303,7 @@ async function saveEntry(request, env, member, cors) {
     }
     const now = new Date().toISOString();
     const entry = {
-      id: existing?.id || id, title, description, localOnly, deployUrl, githubUrl, files,
+      id: existing?.id || id, institution: body.institution, title, description, localOnly, deployUrl, githubUrl, files,
       ...((existing?.requestId || (!existing && requestId))
         ? { requestId: existing?.requestId || requestId } : {}),
       createdAt: existing?.createdAt || now, updatedAt: now,
@@ -326,22 +312,24 @@ async function saveEntry(request, env, member, cors) {
         name: String(member.name || ''), institution: String(member.institution || ''),
       },
     };
-    if (existing) current.entries[current.entries.indexOf(existing)] = entry;
-    else current.entries.push(entry);
+    if (existing) {
+      checkInstitutionChange(current, existing, entry.institution);
+      current.entries[current.entries.indexOf(existing)] = entry;
+    } else current.entries.push(entry);
     return { saved: entry, discarded: pruneUploads(current, member) };
   });
   // 상태에서 먼저 제외한 키만 지워 동시에 저장되는 다른 작품의 파일을 보존합니다.
   await deleteDiscarded(env, result.discarded);
-  return reply({ entry: entryView(result.saved, scoreIndex(state, member), member) }, 200, cors);
+  return reply({ entry: entryView(result.saved, member) }, 200, cors);
 }
 
 async function setPhase(request, env, member, cors) {
   requireAdmin(member);
   const body = await jsonBody(request);
-  if (!['closed', 'judging', 'finished'].includes(body.phase)) fail(400, '올바르지 않은 진행 단계입니다.');
+  if (body.phase !== 'closed') fail(400, '심사 단계는 심사위원 관리에서 운영해 주세요.');
   const { state } = await updateState(env, (current) => {
-    if (PHASES.indexOf(body.phase) !== PHASES.indexOf(current.phase) + 1) {
-      fail(409, '접수 마감 → 평가 시작 → 평가 종료 순서로 진행해 주세요.');
+    if (current.phase !== 'open') {
+      fail(409, '이미 접수가 마감되었습니다.');
     }
     current.phase = body.phase;
   });
@@ -370,32 +358,17 @@ async function setDeadline(request, env, member, cors) {
   return reply({ deadline: deadlineOf(state), deadlinePassed: deadlinePassed(state) }, 200, cors);
 }
 
-async function scoreEntry(request, env, member, cors) {
-  const body = await jsonBody(request);
-  if (typeof body.entryId !== 'string' || !/^fe_[A-Za-z0-9_-]{1,64}$/.test(body.entryId)) {
-    fail(400, '작품 번호가 올바르지 않습니다.');
-  }
-  if (!Array.isArray(body.scores) || body.scores.length !== 4
-      || body.scores.some((score, i) => !Number.isInteger(score) || score < 0 || score > SCORE_LIMITS[i])) {
-    fail(400, '평가 점수는 각 항목의 배점(40·30·20·10) 안에서 정수로 입력하세요.');
-  }
-  const scores = [...body.scores];
-  const email = normEmail(member.email);
+async function setInstitution(request, env, member, cors) {
+  requireAdmin(member);
+  const { entryId, institution } = await jsonBody(request);
+  if (!INSTITUTIONS.includes(institution)) fail(400, '올바른 소속기관을 선택해 주세요.');
   await updateState(env, (state) => {
-    if (state.phase !== 'judging') fail(409, '현재 평가 기간이 아닙니다.');
-    const entry = state.entries.find((item) => item?.id === body.entryId);
+    const entry = state.entries.find((item) => item.id === entryId);
     if (!entry) fail(404, '작품을 찾을 수 없습니다.');
-    if (ownerOf(entry) === email) fail(403, SELF_SCORE);
-    const existing = state.scores.find((row) => row?.entryId === entry.id && row.rater === email);
-    if (existing && existing.raterCreatedAt !== incarnationOf(member)) fail(409, DUPLICATE_SCORE);
-    const row = {
-      entryId: entry.id, rater: email, raterCreatedAt: incarnationOf(member),
-      scores, updatedAt: new Date().toISOString(),
-    };
-    if (existing) state.scores[state.scores.indexOf(existing)] = row;
-    else state.scores.push(row);
+    checkInstitutionChange(state, entry, institution);
+    entry.institution = institution;
   });
-  return reply({ ok: true, entryId: body.entryId, myScores: scores }, 200, cors);
+  return reply({ entryId, institution }, 200, cors);
 }
 
 async function uploadFile(request, env, member, cors) {
@@ -458,8 +431,7 @@ async function downloadFile(env, member, rawKey, cors) {
   const upload = state.uploads.find((file) => file?.key === key);
   if (!upload) fail(404, '파일을 찾을 수 없습니다.');
   const mine = upload.owner === normEmail(member.email) && upload.ownerCreatedAt === incarnationOf(member);
-  const attached = state.entries.some((entry) => entry?.files?.some((file) => file.key === key));
-  if (!isAdmin(member) && !mine && !(published(state) && attached)) {
+  if (!isAdmin(member) && !mine) {
     fail(403, '현재 이 파일을 열람할 수 없습니다.');
   }
   const obj = await env.BUCKET.get(key);
@@ -480,15 +452,16 @@ async function downloadFile(env, member, rawKey, cors) {
 
 /** currentMember로 확인한 회원만 전달합니다. 일반 데이터/파일 API와 분리되어 있습니다. */
 export async function handleFesta(request, env, { path, member, cors = {} }) {
-  if (!member) return reply({ message: '로그인이 필요합니다.' }, 401, cors);
   try {
+    if (!member) fail(401, '로그인이 필요합니다.');
     if (path === '/festa' && request.method === 'GET') return await overview(env, member, cors);
     if (request.method === 'POST') {
       if (path === '/festa/entry') return await saveEntry(request, env, member, cors);
       if (path === '/festa/phase') return await setPhase(request, env, member, cors);
       if (path === '/festa/contact') return await setContact(request, env, member, cors);
       if (path === '/festa/deadline') return await setDeadline(request, env, member, cors);
-      if (path === '/festa/score') return await scoreEntry(request, env, member, cors);
+      if (path === '/festa/institution') return await setInstitution(request, env, member, cors);
+      if (path === '/festa/score') fail(403, '심사위원 전용 링크에서 평가해 주세요.');
       if (path === '/festa/upload') return await uploadFile(request, env, member, cors);
     }
     if (request.method === 'GET' && path.startsWith('/festa/file/')) {
@@ -500,3 +473,5 @@ export async function handleFesta(request, env, { path, member, cors = {} }) {
     throw error;
   }
 }
+
+export { readState, updateState, fail, reply, jsonBody, requireAdmin };

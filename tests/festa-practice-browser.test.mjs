@@ -88,7 +88,7 @@ try {
     const deadline = await admin.request.post(`${origin}/api/festa/deadline`, { data: { deadline: futureDeadline } });
     assert.equal(deadline.status(), 200);
     const save = await admin.request.post(`${origin}/api/festa/entry`, { data: {
-      title: '운영 접수 보존 대상', description: '연습 점수의 영향을 받으면 안 되는 실제 행사 테스트 자료입니다.',
+      institution: '행정안전부', title: '운영 접수 보존 대상', description: '연습 점수의 영향을 받으면 안 되는 실제 행사 테스트 자료입니다.',
       localOnly: true, deployUrl: '', githubUrl: 'https://github.com/example/live-fixture', files: [],
     } });
     assert.equal(save.status(), 200);

@@ -1,5 +1,5 @@
-/** 페스타 접수·접수증·회원 심사·관리자 운영 화면. */
-import { festa, FESTA_RUBRIC as RUBRIC, validFestaScores as validScores } from '../festa.js';
+/** 페스타 작품 접수·접수증과 관리자 접수 화면. */
+import { festa, FESTA_RUBRIC as RUBRIC } from '../festa.js';
 import { currentUser, isAdmin } from '../auth.js';
 import { esc, attr, fmtDate, fmtBytes, isEmail } from '../utils.js';
 import { spinner, emptyState, toastOk, toastErr, confirmModal } from '../ui.js';
@@ -13,8 +13,8 @@ const FILE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf', 'ppt', 'ppt
 const PHASES = {
   open: { label: '접수 중', badge: 'badge--open' },
   closed: { label: '접수 마감', badge: 'badge--closed' },
-  judging: { label: '심사 중', badge: 'badge--gold' },
-  finished: { label: '평가 마감', badge: 'badge--closed' },
+  judging: { label: '접수 마감', badge: 'badge--gold' },
+  finished: { label: '접수 마감', badge: 'badge--closed' },
 };
 
 function phaseBadge(phase) {
@@ -117,8 +117,8 @@ function mailHelp(email) {
 function rubricHtml() {
   return `<details class="card card--flat" open>
     <summary><strong>심사 기준 · 총 100점</strong></summary>
-    <div class="festa-score-grid" style="margin-top:var(--space-3)">${RUBRIC.map((rule) => `
-      <div><h3 style="font-size:1.6rem">${rule.name} <span class="badge badge--soft">${rule.max}점</span></h3><p class="field__hint">${rule.description}</p></div>`).join('')}
+    <div class="festa-rubric">${RUBRIC.map((rule) => `
+      <div class="festa-rubric-row"><strong>${rule.name}</strong><span class="badge badge--soft">${rule.max}점</span><p>${rule.description}</p></div>`).join('')}
     </div>
   </details>`;
 }
@@ -127,9 +127,9 @@ function shell(mount, admin = false) {
   mount.innerHTML = `<section class="band festa-hero"><div class="wrap">
     <p class="crumb"><a href="#/" style="color:inherit">홈</a><span>/</span>페스타${admin ? ' 관리' : ''}</p>
     <h1 style="font-size:clamp(2.4rem,5vw,3.4rem);color:inherit">${TITLE}</h1>
-    <p style="margin-top:var(--space-2)">${admin ? '접수 현황과 심사 결과를 확인하고 운영 단계를 변경합니다.' : '직접 만든 작품을 소개하고, 함께 살펴보며 평가해 주세요.'}</p>
+    <p style="margin-top:var(--space-2)">${admin ? '접수 현황과 심사 결과를 확인하고 운영 단계를 변경합니다.' : '개인 작품을 접수하고 제출 내역을 확인하세요.'}</p>
     <div class="row" style="margin-top:var(--space-3)">${admin
-      ? '<a class="btn btn--ghostDark" href="#/admin">관리자 홈</a><a class="btn btn--ghostDark" href="#/festa">회원 화면 보기</a><a class="btn btn--ghostDark" href="#/admin/festa/practice" data-testid="festa-practice-link">샘플 작품 10건 · 평가 연습</a>'
+      ? '<a class="btn btn--ghostDark" href="#/admin">관리자 홈</a><a class="btn btn--ghostDark" href="#/festa">회원 화면 보기</a><a class="btn btn--ghostDark" href="#/admin/festa/jury">심사위원·평가 대상 관리</a><a class="btn btn--ghostDark" href="#/admin/festa/awards">수상작 확정·발표</a><a class="btn btn--ghostDark" href="#/admin/festa/practice" data-testid="festa-practice-link">샘플 작품 10건 · 평가 연습</a>'
       : (isAdmin() ? '<a class="btn btn--ghostDark" href="#/admin/festa">페스타 관리</a>' : '')}</div>
   </div></section><section class="section"><div class="wrap festa-stack" data-festa-root>${spinner()}</div></section>`;
   return mount.querySelector('[data-festa-root]');
@@ -142,7 +142,7 @@ async function receiptHtml(entry, state, index) {
       ${submissionsOpen(state) ? `<button type="button" class="btn btn--outline" data-testid="festa-edit-entry" data-entry-id="${attr(entry.id)}">이 작품 수정</button>` : phaseBadge(state.phase === 'open' ? 'closed' : state.phase)}
     </div>
     <h3 style="margin-top:var(--space-3)">${esc(entry.title)}</h3>
-    <p class="page-sub">${esc(entry.author?.institution || '')} · ${esc(entry.author?.name || currentUser()?.name || '')}</p>
+    <p class="page-sub">${esc(entry.institution || '소속기관 확인 필요')} · ${esc(entry.author?.name || currentUser()?.name || '')}</p>
     <p class="field__hint">최초 접수 ${esc(fmtDate(entry.createdAt, true))} · 최종 저장 ${esc(fmtDate(entry.updatedAt || entry.createdAt, true))}</p>
     <p class="field__hint">접수 번호: ${esc(entry.id)}</p>
     <p class="festa-description" style="margin-block:var(--space-3)">${esc(entry.description)}</p>
@@ -156,9 +156,12 @@ function editorHtml(entry, email, count, draft = null) {
   const values = draft || entry || {};
   return `<section class="card" data-festa-editor aria-labelledby="festaFormTitle">
     <h2 id="festaFormTitle" class="page-title" style="font-size:2.2rem"><span aria-hidden="true">✍️</span> ${entry ? '선택한 작품 수정' : count ? '두 번째 작품 제출' : '첫 작품 제출'}</h2>
-    <p class="page-sub">${entry ? `수정 중인 작품: ${esc(entry.title)} · 접수 번호 ${esc(entry.id)}` : `개인별 최대 2작품을 접수합니다. 현재 ${count}작품이 접수되어 있습니다.`} 이름과 기관은 내 계정 정보로 기록됩니다.</p>
+    <p class="page-sub">${entry ? `수정 중인 작품: ${esc(entry.title)} · 접수 번호 ${esc(entry.id)}` : `개인별 최대 2작품을 접수합니다. 현재 ${count}작품이 접수되어 있습니다.`} 이름은 회원 정보에서 가져옵니다.</p>
     <form data-testid="festa-entry-form" data-entry-id="${attr(entry?.id || '')}" style="margin-top:var(--space-4)">
       <fieldset style="border:0;padding:0;margin:0;min-width:0" data-festa-fields>
+        <label class="field"><span class="field__label">소속기관 <span class="field__req">*</span></span>
+          <select name="institution" class="select" required><option value="">소속기관을 선택하세요</option>${['행정안전부', '한국서부발전'].map((org) => `<option value="${org}" ${values.institution === org ? 'selected' : ''}>${org}</option>`).join('')}</select>
+        </label>
         <label class="field"><span class="field__label"><span aria-hidden="true">💡</span> 작품명 <span class="field__req">*</span></span><input class="input" name="title" required maxlength="160" value="${attr(values.title || '')}" /></label>
         <label class="field"><span class="field__label"><span aria-hidden="true">🌐</span> 배포 주소 <span class="field__req">*</span></span><input class="input" type="text" inputmode="url" name="deployUrl" maxlength="2048" ${values.localOnly ? 'readonly' : 'required'} placeholder="https://example.com" value="${attr(values.localOnly ? 'Local' : values.deployUrl || '')}" aria-describedby="festaDeployHelp" /><span class="field__hint" id="festaDeployHelp">인터넷에서 실행할 수 있는 전체 주소를 입력해 주세요. 로컬 실행을 선택하면 Local로 표시됩니다.</span></label>
         <label class="field"><span class="row"><input type="checkbox" name="localOnly" ${values.localOnly ? 'checked' : ''} /> 로컬에서 동작</span><span class="field__hint">내 컴퓨터에서 실행하는 작품은 체크해 주세요. 체크를 해제하면 입력해 둔 배포 주소가 복구됩니다.</span></label>
@@ -267,7 +270,7 @@ function bindEditor(root, state, entry, refresh, { draft = null, onCancel } = {}
       }
       if (!submissionsOpen(state)) throw new Error('접수 기한이 지나 작품 저장이 마감되었습니다.');
       message('작품을 저장하고 있습니다.');
-      const saved = await festa.saveEntry({ id: entry?.id ?? null, ...(entry ? {} : { requestId }), title, description, localOnly, deployUrl, githubUrl, files: [...existing, ...pending.map((item) => item.uploaded)] });
+      const saved = await festa.saveEntry({ id: entry?.id ?? null, ...(entry ? {} : { requestId }), institution: form.elements.institution.value, title, description, localOnly, deployUrl, githubUrl, files: [...existing, ...pending.map((item) => item.uploaded)] });
       toastOk(entry ? '수정 내용을 저장했습니다.' : '새 작품을 제출했습니다.');
       try {
         await refresh(saved.entry?.id || entry?.id);
@@ -286,73 +289,13 @@ function bindEditor(root, state, entry, refresh, { draft = null, onCancel } = {}
     isBusy: () => busy,
     expire() { fieldset.disabled = true; message('접수 기한이 지났습니다. 신규 제출·수정·파일 업로드가 마감되었습니다. 입력한 내용은 이 화면에 유지됩니다.', true); },
     snapshot: () => ({
+      institution: form.elements.institution.value,
       title: form.elements.title.value, description: form.elements.description.value,
       localOnly: form.elements.localOnly.checked, deployUrl: form.elements.deployUrl.value,
       githubUrl: form.elements.githubUrl.value, existing: [...existing], pending: [...pending],
       previousDeployment, requestId,
     }),
   };
-}
-
-async function judgingCard(entry, index, canScore) {
-  const blocked = entry.scoreBlocked || (entry.isMine ? '내 작품은 평가할 수 없습니다.' : '');
-  const previous = !blocked && validScores(entry.myScores) ? entry.myScores : null;
-  const prefix = `festaScore${index}`;
-  return `<article class="card" aria-labelledby="${prefix}Title"><div class="festa-entry-head"><div>
-    <h3 id="${prefix}Title">${esc(entry.title)}</h3><p class="page-sub">${esc(entry.author?.institution || '')} · ${esc(entry.author?.name || '참가자')}</p>
-    </div>${entry.isMine ? '<span class="badge badge--soft">내 작품</span>' : ''}</div>
-    <p class="festa-description" style="margin-block:var(--space-3)">${esc(entry.description)}</p>
-    ${entryLinks(entry)}<div style="margin-block:var(--space-3)">${await attachments(entry.files)}</div>
-    ${blocked ? `<p class="notice notice--info" data-testid="festa-score-blocked">${esc(blocked)}</p>` : !canScore ? `<div class="notice notice--info" data-testid="festa-score-readonly"><strong>평가가 마감되었습니다.</strong>${previous ? `<p>내가 저장한 평가: ${RUBRIC.map((rule, i) => `${rule.name} ${previous[i]}점`).join(' · ')}</p><p class="festa-total">합계 ${previous.reduce((sum, value) => sum + value, 0)} / 100점</p>` : '<p>이 작품에 저장한 평가가 없습니다.</p>'}</div>` : `
-      <form data-testid="festa-score-form" data-entry-id="${attr(entry.id)}" aria-label="${attr(entry.title)} 평가">
-        <fieldset style="border:0;padding:0;margin:0;min-width:0"><legend class="field__label">${previous ? '내 평가 수정' : '작품 평가'} · 항목별 정수 점수</legend>
-          <div class="festa-score-grid">${RUBRIC.map((rule, i) => `<label class="field" for="${prefix}_${i}"><span class="field__label">${rule.name} (0~${rule.max}점)</span><span class="field__hint" id="${prefix}_${i}Help">${rule.description}</span><input class="input" id="${prefix}_${i}" name="score${i}" type="number" min="0" max="${rule.max}" step="1" inputmode="numeric" required value="${previous ? previous[i] : ''}" aria-describedby="${prefix}_${i}Help" /></label>`).join('')}</div>
-          <div class="row row--between"><p class="festa-total" data-testid="festa-score-total" aria-live="polite">${previous ? `합계 ${previous.reduce((sum, score) => sum + score, 0)} / 100점` : '4개 항목의 점수를 입력해 주세요.'}</p><button type="submit" class="btn btn--primary btn--sm" data-testid="festa-score-save">${previous ? '평가 수정' : '평가 저장'}</button></div>
-        </fieldset><p data-score-status role="status" aria-live="polite" class="field__hint">${previous ? '평가가 저장되어 있습니다. 심사 중에는 수정할 수 있습니다.' : '0점도 입력할 수 있습니다. 빈 항목은 미평가로 처리됩니다.'}</p>
-      </form>`}
-  </article>`;
-}
-
-function bindJudging(root, state) {
-  const eligible = state.entries.filter((entry) => !entry.isMine && !entry.scoreBlocked);
-  const progress = root.querySelector('[data-testid="festa-judging-progress"]');
-  const updateProgress = () => {
-    if (progress) progress.textContent = `내 평가 ${eligible.filter((entry) => validScores(entry.myScores)).length} / ${eligible.length}건 완료 · 심사 중에는 저장한 점수를 수정할 수 있습니다.`;
-  };
-  updateProgress();
-  root.querySelectorAll('[data-testid="festa-score-form"]').forEach((form) => {
-    const entry = state.entries.find((item) => item.id === form.dataset.entryId);
-    const status = form.querySelector('[data-score-status]');
-    const fieldset = form.querySelector('fieldset');
-    const total = form.querySelector('[data-testid="festa-score-total"]');
-    const scores = () => RUBRIC.map((_, i) => form.elements[`score${i}`].value.trim() === '' ? null : Number(form.elements[`score${i}`].value));
-    form.addEventListener('input', () => {
-      const values = scores();
-      total.textContent = validScores(values) ? `합계 ${values.reduce((sum, value) => sum + value, 0)} / 100점` : '4개 항목에 허용 범위 안의 정수 점수를 입력해 주세요.';
-      status.textContent = '변경한 점수는 저장 버튼을 눌러야 반영됩니다.';
-    });
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      if (fieldset.disabled || !form.reportValidity()) return;
-      const values = scores();
-      if (!validScores(values)) { status.textContent = '4개 항목에 허용 범위 안의 정수 점수를 모두 입력해 주세요.'; return; }
-      fieldset.disabled = true;
-      form.setAttribute('aria-busy', 'true');
-      status.textContent = '평가를 저장하고 있습니다.';
-      try {
-        await festa.score(entry.id, values);
-        entry.myScores = values;
-        form.querySelector('[data-testid="festa-score-save"]').textContent = '평가 수정';
-        form.querySelector('legend').textContent = '내 평가 수정 · 항목별 정수 점수';
-        status.textContent = `평가를 저장했습니다. 합계 ${values.reduce((sum, value) => sum + value, 0)}점 · 심사 중에는 수정할 수 있습니다.`;
-        updateProgress();
-        toastOk('평가를 저장했습니다.');
-      } catch (error) {
-        status.textContent = `평가를 저장하지 못했습니다 — ${error.message || '잠시 후 다시 시도해 주세요.'}`;
-        toastErr(error.message || '평가를 저장하지 못했습니다.');
-      } finally { fieldset.disabled = false; form.removeAttribute('aria-busy'); }
-    });
-  });
 }
 
 export async function festaView(mount) {
@@ -363,13 +306,10 @@ export async function festaView(mount) {
   let stopDeadline = null;
   const refresh = async () => {
     const state = await festa.get();
-    state.entries = Array.isArray(state.entries) ? state.entries : [];
     const myEntries = Array.isArray(state.myEntries) ? state.myEntries : state.mine ? [state.mine] : [];
     const entryBlocked = state.entryBlocked || '';
     const receipts = await Promise.all(myEntries.map((entry, index) => receiptHtml(entry, state, index)));
     const canCreate = submissionsOpen(state) && !entryBlocked && myEntries.length < MAX_ENTRIES;
-    const showJudging = ['judging', 'finished'].includes(state.phase);
-    const cards = showJudging ? await Promise.all(state.entries.map((entry, index) => judgingCard(entry, index, state.phase === 'judging'))) : [];
     if (!root.isConnected) return;
     stopDeadline?.();
     activeEditor = null;
@@ -380,7 +320,7 @@ export async function festaView(mount) {
         <div class="festa-stack" data-testid="festa-my-entries">${receipts.length ? receipts.join('') : `<section class="card"><p class="notice notice--info">${canCreate ? '아직 제출한 작품이 없습니다. 아래에서 첫 작품을 접수해 주세요.' : entryBlocked ? '현재 계정으로 확인할 수 있는 접수증이 없습니다.' : '접수한 작품이 없습니다. 현재는 접수가 마감되었습니다.'}</p></section>`}</div>
       </section><div data-festa-editor-host></div>
       ${rubricHtml()}
-      ${showJudging ? `<section aria-labelledby="festaJudgingTitle" class="festa-stack"><div><h2 id="festaJudgingTitle" class="page-title">${state.phase === 'finished' ? '평가 마감 · 접수 작품' : '함께 심사하기'}</h2><p class="page-sub" data-testid="festa-judging-progress">${state.phase === 'finished' ? '평가가 마감되어 점수를 변경할 수 없습니다. 저장한 평가는 각 작품에서 확인할 수 있습니다.' : ''}</p></div><div class="festa-stack" data-testid="festa-judging-list">${cards.length ? cards.join('') : emptyState({ title: '심사할 작품이 없습니다', body: '접수된 작품이 표시되면 심사에 참여할 수 있습니다.' })}</div></section>` : `<p class="notice notice--info">${state.phase === 'open' ? '심사가 시작되면 다른 회원의 작품을 보고 평가할 수 있습니다.' : '접수가 마감되었습니다. 운영자가 심사를 시작하면 이곳에서 작품을 평가할 수 있습니다.'}</p>`}`;
+      ${state.awardsPublished ? '<a class="btn btn--festa" href="#/festa/awards">🏆 수상작 발표 보기</a>' : '<p class="field__hint">심사위원은 운영자가 전달한 전용 링크에서 평가합니다.</p>'}`;
     const host = root.querySelector('[data-festa-editor-host]');
     const rememberDraft = () => { if (activeEditor && activeKey) drafts.set(activeKey, activeEditor.snapshot()); };
     const openEditor = (entry, focus = true) => {
@@ -420,15 +360,13 @@ export async function festaView(mount) {
       root.querySelectorAll('[data-receipt-edit-message]').forEach((message) => { message.textContent = '접수가 마감되어 제출 내용을 수정할 수 없습니다.'; });
       activeEditor?.expire();
     });
-    if (state.phase === 'judging') bindJudging(root, state);
   };
   try { await refresh(); }
   catch (error) { if (root.isConnected) root.innerHTML = `<p class="notice notice--err" role="alert">페스타 정보를 불러오지 못했습니다 — ${esc(error.message)}</p>`; }
 }
 
 async function adminEntry(entry, index) {
-  const average = typeof entry.average === 'number' && Number.isFinite(entry.average) ? `${entry.average.toFixed(1)}점 / 100점` : '평가 없음';
-  return `<article class="card" aria-labelledby="festaAdminEntry${index}"><div class="festa-entry-head"><div><h3 id="festaAdminEntry${index}">${esc(entry.title)}</h3><p class="page-sub">${esc(entry.author?.institution || '기관 미등록')} · ${esc(entry.author?.name || '이름 없음')}</p><p class="field__hint">${esc(entry.author?.email || '')}</p></div><div><span class="badge badge--soft">평가 ${esc(entry.scoreCount ?? 0)}건</span><p class="festa-total">평균 ${esc(average)}</p></div></div>
+  return `<article class="card" aria-labelledby="festaAdminEntry${index}"><div class="festa-entry-head"><div><h3 id="festaAdminEntry${index}">${esc(entry.title)}</h3><p class="page-sub">${esc(entry.institution || '소속기관 확인 필요')} · ${esc(entry.author?.name || '이름 없음')}</p><p class="field__hint">${esc(entry.author?.email || '')}</p></div></div>
     <p class="field__hint">접수 ${esc(fmtDate(entry.createdAt, true))} · 최종 수정 ${esc(fmtDate(entry.updatedAt || entry.createdAt, true))} · 접수 번호 ${esc(entry.id)}</p>
     <p class="festa-description" style="margin-block:var(--space-3)">${esc(entry.description)}</p>${entryLinks(entry)}
     <div style="margin-top:var(--space-3)">${await attachments(entry.files)}</div>
@@ -443,20 +381,14 @@ export async function festaAdminView(mount) {
     const state = await festa.get();
     const entries = Array.isArray(state.entries) ? state.entries : [];
     const cards = await Promise.all(entries.map(adminEntry));
-    const nextPhase = {
-      open: { phase: 'closed', label: '접수 마감' },
-      closed: { phase: 'judging', label: '평가 시작' },
-      judging: { phase: 'finished', label: '평가 마감' },
-    }[state.phase];
     if (!root.isConnected) return;
     stopDeadline?.();
     root.innerHTML = `${deadlineHtml(state)}<section class="card" aria-labelledby="festaDeadlineTitle"><h2 id="festaDeadlineTitle" class="page-title" style="font-size:2.2rem"><span aria-hidden="true">🗓️</span> 접수 마감일 설정</h2>
       <p class="page-sub">선택한 날짜의 한국시간 23:59:59까지 접수합니다. 수동으로 접수를 마감하기 전에는 기한이 지나도 날짜를 연장하거나 앞당길 수 있습니다.</p>
       <form data-testid="festa-deadline-form" style="margin-top:var(--space-3)"><div class="row"><label class="field grow"><span class="field__label">접수 마감일 (한국시간)</span><input class="input" type="date" name="deadline" required value="${attr(deadlineOf(state))}" data-testid="festa-deadline-input" ${state.phase === 'open' ? '' : 'disabled'} /></label><button type="submit" class="btn btn--primary" data-testid="festa-deadline-save" ${state.phase === 'open' ? '' : 'disabled'}>마감일 저장</button></div><p data-deadline-status role="status" aria-live="polite" class="field__hint">${state.phase === 'open' ? '날짜가 지나도 평가는 자동으로 시작되지 않습니다. 접수 마감 → 평가 시작을 직접 진행해 주세요.' : '운영자가 접수를 마감한 뒤에는 마감일을 변경할 수 없습니다.'}</p></form>
     </section><section class="card" aria-labelledby="festaPhaseTitle"><div class="festa-entry-head"><h2 id="festaPhaseTitle" class="page-title" style="font-size:2.2rem"><span aria-hidden="true">⚙️</span> 페스타 운영 단계</h2><span data-admin-phase-badge>${state.phase === 'open' && deadlinePassed(state) ? '<span class="badge badge--closed">기한 종료 · 수동 마감 전</span>' : phaseBadge(state.phase)}</span></div>
-      <p class="page-sub" data-admin-phase-description>${state.phase === 'open' ? deadlinePassed(state) ? '접수 기한이 지나 신규 제출과 수정이 중지되었습니다. 마감일을 연장하거나 접수 마감을 선택해 주세요.' : '마감 기한까지 1인 최대 2작품을 제출·수정할 수 있습니다. 준비가 끝나면 접수를 마감해 주세요.' : state.phase === 'closed' ? '접수를 수동으로 마감했습니다. 접수 내역을 확인한 뒤 평가를 시작해 주세요.' : state.phase === 'judging' ? '회원 평가가 진행 중입니다. 모든 회원이 본인 작품을 제외한 작품을 평가할 수 있습니다.' : '평가가 마감되었습니다. 접수 내역과 최종 집계를 확인해 주세요.'}</p>
-      <div class="row" style="margin-top:var(--space-3)">${nextPhase ? `<button class="btn btn--primary" data-phase="${nextPhase.phase}">${nextPhase.label}</button>` : '<p class="notice notice--info">평가가 마감되었습니다. 접수 내역과 최종 집계를 확인할 수 있습니다.</p>'}</div>
-      <p class="field__hint">접수 중 → 접수 마감 → 심사 중 → 평가 마감 순서로 진행합니다. 단계 변경은 되돌릴 수 없으며 모든 회원에게 적용됩니다.</p>
+      <p class="page-sub" data-admin-phase-description>${state.phase === 'open' ? deadlinePassed(state) ? '접수 기한이 지나 신규 제출과 수정이 중지되었습니다. 마감일을 연장하거나 접수 마감을 선택해 주세요.' : '마감 기한까지 1인 최대 2작품을 제출·수정할 수 있습니다. 준비가 끝나면 접수를 마감해 주세요.' : '접수를 마감했습니다. 심사위원 관리에서 기관별 예선과 본선의 작품과 심사위원을 지정하세요.'}</p>
+      <div class="row" style="margin-top:var(--space-3)">${state.phase === 'open' ? '<button class="btn btn--primary" data-phase="closed">접수 마감</button>' : ''}<a class="btn btn--outline" href="#/admin/festa/jury">심사위원·평가 대상 관리</a><a class="btn btn--outline" href="#/admin/festa/awards">수상작 확정·발표</a></div>
       <p data-phase-status role="status" aria-live="polite"></p>
     </section><section class="card" aria-labelledby="festaContactTitle"><h2 id="festaContactTitle" class="page-title" style="font-size:2.2rem">대용량 파일 수신 안내</h2>
       <p class="page-sub">30MB를 초과하는 파일을 받을 이메일입니다. 저장하면 회원의 제출 안내에 표시됩니다.</p>
@@ -521,12 +453,7 @@ export async function festaAdminView(mount) {
     });
     root.querySelectorAll('[data-phase]').forEach((button) => button.addEventListener('click', async () => {
       const phase = button.dataset.phase;
-      const options = {
-        closed: { title: '접수를 마감할까요?', body: '작품 신규 제출과 수정이 중지됩니다. 기존 접수 내역은 유지되며, 평가 시작 전까지 회원은 본인의 접수 내역만 볼 수 있습니다. 접수 중으로 되돌릴 수 없습니다.', confirmLabel: '접수 마감' },
-        judging: { title: '회원 평가를 시작할까요?', body: '모든 회원에게 접수된 작품과 첨부 파일이 공개됩니다. 회원은 본인 작품을 제외한 작품을 평가할 수 있습니다. 이전 단계로 되돌릴 수 없습니다.', confirmLabel: '평가 시작' },
-        finished: { title: '평가를 마감할까요?', body: '모든 회원의 평가 저장과 수정을 중지합니다. 접수 작품과 이미 저장한 평가는 유지되며, 관리자는 최종 집계를 확인할 수 있습니다. 평가를 다시 열 수 없습니다.', confirmLabel: '평가 마감' },
-      };
-      if (!await confirmModal(options[phase])) return;
+      if (!await confirmModal({ title: '접수를 마감할까요?', body: '작품 제출과 수정이 종료됩니다. 다음으로 심사위원 관리에서 평가 대상을 지정하고 심사를 열 수 있습니다.', confirmLabel: '접수 마감' })) return;
       const buttons = [...root.querySelectorAll('[data-phase]')];
       buttons.forEach((item) => { item.disabled = true; });
       const status = root.querySelector('[data-phase-status]');

@@ -145,6 +145,11 @@ try {
     await festa(alice);
     const form = alice.getByTestId('festa-entry-form');
     await form.waitFor();
+    const institution = form.locator('[name="institution"]');
+    assert.equal(await institution.inputValue(), '');
+    assert.deepEqual(await institution.locator('option').evaluateAll((rows) => rows.map((row) => row.value)), ['', '행정안전부', '한국서부발전']);
+    assert.equal(await institution.evaluate((el) => el.validity.valueMissing), true);
+    await institution.selectOption('한국서부발전');
     await form.locator('[name="title"]').fill('민원 안내 도우미');
     const fields = await form.locator('input[name], textarea[name]').evaluateAll((els) => els.map((el) => el.name));
     assert.deepEqual(fields.slice(0, 5), ['title', 'deployUrl', 'localOnly', 'githubUrl', 'description']);
@@ -173,6 +178,7 @@ try {
     assert.ok((await alice.getByTestId('festa-receipt').innerText()).includes('민원 안내 도우미'));
     const mine = (await state(alice)).mine;
     assert.equal(mine.localOnly, true);
+    assert.equal(mine.institution, '한국서부발전');
     assert.equal(mine.files.length, 1);
     assert.equal(mine.author.email, 'alice@example.com');
   });
@@ -181,6 +187,7 @@ try {
     await alice.getByTestId('festa-edit-entry').click();
     const form = alice.getByTestId('festa-entry-form');
     await form.waitFor();
+    assert.equal(await form.locator('[name="institution"]').inputValue(), '한국서부발전');
     assert.equal(await form.locator('[name="title"]').inputValue(), '민원 안내 도우미');
     assert.equal(await form.locator('[name="localOnly"]').isChecked(), true);
     await form.locator('[name="title"]').fill('민원 안내 도우미 최종본');
@@ -192,6 +199,7 @@ try {
     await festa(bob);
     const form = bob.getByTestId('festa-entry-form');
     await form.waitFor();
+    await form.locator('[name="institution"]').selectOption('행정안전부');
     for (const [name, value] of Object.entries({
       title: '문서 정리 웹앱', description: '문서를 분류하고 검색하는 웹앱입니다.',
       deployUrl: 'https://example.com/documents', githubUrl: 'https://github.com/example/documents',
@@ -205,6 +213,7 @@ try {
     const form = alice.getByTestId('festa-entry-form');
     assert.equal(await form.locator('[name="title"]').inputValue(), '');
     assert.equal(await alice.getByTestId('festa-file-list').getByText('사용설명.txt').count(), 0);
+    await form.locator('[name="institution"]').selectOption('한국서부발전');
     await form.locator('[name="title"]').fill('현장 점검표');
     await form.locator('[name="localOnly"]').check();
     await form.locator('[name="githubUrl"]').fill('https://github.com/example/checks');
@@ -271,52 +280,16 @@ try {
     assert.equal(await alice.getByTestId('festa-edit-entry').count(), 0);
     assert.equal(await alice.getByTestId('festa-judging-list').count(), 0);
   });
-  await step('관리자가 심사를 시작하면 작품 목록과 네 평가 항목이 표시', async () => {
-    await phase(admin, 'judging');
-    await festa(alice);
-    await alice.getByTestId('festa-judging-list').waitFor();
-    for (const mine of (await state(alice)).myEntries) {
-      assert.equal(await alice.locator(`[data-testid="festa-score-form"][data-entry-id="${mine.id}"]`).count(), 0);
-    }
-    const form = alice.getByTestId('festa-score-form');
-    assert.equal(await form.count(), 1);
-    for (let i = 0; i < 4; i += 1) await form.locator(`[name="score${i}"]`).fill(String([40, 30, 20, 10][i]));
-    assert.ok((await form.getByTestId('festa-score-total').innerText()).includes('100'));
-    const [result] = await Promise.all([
-      alice.waitForResponse((r) => r.url().endsWith('/api/festa/score')),
-      form.getByTestId('festa-score-save').click(),
-    ]);
-    assert.equal(result.status(), 200);
-  });
-  await step('저장한 평가가 새로고침 후 유지되고 0점으로 수정해도 한 사람으로 집계', async () => {
-    await festa(alice);
-    const form = alice.getByTestId('festa-score-form');
-    await form.waitFor();
-    for (let i = 0; i < 4; i += 1) assert.equal(await form.locator(`[name="score${i}"]`).inputValue(), String([40, 30, 20, 10][i]));
-    for (let i = 0; i < 4; i += 1) await form.locator(`[name="score${i}"]`).fill('0');
-    const [result] = await Promise.all([
-      alice.waitForResponse((r) => r.url().endsWith('/api/festa/score')),
-      form.getByTestId('festa-score-save').click(),
-    ]);
-    assert.equal(result.status(), 200);
-    const bobEntry = (await state(admin)).entries.find((e) => e.title === '문서 정리 웹앱');
-    assert.equal(bobEntry.scoreCount, 1);
-    assert.equal(bobEntry.average, 0);
-  });
-  await step('관리자 집계와 심사 종료 후 회원 결과 열람', async () => {
-    await admin.goto(`${origin}/#/admin/festa`);
-    await admin.getByTestId('festa-admin-list').waitFor();
-    assert.ok((await admin.getByTestId('festa-admin-list').innerText()).includes('문서 정리 웹앱'));
-    await phase(admin, 'finished');
-    await festa(alice);
-    await alice.getByTestId('festa-judging-list').waitFor();
-    assert.equal(await alice.getByTestId('festa-score-save').count(), 0);
-    assert.equal((await state(alice)).phase, 'finished');
+  await step('관리자에게 심사위원 관리와 시상 버튼이 나타나고 일반회원은 전용 심사권한을 받지 않음', async () => {
+    assert.ok(await admin.locator('main a[href="#/admin/festa/jury"]').first().isVisible());
+    assert.ok(await admin.locator('main a[href="#/admin/festa/awards"]').first().isVisible());
+    assert.deepEqual((await state(bob)).entries, []);
+    assert.equal(await alice.getByTestId('festa-score-form').count(), 0);
   });
   await step('모바일에서도 Festa 본문이 화면 밖으로 넘치지 않음', async () => {
     await alice.setViewportSize({ width: 375, height: 812 });
     await festa(alice);
-    await alice.getByTestId('festa-judging-list').waitFor();
+    await alice.getByTestId('festa-receipt').first().waitFor();
     assert.ok(await alice.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
   });
   await step('브라우저 예외와 서버 500 오류가 없음', () => assert.deepEqual(errors, []));

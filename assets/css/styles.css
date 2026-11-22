@@ -221,6 +221,20 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .festa-score-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4);
 }
+.festa-score-grid > .field { display: flex; flex-direction: column; }
+.festa-score-grid > .field > input { margin-top: auto; }
+.festa-score-grid > .field > .field__hint { margin-bottom: var(--space-2); }
+.festa-rubric { margin-top: var(--space-3); }
+.festa-rubric-row {
+  display: grid; grid-template-columns: 12rem 5rem minmax(0, 1fr);
+  gap: var(--space-3); align-items: baseline; padding: var(--space-2) 0;
+}
+.festa-rubric-row + .festa-rubric-row { border-top: 1px solid var(--hairline); }
+.festa-rubric-row .badge { justify-self: start; font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) {
+  .festa-rubric-row { grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-1); }
+  .festa-rubric-row p { grid-column: 1 / -1; }
+}
 .festa-description { white-space: pre-wrap; overflow-wrap: anywhere; }
 .festa-entry-head, .festa-file-row { display: flex; align-items: flex-start; gap: var(--space-3); }
 .festa-entry-head { flex-wrap: wrap; justify-content: space-between; }

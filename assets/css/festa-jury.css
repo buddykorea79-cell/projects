@@ -1,0 +1,57 @@
+.festa-jury { min-width: 0; overflow-wrap: anywhere; }
+.fj-stack { display: grid; gap: var(--space-4); min-width: 0; }
+.fj-stack > * { min-width: 0; }
+.fj-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: var(--space-3); }
+.fj-head > * { min-width: 0; max-width: 100%; }
+.fj-tabs, .fj-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.fj-tabs { padding-bottom: var(--space-2); }
+.fj-tabs [aria-selected="true"] { background: var(--house-green); border-color: var(--house-green); color: #fff; }
+.fj-choice-list, .fj-files { display: grid; gap: var(--space-2); }
+.fj-choice { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid var(--input-border); border-radius: var(--radius-field); }
+.fj-choice input[type="checkbox"] { flex: 0 0 auto; margin-top: 5px; }
+.fj-choice > span { min-width: 0; }
+.fj-choice:has(input:checked) { border-color: var(--green-accent); background: #f3faf6; }
+.fj-assign-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(160px,220px) auto; gap: var(--space-2); align-items: center; padding-block: var(--space-3); border-bottom: 1px solid var(--hairline); }
+.fj-assign-row:last-child { border-bottom: 0; }
+.fj-assign-row .field { margin: 0; }
+.fj-form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--space-3); }
+.fj-pin-row { display: grid; grid-template-columns: minmax(120px,200px) auto; gap: var(--space-2); align-items: end; }
+.fj-pin-row .field { margin: 0; }
+.fj-secret { background: #fff7fa; border-inline-start: 4px solid #a51e57; padding: var(--space-3); border-radius: var(--radius-field); }
+.fj-secret .input { min-width: 0; width: 100%; }
+.fj-table-wrap { overflow-x: auto; max-width: 100%; }
+.fj-table { border-collapse: collapse; width: 100%; min-width: 600px; font-size: 1.4rem; }
+.fj-table th, .fj-table td { padding: 10px; text-align: left; border-bottom: 1px solid var(--hairline); vertical-align: top; }
+.fj-table th { background: var(--neutral-cool); font-weight: 700; }
+.fj-table caption { text-align: left; font-weight: 700; padding-bottom: 10px; }
+.fj-entry-nav { display: grid; grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); gap: var(--space-2); }
+.fj-entry-choice { text-align: left; display: grid; align-content: start; gap: 8px; width: 100%; min-height: 86px; padding: 13px; border: 1px solid var(--input-border); border-radius: var(--radius-card); background: #fff; cursor: pointer; }
+.fj-entry-choice__title { font-size: 1.4rem; font-weight: 700; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.fj-entry-choice__status { font-size: 1.2rem; }
+.fj-entry-choice.is-complete { background: #f0f8f3; border-color: #8ab69d; }
+.fj-entry-choice.is-unscored { background: #fff; }
+.fj-entry-choice.is-current { border: 2px solid #a51e57; padding: 12px; box-shadow: 0 0 0 2px #a51e5712; }
+.fj-entry-choice.is-current .fj-entry-choice__status { color: #861644; font-weight: 700; }
+.fj-description { white-space: pre-wrap; overflow-wrap: anywhere; max-height: none; margin-block: var(--space-4); line-height: 1.8; }
+.fj-file { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: 12px; border: 1px solid var(--hairline); border-radius: var(--radius-field); }
+.fj-file > div { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+.fj-score-rows { display: grid; gap: 0; }
+.fj-score-row { display: grid; grid-template-columns: minmax(0,1fr) 100px; gap: var(--space-3); align-items: center; padding-block: var(--space-3); border-bottom: 1px solid var(--hairline); }
+.fj-score-row .input { width: 100%; min-width: 0; text-align: center; font-size: 1.8rem; font-variant-numeric: tabular-nums; }
+.fj-score-row label { min-width: 0; }
+.fj-score-row .field__label { margin: 0; }
+.fj-score-total { font-size: 2rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.fj-progress { display: grid; gap: 6px; }
+.fj-progress progress { width: 100%; height: 12px; accent-color: var(--green-accent); }
+.fj-note { color: var(--text-black-soft); font-size: 1.4rem; }
+.festa-jury .btn { max-width: 100%; }
+@media (max-width: 640px) {
+  .fj-form-grid, .fj-assign-row { grid-template-columns: minmax(0,1fr); }
+  .fj-assign-row button { justify-self: start; }
+  .fj-entry-nav { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .fj-score-row { grid-template-columns: minmax(0,1fr) 80px; gap: 12px; }
+  .fj-score-row .field__hint { font-size: 1.2rem; }
+  .fj-pin-row { grid-template-columns: minmax(0,1fr); }
+  .fj-pin-row button { justify-self: start; }
+  .festa-jury .btn { white-space: normal; }
+}

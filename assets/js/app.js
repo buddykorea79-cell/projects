@@ -9,6 +9,8 @@ import * as R from './router.js';
 import { homeView } from './views/home.js';
 import { festaView, festaAdminView } from './views/festa.js';
 import { festaPracticeView } from './views/festa-practice.js';
+import { festaJuryAdminView, festaJurorView } from './views/festa-jury.js';
+import { festaAwardsAdminView, festaAwardsView } from './views/festa-awards.js';
 import { projectView, submitView } from './views/project.js';
 import { myView, submissionView, editSubmissionView } from './views/my.js';
 import { guideView } from './views/guide.js';
@@ -128,7 +130,7 @@ function signInWall(path) {
   main.innerHTML = `<section class="section"><div class="wrap wrap--narrow">
     ${emptyState({
     title: '로그인이 필요합니다',
-    body: path === '/festa' ? '로그인하면 페스타에 작품을 접수하고 평가할 수 있습니다.' : '과제 제출과 강의자료는 회원만 이용할 수 있습니다.',
+    body: path === '/festa' ? '로그인하면 페스타에 작품을 접수하고 내 접수증을 확인할 수 있습니다.' : '과제 제출과 강의자료는 회원만 이용할 수 있습니다.',
     action: `<div class="row" style="justify-content:center">
         <a class="btn btn--primary" href="#/login?next=${attr(encodeURIComponent(path))}">로그인</a>
         <a class="btn btn--outline" href="#/signup?next=${attr(encodeURIComponent(path))}">회원가입</a>
@@ -138,10 +140,10 @@ function signInWall(path) {
 }
 
 /** 각 화면 핸들러를 로그인 가드 + 공통 에러 처리로 감쌉니다. */
-const view = (fn, { admin = false } = {}) => async (params, query) => {
+const view = (fn, { admin = false, publicPage = false } = {}) => async (params, query) => {
   const path = R.currentPath();
 
-  if (!PUBLIC_PATHS.has(path) && !isSignedIn()) {
+  if (!publicPage && !PUBLIC_PATHS.has(path) && !isSignedIn()) {
     // 서버에 아직 물어본 적이 없다면(새로고침 직후 등) 한 번 확인하고 판단합니다.
     if (store?.auth && !store.auth.synced) await store.auth.refresh();
     renderAuthButtons();
@@ -186,6 +188,10 @@ function registerRoutes() {
   R.route('/festa', view(festaView));
   R.route('/admin/festa', view(festaAdminView, { admin: true }));
   R.route('/admin/festa/practice', view(festaPracticeView, { admin: true }));
+  R.route('/admin/festa/jury', view(festaJuryAdminView, { admin: true }));
+  R.route('/festa/jury/:invite', view(festaJurorView, { publicPage: true }));
+  R.route('/admin/festa/awards', view(festaAwardsAdminView, { admin: true }));
+  R.route('/festa/awards', view(festaAwardsView, { publicPage: true }));
   R.route('/camp/:id', view((m, p, q) => campProjectView(m, p, q)));
 
   // 기존 과제의 상호 투표와 조별 발표는 프로젝트 상세에서 접근합니다.

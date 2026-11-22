@@ -53,6 +53,7 @@ const get = async (client) => {
   return result.data;
 };
 const entry = (over = {}) => ({
+  institution: '행정안전부',
   title: '민원 안내 도우미', description: '기관의 자주 묻는 민원을 검색해 안내하는 서비스입니다.',
   localOnly: false, deployUrl: 'https://example.com/civil-service',
   githubUrl: 'https://github.com/example/civil-service', files: [], ...over,
@@ -148,8 +149,6 @@ await test('로컬 실행을 선택해도 GitHub 주소는 필요', async () => 
 let aliceFile;
 let bobDraftFile;
 let aliceId;
-let bobId;
-let adminId;
 await test('업로드는 실제 파일 크기와 서버 생성 키를 반환', async () => {
   const result = await upload(alice);
   assert.equal(result.status, 200, result.data?.message);
@@ -218,15 +217,14 @@ await test('로컬 실행 작품은 배포 URL 없이 접수되고 타인 작품
   }));
   assert.equal(result.status, 200, result.data?.message);
   const mine = (await get(bob)).mine;
-  bobId = mine.id;
-  assert.notEqual(bobId, aliceId);
+  assert.notEqual(mine.id, aliceId);
   assert.equal(mine.localOnly, true);
   assert.equal(mine.author.email, 'bob@example.com');
   assert.equal((await get(alice)).mine.title, '민원 안내 도우미 최종본');
 });
 await test('관리자도 자신의 작품을 접수할 수 있음', async () => {
   assert.equal((await post(admin, '/festa/entry', entry({ title: '운영자 예시 작품' }))).status, 200);
-  adminId = (await get(admin)).mine.id;
+  assert.ok((await get(admin)).mine.id);
 });
 await test('접수 중에는 본인만 보이고 관리자만 전체를 확인', async () => {
   assert.deepEqual((await get(alice)).entries, []);
@@ -266,62 +264,19 @@ await test('마감 단계에서 재접수나 같은 단계로 돌아갈 수 없�
   for (const phase of ['open', 'closed', 'finished']) rejected(await post(admin, '/festa/phase', { phase }), phase);
   assert.equal((await get(admin)).phase, 'closed');
 });
-await test('심사 개시 후 모든 회원이 작품을 보되 타인 이메일·미첨부 파일은 비공개', async () => {
-  assert.equal((await post(admin, '/festa/phase', { phase: 'judging' })).status, 200);
-  const state = await get(carol);
-  assert.equal(state.phase, 'judging');
-  assert.equal(state.entries.length, 3);
-  assert.ok(state.entries.every((e) => !e.author.email));
-  assert.equal(JSON.stringify(state).includes('alice@example.com'), false);
-  assert.equal((await carol(filePath(aliceFile))).status, 200);
-  rejected(await carol(filePath(bobDraftFile)), 'unattached draft privacy');
-  assert.equal((await bob(filePath(bobDraftFile))).status, 200);
-});
-await test('심사 중에는 작품을 수정하거나 단계를 되돌릴 수 없음', async () => {
-  for (const client of [alice, admin]) rejected(await post(client, '/festa/entry', entry()), 'immutable entry');
-  for (const phase of ['open', 'closed', 'judging']) rejected(await post(admin, '/festa/phase', { phase }), phase);
-  assert.equal((await get(admin)).phase, 'judging');
-});
-await test('본인 작품은 채점할 수 없고 존재하지 않는 작품도 거부', async () => {
-  rejected(await post(alice, '/festa/score', { entryId: aliceId, scores: [40, 30, 20, 10] }), 'self score');
-  rejected(await post(admin, '/festa/score', { entryId: adminId, scores: [40, 30, 20, 10] }), 'admin self score');
-  assert.equal((await post(carol, '/festa/score', { entryId: 'fe_missing', scores: [0, 0, 0, 0] })).status, 404);
-});
-await test('점수는 정확히 네 개의 정수이며 각 문항 범위 밖 값을 거부', async () => {
-  for (const scores of [
-    [], [40, 30, 20], [40, 30, 20, 10, 0], [41, 30, 20, 10], [40, 31, 20, 10],
-    [40, 30, 21, 10], [40, 30, 20, 11], [-1, 0, 0, 0], [0.5, 0, 0, 0],
-    ['40', 30, 20, 10], [null, 0, 0, 0], [true, 0, 0, 0],
-  ]) rejected(await post(carol, '/festa/score', { entryId: aliceId, scores }), JSON.stringify(scores));
-  const all = (await get(admin)).entries;
-  assert.equal(all.find((e) => e.id === aliceId).scoreCount, 0);
-  assert.equal(all.find((e) => e.id === aliceId).average, null);
-});
-await test('일반회원과 관리자가 채점하면 100점 만점 평균과 참여 인원으로 집계', async () => {
-  assert.equal((await post(bob, '/festa/score', { entryId: aliceId, scores: [40, 30, 20, 10] })).status, 200);
-  assert.equal((await post(admin, '/festa/score', { entryId: aliceId, scores: [20, 15, 10, 5] })).status, 200);
-  const result = (await get(admin)).entries.find((e) => e.id === aliceId);
-  assert.equal(result.scoreCount, 2);
-  assert.equal(result.average, 75);
-  assert.deepEqual((await get(bob)).entries.find((e) => e.id === aliceId).myScores, [40, 30, 20, 10]);
-  assert.equal((await get(carol)).entries.find((e) => e.id === aliceId).myScores, null);
-});
-await test('같은 심사자의 재채점은 한 표를 갱신하고 모든 항목 0점도 저장됨', async () => {
-  assert.equal((await post(bob, '/festa/score', { entryId: aliceId, scores: [0, 0, 0, 0] })).status, 200);
-  const result = (await get(admin)).entries.find((e) => e.id === aliceId);
-  assert.equal(result.scoreCount, 2);
-  assert.equal(result.average, 25);
-  assert.deepEqual((await get(bob)).entries.find((e) => e.id === aliceId).myScores, [0, 0, 0, 0]);
-});
-await test('동시 재채점도 심사자 한 명당 한 표만 남김', async () => {
-  const results = await Promise.all([
-    post(carol, '/festa/score', { entryId: bobId, scores: [10, 10, 10, 10] }),
-    post(carol, '/festa/score', { entryId: bobId, scores: [20, 20, 20, 10] }),
-  ]);
-  results.forEach((r) => assert.equal(r.status, 200, r.data?.message));
-  const result = (await get(admin)).entries.find((e) => e.id === bobId);
-  assert.equal(result.scoreCount, 1);
-  assert.ok([40, 70].includes(result.average));
+await test('기존 심사 화면이나 API로 제3자 작품을 열거나 평가할 수 없음', async () => {
+  for (const phase of ['closed', 'judging', 'finished']) {
+    // 이전 버전이 이미 심사 또는 종료로 저장한 데이터도 새 공개 범위를 따릅니다.
+    const item = await bucket.get('data/festa.json');
+    const stored = JSON.parse(await item.text());
+    stored.phase = phase;
+    await bucket.put('data/festa.json', JSON.stringify(stored));
+    assert.deepEqual((await get(carol)).entries, []);
+    assert.equal((await carol(filePath(aliceFile))).status, 403);
+    assert.equal((await post(carol, '/festa/score', { entryId: aliceId, scores: [40,30,20,10] })).status, 403);
+    assert.equal((await alice(filePath(aliceFile))).status, 200);
+    assert.ok((await get(admin)).entries.length >= 2);
+  }
 });
 await test('정지된 회원은 기존 세션으로 목록·채점·첨부를 이용할 수 없음', async () => {
   assert.equal((await admin('/auth/members', {
@@ -330,24 +285,6 @@ await test('정지된 회원은 기존 세션으로 목록·채점·첨부를 �
   assert.equal((await blocked('/festa')).status, 401);
   assert.equal((await post(blocked, '/festa/score', { entryId: aliceId, scores: [0, 0, 0, 0] })).status, 401);
   assert.equal((await blocked(filePath(aliceFile))).status, 401);
-});
-await test('심사 종료는 관리자만 가능하고 모든 채점을 동결하며 결과는 유지', async () => {
-  assert.equal((await post(alice, '/festa/phase', { phase: 'finished' })).status, 403);
-  const before = (await get(admin)).entries.map((e) => [e.id, e.scoreCount, e.average]);
-  assert.equal((await post(admin, '/festa/phase', { phase: 'finished' })).status, 200);
-  for (const client of [bob, admin]) {
-    rejected(await post(client, '/festa/score', { entryId: aliceId, scores: [40, 30, 20, 10] }), 'finished scores');
-    rejected(await post(client, '/festa/entry', entry()), 'finished entry');
-    rejected(await upload(client), 'finished upload');
-  }
-  const state = await get(admin);
-  assert.equal(state.phase, 'finished');
-  assert.deepEqual(state.entries.map((e) => [e.id, e.scoreCount, e.average]), before);
-  assert.equal((await get(carol)).entries.length, 3);
-  assert.equal((await carol(filePath(aliceFile))).status, 200);
-  for (const phase of ['open', 'closed', 'judging', 'finished']) {
-    rejected(await post(admin, '/festa/phase', { phase }), `finished -> ${phase}`);
-  }
 });
 await test('삭제된 이메일로 재가입해도 과거 작품·파일을 승계하거나 중복 출품하지 못함', async () => {
   const isolated = { ...env, BUCKET: new MockBucket(), TOKEN_SECRET: 'festa-new-account-fixture' };
@@ -384,58 +321,35 @@ await test('삭제된 이메일로 재가입해도 과거 작품·파일을 승�
   assert.ok(originalRow, 'original entry remains inspectable by admin');
   assert.equal(originalRow.title, '민원 안내 도우미');
 });
-await test('재가입해도 과거 본인 작품을 평가하거나 이전 평가를 중복·교체할 수 없음', async () => {
-  const isolated = { ...env, BUCKET: new MockBucket(), TOKEN_SECRET: 'festa-recreated-judge-fixture' };
-  const boss = session(isolated);
-  const original = session(isolated);
-  const other = session(isolated);
-  const replacement = session(isolated);
-  const register = (client, email) => post(client, '/auth/signup', {
-    email, name: email.split('@')[0], institution: '행정안전부', password: 'Festa-test-2026!',
-  });
-  assert.equal((await register(boss, ADMIN)).status, 200);
-  assert.equal((await register(original, 'judge-a@example.com')).status, 200);
-  assert.equal((await register(other, 'entrant-b@example.com')).status, 200);
-  assert.equal((await post(original, '/festa/entry', entry({ title: 'A의 과거 작품' }))).status, 200);
-  assert.equal((await post(other, '/festa/entry', entry({ title: 'B의 작품' }))).status, 200);
-  const oldEntryId = (await get(original)).mine.id;
-  const otherEntryId = (await get(other)).mine.id;
-  assert.equal((await post(boss, '/festa/phase', { phase: 'closed' })).status, 200);
-  assert.equal((await post(boss, '/festa/phase', { phase: 'judging' })).status, 200);
-  assert.equal((await post(original, '/festa/score', {
-    entryId: otherEntryId, scores: [40, 30, 20, 10],
-  })).status, 200);
-  assert.deepEqual((await get(original)).entries.find((row) => row.id === otherEntryId).myScores,
-    [40, 30, 20, 10], 'original member can see own saved score');
-  assert.equal((await boss('/auth/members', {
-    method: 'PATCH', body: { email: 'judge-a@example.com', status: 'blocked' },
-  })).status, 200);
-  assert.equal((await boss('/auth/members', {
-    method: 'DELETE', body: { email: 'judge-a@example.com' },
-  })).status, 200);
-  assert.equal((await register(replacement, 'judge-a@example.com')).status, 200);
-  const overview = await get(replacement);
-  assert.equal(overview.mine, null, 'new account cannot edit previous entry');
-  assert.equal(overview.entries.find((row) => row.id === oldEntryId).author.email, undefined,
-    'previous member identity remains private');
-  assert.equal(overview.entries.find((row) => row.id === otherEntryId).myScores, null,
-    'previous account score is not disclosed to recreated account');
-  const selfScore = await post(replacement, '/festa/score', {
-    entryId: oldEntryId, scores: [40, 30, 20, 10],
-  });
-  const duplicateScore = await post(replacement, '/festa/score', {
-    entryId: otherEntryId, scores: [0, 0, 0, 0],
-  });
-  rejected(selfScore, 'cannot score previous entry with same email');
-  rejected(duplicateScore, 'cannot add or replace previous score with same email');
-  const results = (await get(boss)).entries;
-  assert.equal(results.find((row) => row.id === oldEntryId).scoreCount, 0);
-  assert.equal(results.find((row) => row.id === oldEntryId).average, null);
-  assert.equal(results.find((row) => row.id === otherEntryId).scoreCount, 1,
-    'one score per email across account recreation');
-  assert.equal(results.find((row) => row.id === otherEntryId).average, 100,
-    'original score is preserved');
-  assert.equal((await get(replacement)).entries.find((row) => row.id === otherEntryId).myScores, null);
+await test('선택한 기관을 기록하고 기존 작품의 기관을 판별하거나 관리자가 보정', async () => {
+  const { localEnv, boss, owner, other } = await isolatedFixture('institution');
+  for (const institution of [undefined, '', null, '다른 기관', ['행정안전부']]) {
+    assert.equal((await post(owner, '/festa/entry', entry({ institution }))).status, 400);
+  }
+  const created = await post(owner, '/festa/entry', entry({ id: null, institution: '한국서부발전' }));
+  assert.equal(created.data.entry.institution, '한국서부발전');
+  const entryId = created.data.entry.id;
+  const corrected = { entryId, institution: '행정안전부' };
+  assert.equal((await post(other, '/festa/institution', corrected)).status, 403);
+  assert.equal((await post(boss, '/festa/jury/panel', { panel: 'iwest', entryIds: [entryId] })).status, 200);
+  assert.equal((await post(owner, '/festa/entry', entry({ id: entryId, institution: '행정안전부' }))).status, 200);
+  const stored = JSON.parse(await (await localEnv.BUCKET.get('data/festa.json')).text());
+  assert.deepEqual(stored.juryPanels.iwest.entryIds, []);
+  const old = stored.entries[0];
+  delete old.institution;
+  old.author.institution = '행정안전부';
+  await localEnv.BUCKET.put('data/festa.json', JSON.stringify(stored));
+  assert.equal((await get(owner)).mine.institution, '행정안전부');
+  old.author.institution = '기관 미상';
+  await localEnv.BUCKET.put('data/festa.json', JSON.stringify(stored));
+  assert.equal((await get(owner)).mine.institution, '');
+  assert.equal((await post(boss, '/festa/institution', corrected)).status, 200);
+  assert.equal((await get(owner)).mine.institution, '행정안전부');
+  const fixed = JSON.parse(await (await localEnv.BUCKET.get('data/festa.json')).text());
+  fixed.juryPanels = { mois: { status: 'open', entryIds: [entryId], judges: [], scores: [] } };
+  await localEnv.BUCKET.put('data/festa.json', JSON.stringify(fixed));
+  assert.equal((await post(boss, '/festa/institution', { entryId, institution: '한국서부발전' })).status, 409);
+  assert.equal((await get(owner)).mine.institution, '행정안전부');
 });
 await test('미첨부 업로드는 최근 20개만 보관하고 접수된 파일은 정리하지 않음', async () => {
   const isolated = { ...env, BUCKET: new MockBucket(), TOKEN_SECRET: 'festa-draft-cleanup-fixture' };
@@ -590,10 +504,7 @@ await test('한국 마감일 23:59:59.999까지 접수하고 자정부터 차단
     assert.equal((await post(boss, '/festa/deadline', { deadline: '2027-12-07' })).status, 200, 'admin may shorten before manual close');
     assert.equal((await post(boss, '/festa/phase', { phase: 'closed' })).status, 200);
     assert.equal((await post(boss, '/festa/deadline', { deadline: '2027-12-09' })).status, 409);
-    assert.equal((await post(boss, '/festa/phase', { phase: 'judging' })).status, 200);
-    assert.equal((await post(other, '/festa/score', { entryId: saved.data.entry.id, scores: [40, 30, 20, 10] })).status, 200,
-      'submission deadline does not prevent judging');
-    assert.equal((await post(boss, '/festa/deadline', { deadline: '2027-12-09' })).status, 409);
+    assert.equal((await post(other, '/festa/score', { entryId: saved.data.entry.id, scores: [40, 30, 20, 10] })).status, 403);
   } finally { Date.now = fixtureNow; }
 });
 await test('두 작품 첨부 20개를 모두 보존하며 미첨부 파일은 최근 20개로 제한', async () => {

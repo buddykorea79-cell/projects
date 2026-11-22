@@ -76,7 +76,9 @@ import {
   handleTelegramWebhook,
 } from './telegram.js';
 import { sendResetEmail } from './email.js';
-import { handleFesta } from './festa.js';
+import { handleFesta, FestaError, reply as festaReply } from './festa.js';
+import { handleJury } from './festa-jury.js';
+import { handleAwards } from './festa-awards.js';
 import {
   normTeam, isCamp, normRole, leaderTeam, isNominee,
   presentationOf, presentationPhase, summarizeScores, normScore, scoreBlock, myTeamIn,
@@ -135,6 +137,7 @@ export async function handleApi(request, env, { basePath = '/api', waitUntil } =
   try {
     return await route(request, env, url, path, cors, waitUntil);
   } catch (e) {
+    if (e instanceof FestaError) return festaReply({ message: e.message }, e.status, cors);
     return json({ message: `서버 오류: ${e.message}` }, 500, cors);
   }
 }
@@ -291,9 +294,10 @@ async function route(request, env, url, path, cors, waitUntil) {
   /* ------------------------------------------------------- 개인 페스타 -- */
 
   if (path === '/festa' || path.startsWith('/festa/')) {
-    const got = await requireMember(request, env);
-    if (got.error) return json({ message: got.error }, got.status, cors);
-    return handleFesta(request, env, { path, member: got.member, cors });
+    const context = { path, member: await currentMember(request, env), cors };
+    if (path.startsWith('/festa/jury/')) return handleJury(request, env, context);
+    if (path === '/festa/awards' || path.startsWith('/festa/awards/')) return handleAwards(request, env, context);
+    return handleFesta(request, env, context);
   }
 
   /* ------------------------------------------------------- 파일 -- */
