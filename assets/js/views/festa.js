@@ -320,7 +320,7 @@ export async function festaView(mount) {
         <div class="festa-stack" data-testid="festa-my-entries">${receipts.length ? receipts.join('') : `<section class="card"><p class="notice notice--info">${canCreate ? '아직 제출한 작품이 없습니다. 아래에서 첫 작품을 접수해 주세요.' : entryBlocked ? '현재 계정으로 확인할 수 있는 접수증이 없습니다.' : '접수한 작품이 없습니다. 현재는 접수가 마감되었습니다.'}</p></section>`}</div>
       </section><div data-festa-editor-host></div>
       ${rubricHtml()}
-      ${state.awardsPublished ? '<a class="btn btn--festa" href="#/festa/awards">🏆 수상작 발표 보기</a>' : '<p class="field__hint">심사위원은 운영자가 전달한 전용 링크에서 평가합니다.</p>'}`;
+      ${state.awardsPublished ? '<a class="btn btn--festa" href="#/festa/results">🏆 시상식 보기</a>' : '<p class="field__hint">심사위원은 해당 기관 또는 본선 심사 주소에서 개인 코드로 입장합니다.</p>'}`;
     const host = root.querySelector('[data-festa-editor-host]');
     const rememberDraft = () => { if (activeEditor && activeKey) drafts.set(activeKey, activeEditor.snapshot()); };
     const openEditor = (entry, focus = true) => {

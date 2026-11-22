@@ -1,7 +1,7 @@
 /** 최종 시상: 검토용 계산과 발행된 공개 스냅샷을 명확히 분리합니다. */
-import { readState, updateState, fail, reply, jsonBody, requireAdmin, entryInstitution } from './festa.js';
+import { readState, updateState, fail, reply, jsonBody, requireAdmin, entryInstitution,
+  judgeCanScore, juryScoreLimits as LIMITS, validJuryScores as validScores } from './festa.js';
 import { normEmail } from './auth.js';
-import { judgeCanScore, juryScoreLimits as LIMITS, validJuryScores as validScores } from './festa-jury.js';
 
 const TITLE = '말하는 대로, 바이브 코딩 페스타';
 const AWARDS = {
@@ -175,6 +175,20 @@ export function publicAwards(snapshot) {
   return { published: true, title: TITLE, publishedAt: String(snapshot.publishedAt || ''), recipients };
 }
 
+function publishPlan(state, plan) {
+  const snapshot = { version: 1, publishedAt: new Date().toISOString(), recipients: plan.recipients };
+  const publication = publicAwards(snapshot);
+  state.awardsPublication = snapshot;
+  return publication;
+}
+
+// 본선 마감과 발표 자료 저장은 같은 조건부 쓰기로 처리합니다. 완전동점은 관리자 검토로 넘깁니다.
+export function publishClosedFinalIfReady(state) {
+  if (state.awardsPublication) return;
+  const plan = calculateAwards(state);
+  if (plan.ready) publishPlan(state, plan);
+}
+
 export async function handleAwards(request, env, { path, member, cors = {} }) {
   if (path === '/festa/awards' && request.method === 'GET') {
     const { state } = await readState(env);
@@ -201,11 +215,9 @@ export async function handleAwards(request, env, { path, member, cors = {} }) {
       if (fingerprint(current) !== original) fail(409, '심사 정보가 변경되었습니다. 수상 결과를 다시 검토해 주세요.');
       const plan = calculateAwards(current, body.tieOrder);
       if (!plan.ready) fail(409, plan.issues.join(' '));
-      const snapshot = { version: 1, publishedAt: new Date().toISOString(), recipients: plan.recipients };
-      current.awardsPublication = snapshot;
-      return snapshot;
+      return publishPlan(current, plan);
     });
-    return reply(publicAwards(result), 200, cors);
+    return reply(result, 200, cors);
   }
   return reply({ message: '지원하지 않는 수상 결과 요청입니다.' }, 404, cors);
 }

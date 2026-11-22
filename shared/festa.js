@@ -60,6 +60,17 @@ export function validEmail(value) {
   return typeof value === 'string' && value.length <= 254
     && /^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]{2,}$/.test(value);
 }
+
+export const juryScoreLimits = [40, 30, 20, 10];
+export const validJuryScores = (scores) => Array.isArray(scores) && scores.length === juryScoreLimits.length
+  && scores.every((score, index) => Number.isInteger(score) && score >= 0 && score <= juryScoreLimits[index]);
+
+// 초대 만료는 접근만 막습니다. 이미 배정받은 작품과 심사표는 그대로 계산합니다.
+export function judgeCanScore(judge, entry) {
+  const email = normEmail(judge?.email);
+  return Boolean(judge?.id && validEmail(email) && email !== normEmail(entry?.author?.email));
+}
+
 function contactEmail(state, env) {
   const saved = normEmail(state.email);
   const configured = normEmail(env.FESTA_EMAIL);

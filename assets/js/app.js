@@ -191,6 +191,7 @@ function registerRoutes() {
   R.route('/admin/festa/jury', view(festaJuryAdminView, { admin: true }));
   R.route('/festa/jury/:invite', view(festaJurorView, { publicPage: true }));
   R.route('/admin/festa/awards', view(festaAwardsAdminView, { admin: true }));
+  R.route('/festa/results', view(festaAwardsView, { publicPage: true }));
   R.route('/festa/awards', view(festaAwardsView, { publicPage: true }));
   R.route('/camp/:id', view((m, p, q) => campProjectView(m, p, q)));
 

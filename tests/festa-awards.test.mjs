@@ -142,6 +142,41 @@ await test('동점순서로 더 높은 실제 평균을 뒤집을 수 없고 잘
 });
 
 console.log('\n== 검토·공개 권한과 스냅샷 ==');
+await test('본선 평가 완료 후 관리자 마감에서 발표가 열리고, 점수는 공개되지 않음', async () => {
+  const state = fixture();
+  state.juryPanels.final.status = 'open';
+  const ctx = await setup(state);
+  assert.equal((await ctx.guest('/festa/awards')).status, 404);
+  const close = () => ctx.admin('/festa/jury/status', { panel: 'final', status: 'closed' });
+  assert.equal((await close()).status, 200);
+  const result = await ctx.guest('/festa/awards');
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.recipients, calculateAwards(fixture()).recipients);
+  assert.ok(!/ballotCount|entryId|average|scores|judgeId/i.test(JSON.stringify(result.body)));
+  assert.equal((await close()).status, 409);
+  assert.deepEqual((await ctx.guest('/festa/awards')).body, result.body);
+});
+await test('미완료 본선이나 예선 마감은 발표를 열지 않고, 수상 경계 동점은 순서 확정 뒤 공개', async () => {
+  const state = fixture();
+  const final = state.juryPanels.final;
+  final.status = 'open';
+  const last = final.scores.pop();
+  state.juryPanels.mois = { ...final, entryIds: final.entryIds.slice(0, 3), scores: final.scores.slice(0, 3) };
+  const ctx = await setup(state);
+  const close = (panel) => ctx.admin('/festa/jury/status', { panel, status: 'closed' });
+  assert.equal((await close('mois')).status, 200);
+  assert.equal((await ctx.guest('/festa/awards')).status, 404);
+  assert.equal((await close('final')).status, 409);
+  assert.equal((await ctx.guest('/festa/awards')).status, 404);
+  final.scores.push(last);
+  final.scores[3].scores = [...final.scores[2].scores];
+  await ctx.bucket.put('data/festa.json', JSON.stringify(state));
+  assert.equal((await close('final')).status, 200);
+  assert.equal((await ctx.guest('/festa/awards')).status, 404);
+  assert.equal((await ctx.admin('/festa/awards/preview')).body.ties.length, 1);
+  assert.equal((await publish(ctx, final.entryIds)).result.status, 200);
+  assert.equal((await ctx.guest('/festa/awards')).status, 200);
+});
 await test('미발행 공개 응답은404이며 비회원·일반회원은 검토와 공개 불가', async () => {
   const ctx = await setup();
   const response = await ctx.guest('/festa/awards');

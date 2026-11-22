@@ -17,10 +17,11 @@ async function test(name, fn) {
   catch (error) { failures.push(name); console.error(`  FAIL  ${name} — ${error.stack}`); }
 }
 
-function client(env) {
+function client(env, source) {
   const cookies = new Map();
   return async (path, body, method = body === undefined ? 'GET' : 'POST') => {
     const headers = { Origin: ORIGIN };
+    if (source) headers['CF-Connecting-IP'] = source;
     if (cookies.size) headers.Cookie = [...cookies].map(([key, value]) => `${key}=${value}`).join('; ');
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const response = await handleApi(new Request(`${ORIGIN}/api${path}`, {
@@ -61,7 +62,10 @@ async function fixture(options = {}) {
   return { bucket, env, admin, member, anonymous, entries, file };
 }
 async function configure(f, panel, entryIds) { return ok(await f.admin('/festa/jury/panel', { panel, entryIds })).panel; }
-async function invite(f, panel, email, pin = '012345') {
+async function invite(f, panel, email, pin) {
+  f.nextCode ??= {};
+  pin ??= String(12345 + (f.nextCode[panel] || 0)).padStart(6, '0');
+  f.nextCode[panel] = (f.nextCode[panel] || 0) + 1;
   const judge = ok(await f.admin('/festa/jury/judge', { panel, name: email.split('@')[0], email })).judge;
   const invitation = ok(await f.admin('/festa/jury/invite', { panel, judgeId: judge.id, pin }));
   return { ...invitation, pin, judge };
@@ -71,6 +75,12 @@ const authenticate = async (call, invitation, pin = invitation.pin) => ok(await 
 const session = async (call, invitation) => call(`/festa/jury/session?token=${invitation.token}`);
 const score = async (call, invitation, entryId, scores = [40, 30, 20, 10]) => call('/festa/jury/score', { token: invitation.token, entryId, scores });
 const filePath = (file, invitation) => `/festa/jury/file/${encodeURIComponent(file.key)}?token=${invitation.token}`;
+const commonUnlock = (call, invitation) => call('/festa/jury/unlock', { panel: invitation.panel, pin: invitation.pin });
+const commonSession = (call, invitation) => call(`/festa/jury/session?panel=${invitation.panel}&judgeId=${invitation.judgeId}`);
+const commonScore = (call, invitation, entryId, scores = [40, 30, 20, 10]) => call('/festa/jury/score', {
+  panel: invitation.panel, judgeId: invitation.judgeId, entryId, scores,
+});
+const commonFile = (file, invitation) => `/festa/jury/file/${encodeURIComponent(file.key)}?panel=${invitation.panel}&judgeId=${invitation.judgeId}`;
 
 await test('관리자 전용 작업은 일반회원·비회원이 사용할 수 없음', async () => {
   const f = await fixture();
@@ -136,7 +146,7 @@ await test('수동 접수 마감·유효 초대·비본인 위원 없이는 개�
   ok(await f.admin('/festa/jury/status', { panel: 'mois', status: 'open' }), 409);
   const outsider = ok(await f.admin('/festa/jury/judge', { panel: 'mois', name: '외부위원', email: 'outside@example.com' })).judge;
   ok(await f.admin('/festa/jury/status', { panel: 'mois', status: 'open' }), 409);
-  const issued = ok(await f.admin('/festa/jury/invite', { panel: 'mois', judgeId: outsider.id, pin: '012345' }));
+  const issued = ok(await f.admin('/festa/jury/invite', { panel: 'mois', judgeId: outsider.id, pin: '012346' }));
   await open(f, 'mois');
   const selfClient = client(f.env);
   await authenticate(selfClient, own);
@@ -313,6 +323,237 @@ await test('본선은 기관별 예선과 독립 개시되며 서로 다른 6명
   await configure(tooFew, 'final', tooFew.entries.slice(0, 5).map((row) => row.id));
   await invite(tooFew, 'final', 'final-judge@example.com');
   ok(await tooFew.admin('/festa/jury/status', { panel: 'final', status: 'open' }), 409);
+});
+
+await test('공통 주소 안내는 명부를 노출하지 않고 세 단계에서 같은 코드도 독립 인증', async () => {
+  const f = await fixture();
+  const browser = client(f.env, '198.51.100.1');
+  const invitations = [];
+  for (const [panel, ids] of [['mois', [f.entries[0].id]], ['iwest', [f.entries[3].id]], ['final', f.entries.map((row) => row.id)]]) {
+    await configure(f, panel, ids);
+    const invitation = await invite(f, panel, `${panel}@example.com`, '000007');
+    invitations.push(invitation);
+    await open(f, panel);
+    const metadata = ok(await f.anonymous(`/festa/jury/invitation?panel=${panel}`));
+    assert.deepEqual(Object.keys(metadata).sort(), ['label', 'panel', 'status']);
+    assert.equal(metadata.panel, panel);
+    const unlocked = ok(await commonUnlock(browser, invitation));
+    assert.equal(unlocked.judgeId, invitation.judgeId);
+  }
+  for (const invitation of invitations) {
+    const response = ok(await commonSession(browser, invitation));
+    assert.equal(response.panel, invitation.panel);
+    assert.equal(response.judgeId, invitation.judgeId);
+    assert.equal(response.entries.length, invitation.panel === 'final' ? 6 : 1);
+  }
+  const state = JSON.parse(await (await f.bucket.get('data/festa.json')).text());
+  const selectors = invitations.map((invitation) => state.juryPanels[invitation.panel].judges[0].pinLookup);
+  selectors.forEach((value) => assert.match(value, /^[a-f0-9]{64}$/));
+  assert.equal(new Set(selectors).size, 3, 'selector is scoped to panel');
+  for (const key of ['__proto__', 'constructor', 'other']) {
+    ok(await browser(`/festa/jury/invitation?panel=${key}`), 400);
+    ok(await browser('/festa/jury/unlock', { panel: key, pin: '000007' }), 400);
+  }
+});
+
+await test('패널 안 코드 중복과 동시 중복 발급을 막고 재발급은 기존 접근만 폐기', async () => {
+  const f = await fixture();
+  await configure(f, 'mois', [f.entries[0].id]);
+  const a = await invite(f, 'mois', 'a@example.com', '000001');
+  const b = await invite(f, 'mois', 'b@example.com', '000002');
+  ok(await f.admin('/festa/jury/invite', { panel: 'mois', judgeId: b.judgeId, pin: '000001' }), 409);
+  const races = await Promise.all([a, b].map((invitation) => f.admin('/festa/jury/invite', {
+    panel: 'mois', judgeId: invitation.judgeId, pin: '000003',
+  })));
+  assert.deepEqual(races.map((response) => response.status).sort(), [200, 409]);
+  const winnerIndex = races.findIndex((response) => response.status === 200);
+  const winner = { ...races[winnerIndex].data, pin: '000003' };
+  const other = winnerIndex === 0 ? b : a;
+  await open(f, 'mois');
+  const browser = client(f.env, '198.51.100.2');
+  ok(await commonUnlock(browser, winner));
+  ok(await commonScore(browser, winner, f.entries[0].id));
+  const rotated = { ...ok(await f.admin('/festa/jury/invite', { panel: 'mois', judgeId: winner.judgeId, pin: '000004' })), pin: '000004' };
+  ok(await commonSession(browser, winner), 401);
+  ok(await commonUnlock(browser, winner), 403);
+  ok(await commonUnlock(browser, rotated));
+  assert.deepEqual(ok(await commonSession(browser, rotated)).entries[0].myScores, [40, 30, 20, 10]);
+  ok(await commonUnlock(client(f.env, '198.51.100.3'), other));
+  ok(await f.admin('/festa/jury/revoke', { panel: 'mois', judgeId: rotated.judgeId }));
+  ok(await commonSession(browser, rotated), 410);
+  ok(await commonUnlock(browser, rotated), 403);
+  const renewed = { ...ok(await f.admin('/festa/jury/invite', { panel: 'mois', judgeId: rotated.judgeId, pin: '000005' })), pin: '000005' };
+  ok(await commonUnlock(browser, renewed));
+  now += 8 * 3600 * 1000;
+  ok(await commonSession(browser, renewed), 401);
+  ok(await commonUnlock(browser, renewed));
+  now = renewed.expiresAt;
+  ok(await commonUnlock(browser, renewed), 403);
+});
+
+await test('공통 주소에서도 다른 탭의 위원 변경은 세션·채점·파일·로그아웃에 혼입되지 않음', async () => {
+  const f = await fixture();
+  await configure(f, 'mois', [f.entries[0].id]);
+  await configure(f, 'iwest', [f.entries[3].id]);
+  const a = await invite(f, 'mois', 'a@example.com');
+  const b = await invite(f, 'mois', 'b@example.com');
+  const c = await invite(f, 'iwest', 'c@example.com');
+  await open(f, 'mois'); await open(f, 'iwest');
+  const browser = client(f.env);
+  ok(await commonSession(browser, a), 401);
+  ok(await browser(commonFile(f.file, a)), 401);
+  ok(await commonUnlock(browser, a)); ok(await commonUnlock(browser, c));
+  assert.equal(ok(await browser('/festa/jury/session?panel=mois')).judgeId, a.judgeId);
+  ok(await commonScore(browser, a, f.entries[3].id), 403);
+  ok(await browser(commonFile(f.file, c)), 403);
+  ok(await browser(`/festa/jury/file/${encodeURIComponent(f.file.key)}?panel=mois`), 401);
+  ok(await browser('/festa/jury/score', { panel: 'mois', entryId: f.entries[0].id, scores: [1, 2, 3, 4] }), 401);
+  const file = await browser(commonFile(f.file, a));
+  assert.equal(file.status, 200); assert.equal(await file.response.text(), 'contents');
+  ok(await commonUnlock(browser, b));
+  ok(await commonSession(browser, a), 401);
+  ok(await commonScore(browser, a, f.entries[0].id), 401);
+  ok(await browser(commonFile(f.file, a)), 401);
+  ok(await browser('/festa/jury/logout', { panel: 'mois', judgeId: a.judgeId }), 401);
+  ok(await commonSession(browser, b));
+  const saved = await Promise.all([commonScore(browser, b, f.entries[0].id), commonScore(browser, b, f.entries[0].id, [0, 0, 0, 0])]);
+  saved.forEach((response) => ok(response));
+  assert.equal(ok(await f.admin('/festa/jury/admin')).panels[0].scores.length, 1);
+  const logout = await browser('/festa/jury/logout', { panel: 'mois', judgeId: b.judgeId });
+  ok(logout); assert.match(logout.headers.get('Set-Cookie'), /^fj_mois=;/); assert.match(logout.headers.get('Set-Cookie'), /Max-Age=0/);
+  ok(await commonSession(browser, b), 401);
+  ok(await commonSession(browser, c));
+});
+
+await test('공통 주소는 본인 평가와 타 위원 점수 접근을 막고 마감 후 파일·채점 차단', async () => {
+  const f = await fixture();
+  await configure(f, 'mois', [f.entries[0].id]);
+  const own = await invite(f, 'mois', 'author-0@example.com');
+  const other = await invite(f, 'mois', 'other@example.com');
+  await open(f, 'mois');
+  const ca = client(f.env); const cb = client(f.env);
+  ok(await commonUnlock(ca, own)); ok(await commonUnlock(cb, other));
+  ok(await commonScore(ca, own, f.entries[0].id), 403);
+  ok(await commonScore(cb, other, f.entries[0].id));
+  const selfView = ok(await commonSession(ca, own));
+  assert.equal(selfView.entries[0].myScores, null);
+  assert.ok(selfView.entries[0].scoreBlocked);
+  for (const field of ['average', 'scoreCount', 'judges', 'pinLookup', 'other@example.com']) assert.equal(JSON.stringify(selfView).includes(field), false);
+  ok(await f.admin('/festa/jury/status', { panel: 'mois', status: 'closed' }));
+  ok(await commonScore(cb, other, f.entries[0].id), 409);
+  ok(await cb(commonFile(f.file, other)), 409);
+  assert.deepEqual(ok(await commonSession(cb, other)).entries, []);
+  ok(await commonUnlock(cb, other), 409);
+});
+
+await test('공유 IP의 정상 위원 8명이 동시에 입장해도 실패 카운터·상태 쓰기 없이 각자 인증', async () => {
+  const f = await fixture();
+  await configure(f, 'mois', [f.entries[0].id]);
+  const invitations = [];
+  for (let i = 0; i < 8; i += 1) invitations.push(await invite(f, 'mois', `judge-${i}@example.com`));
+  await open(f, 'mois');
+  const put = f.bucket.put.bind(f.bucket);
+  let writes = 0;
+  f.bucket.put = (...args) => { writes += 1; return put(...args); };
+  const derive = crypto.subtle.deriveBits;
+  let derivations = 0;
+  crypto.subtle.deriveBits = function (...args) { derivations += 1; return derive.apply(this, args); };
+  try {
+    const browsers = invitations.map(() => client(f.env, '198.51.100.10'));
+    const results = await Promise.all(browsers.map((browser, i) => commonUnlock(browser, invitations[i])));
+    results.forEach((response, i) => assert.equal(ok(response).judgeId, invitations[i].judgeId));
+    assert.equal(derivations, 8, 'one PBKDF2 per selected judge, not one per roster member');
+    assert.equal(writes, 0, 'successful shared-network sign-ins only read R2');
+    for (let i = 0; i < browsers.length; i += 1) assert.equal(ok(await commonSession(browsers[i], invitations[i])).judgeId, invitations[i].judgeId);
+  } finally { crypto.subtle.deriveBits = derive; f.bucket.put = put; }
+});
+
+await test('모르는 코드·형식 오류도 출처별 CAS 제한하며 명부 PBKDF 탐색과 IP 원문 저장이 없음', async () => {
+  const f = await fixture();
+  await configure(f, 'mois', [f.entries[0].id]);
+  const a = await invite(f, 'mois', 'judge@example.com');
+  await open(f, 'mois');
+  const browser = client(f.env, '198.51.100.11');
+  const derive = crypto.subtle.deriveBits;
+  let derivations = 0;
+  crypto.subtle.deriveBits = function (...args) { derivations += 1; return derive.apply(this, args); };
+  try {
+    const responses = await Promise.all(['999999', 'ABCDEF', 123456, '', '888888', '777777'].map((pin) => browser('/festa/jury/unlock', { panel: 'mois', pin })));
+    assert.equal(responses.filter((response) => response.status === 403).length, 4);
+    assert.ok(responses.every((response) => [403, 429].includes(response.status)));
+    assert.equal(derivations, 0);
+    ok(await commonUnlock(browser, a), 429);
+    assert.equal(derivations, 0);
+    const stored = await (await f.bucket.get('data/festa-jury-attempts-mois.json')).text();
+    assert.equal(stored.includes('198.51.100.11'), false);
+    assert.equal(stored.includes('999999'), false);
+    const rate = JSON.parse(stored);
+    assert.equal(rate.count, 5); assert.equal(rate.sources.length, 1); assert.equal(rate.sources[0].count, 5);
+    ok(await commonUnlock(client(f.env, '198.51.100.12'), a));
+    now += 10 * 60 * 1000;
+    ok(await commonUnlock(browser, a));
+  } finally { crypto.subtle.deriveBits = derive; }
+});
+
+await test('정상 인증은 이전 오류를 지우지 않고 분산 출처 추측도 패널 한도와 보관 상한 적용', async () => {
+  const f = await fixture();
+  await configure(f, 'mois', [f.entries[0].id]);
+  await configure(f, 'iwest', [f.entries[3].id]);
+  const a = await invite(f, 'mois', 'judge@example.com');
+  const b = await invite(f, 'iwest', 'judge@example.com');
+  await open(f, 'mois'); await open(f, 'iwest');
+  const source = client(f.env, '198.51.100.20');
+  for (let i = 0; i < 4; i += 1) ok(await source('/festa/jury/unlock', { panel: 'mois', pin: '999999' }), 403);
+  ok(await commonUnlock(source, a));
+  ok(await source('/festa/jury/unlock', { panel: 'mois', pin: '999999' }), 429);
+  for (let i = 0; i < 95; i += 1) {
+    ok(await client(f.env, `203.0.113.${i + 1}`)('/festa/jury/unlock', { panel: 'mois', pin: '999999' }), i === 94 ? 429 : 403);
+  }
+  ok(await commonUnlock(client(f.env, '192.0.2.1'), a), 429);
+  ok(await commonUnlock(source, b));
+  let rate = JSON.parse(await (await f.bucket.get('data/festa-jury-attempts-mois.json')).text());
+  assert.equal(rate.count, 100); assert.ok(rate.sources.length <= 256);
+  now += 10 * 60 * 1000;
+  ok(await commonUnlock(source, a));
+  ok(await source('/festa/jury/unlock', { panel: 'mois', pin: '999999' }), 403);
+  rate = JSON.parse(await (await f.bucket.get('data/festa-jury-attempts-mois.json')).text());
+  assert.equal(rate.count, 1); assert.equal(rate.sources.length, 1);
+});
+
+await test('기존 색인 없는 개별 초대는 유지하고 공통 주소는 재발급 뒤 사용하며 중복 이전 PIN도 차단', async () => {
+  const f = await fixture();
+  await configure(f, 'mois', [f.entries[0].id]);
+  const a = await invite(f, 'mois', 'legacy-a@example.com', '012345');
+  const b = await invite(f, 'mois', 'legacy-b@example.com', '012346');
+  const state = JSON.parse(await (await f.bucket.get('data/festa.json')).text());
+  delete state.juryPanels.mois.judges[0].pinLookup;
+  delete state.juryPanels.mois.judges[1].pinLookup;
+  state.juryPanels.mois.judges[1].pinHash = state.juryPanels.mois.judges[0].pinHash;
+  await f.bucket.put('data/festa.json', JSON.stringify(state));
+  await open(f, 'mois');
+  assert.ok(ok(await f.admin('/festa/jury/admin')).panels[0].judges.every((judge) => judge.hasInvite && !judge.hasCommonCode));
+  const ca = client(f.env); const cb = client(f.env);
+  await authenticate(ca, a); await authenticate(cb, b, '012345');
+  ok(await session(ca, a)); ok(await session(cb, b));
+  ok(await commonUnlock(ca, a), 403);
+  ok(await f.admin('/festa/jury/invite', { panel: 'mois', judgeId: a.judgeId, pin: '012345' }), 409);
+  const next = { ...ok(await f.admin('/festa/jury/invite', { panel: 'mois', judgeId: a.judgeId, pin: '654321' })), pin: '654321' };
+  ok(await commonUnlock(ca, next));
+  ok(await ca(`/festa/jury/invitation?token=${a.token}`), 404);
+  ok(await session(cb, b));
+  assert.equal(ok(await f.admin('/festa/jury/admin')).panels[0].judges.find((judge) => judge.id === a.judgeId).hasCommonCode, true);
+});
+
+await test('인증 제한 상태 손상은 덮어쓰지 않고 차단하며 일반 데이터 API로 원본을 읽을 수 없음', async () => {
+  const f = await fixture();
+  await configure(f, 'mois', [f.entries[0].id]);
+  const a = await invite(f, 'mois', 'judge@example.com');
+  await open(f, 'mois');
+  await f.bucket.put('data/festa-jury-attempts-mois.json', '{invalid');
+  ok(await commonUnlock(f.anonymous, a), 503);
+  assert.equal(await (await f.bucket.get('data/festa-jury-attempts-mois.json')).text(), '{invalid');
+  ok(await f.member('/data/festa-jury-attempts-mois'), 404);
+  ok(await f.member('/file/data%2Ffesta-jury-attempts-mois.json'), 400);
 });
 
 Date.now = originalNow;

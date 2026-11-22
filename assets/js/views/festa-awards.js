@@ -2,7 +2,7 @@
 import { CONFIG } from '../config.js';
 import { store } from '../store/index.js';
 import { currentUser, isAdmin } from '../auth.js';
-import { currentQuery } from '../router.js';
+import { currentPath, currentQuery } from '../router.js';
 import { esc, attr } from '../utils.js';
 import { confirmModal, spinner, emptyState } from '../ui.js';
 
@@ -44,43 +44,74 @@ export async function festaAwardsView(mount) {
   catch (error) {
     mount.innerHTML = `<section class="section"><div class="wrap" data-testid="awards-unpublished">${emptyState({
       title: error.status === 404 ? '수상 결과 발표를 기다려 주세요' : '발표 자료를 불러오지 못했습니다',
-      body: error.status === 404 ? '운영자가 최종 결과를 확정하면 이곳에서 수상 작품을 확인할 수 있습니다.' : error.message,
-      action: '<a class="btn btn--outline" href="#/">홈으로 돌아가기</a>',
+      body: error.status === 404 ? '2차 심사 마감과 수상 순서 확정 후 발표가 열립니다.' : error.message,
+      action: '<button class="btn btn--primary" data-testid="awards-retry">발표 상태 다시 확인</button> <a class="btn btn--outline" href="#/">홈으로 돌아가기</a>',
     })}</div></section>`;
+    mount.querySelector('[data-testid="awards-retry"]').addEventListener('click', () => festaAwardsView(mount));
     return;
   }
-  let presentation = currentQuery().get('mode') === 'present';
-  let stage = -1;
+  const presentation = currentPath() === '/festa/results' || currentQuery().get('mode') === 'present';
+  const sequence = STAGES.flatMap((award) => publication.recipients.filter((row) => row.award === award));
+  let position = -1;
+  let revealed = false;
+  let lockedUntil = 0;
+  let unlockTimer;
+  const action = (event, change) => {
+    if (performance.now() < lockedUntil || event.detail > 1) return;
+    lockedUntil = performance.now() + 1150;
+    change();
+    render('awards-next');
+  };
   const render = (focusTarget = '') => {
-    const group = stage < 0 ? null : GROUPS.find((item) => item.key === STAGES[stage]);
-    const selected = group ? publication.recipients.filter((row) => row.award === group.key) : [];
-    mount.innerHTML = `<div class="festa-awards ${presentation ? 'festa-awards--presentation' : ''}" data-testid="awards-public">
+    clearTimeout(unlockTimer);
+    const recipient = sequence[position];
+    const ending = position >= sequence.length;
+    const award = recipient?.award || (ending ? 'ending' : 'intro');
+    const group = GROUPS.find((item) => item.key === award);
+    const groupEntries = sequence.filter((row) => row.award === award);
+    const groupPosition = recipient ? groupEntries.indexOf(recipient) + 1 : 0;
+    const nextLabel = position < 0 ? '시상식 시작' : ending ? '전체 수상자 보기' : !revealed ? '수상자 공개' : position === sequence.length - 1 ? '시상식 마치기' : '다음 수상자';
+    const curtainTitle = position < 0 ? '시상식을 시작합니다' : group?.name || '';
+    const curtainBody = position < 0 ? '장려상 세 분, 우수상 두 분, 최우수상 한 분을 차례로 발표합니다.' : `${groupPosition === 1 ? '첫 번째' : groupPosition === 2 ? '두 번째' : '세 번째'} 수상자를 공개합니다.`;
+    mount.innerHTML = `<div class="festa-awards ${presentation ? 'festa-awards--presentation' : ''}" data-testid="awards-public" data-award="${attr(award)}" data-position="${position}" data-revealed="${revealed}">
       <header class="festa-awards-heading"><p class="festa-awards-eyebrow">${esc(publication.title)}</p>
         <div class="festa-awards-mark" aria-hidden="true">✦</div><h1>${presentation ? '시상식' : '최종 수상 결과'}</h1>
-        <p>수상하신 모든 분께 축하의 말씀을 전합니다.</p>
+        <p>${presentation ? '장려상 · 우수상 · 최우수상' : '수상하신 모든 분께 축하의 말씀을 전합니다.'}</p>
       </header>
       <nav class="festa-awards-controls" aria-label="수상 결과 보기 방식">
-        <button class="btn ${!presentation ? 'btn--primary' : 'btn--outline'}" data-testid="awards-show-all" aria-pressed="${!presentation}">전체 수상자</button>
-        <button class="btn ${presentation ? 'btn--primary' : 'btn--outline'}" data-testid="awards-present" aria-pressed="${presentation}">시상식 발표</button>
+        ${presentation ? '' : '<a class="btn btn--primary" data-testid="awards-present" href="#/festa/results">시상식 발표 시작</a>'}
         <a class="btn btn--quiet" href="#/">홈으로</a>
       </nav>
-      ${presentation ? `<section class="festa-awards-stage" data-testid="awards-stage" aria-live="polite" aria-atomic="true">
-        ${group ? `<p class="festa-awards-stage-label">${group.name}</p><div class="festa-awards-grid festa-awards-grid--${group.key}">${selected.map(card).join('')}</div>`
-    : '<div class="festa-awards-curtain"><h2>수상자를 발표합니다</h2><p>장려상 · 우수상 · 최우수상 순으로 발표합니다.</p></div>'}
-        <div class="festa-awards-stage-controls"><button class="btn btn--outline" data-testid="awards-prev" ${stage < 0 ? 'disabled' : ''}>이전</button>
-          <button class="btn btn--primary" data-testid="awards-next">${stage < 2 ? `${GROUPS.find((item) => item.key === STAGES[stage + 1]).name} 발표` : '전체 수상자 보기'}</button>
-          <button class="btn btn--quiet" data-testid="awards-restart">처음부터</button></div>
+      ${presentation ? `<section class="festa-awards-stage" data-testid="awards-stage" aria-label="시상식 진행">
+        <p class="festa-ceremony-progress" data-testid="awards-progress">${recipient ? `${group.name} · ${groupPosition} / ${groupEntries.length}<span>${position + 1} / ${sequence.length}</span>` : ending ? '시상식 종료' : '수상자 발표'}</p>
+        <div class="festa-ceremony-frame" id="festa-ceremony-current" aria-live="polite" aria-atomic="true">
+          ${ending ? '<div class="festa-ceremony-ending" data-testid="awards-ending"><div class="festa-ceremony-seal" aria-hidden="true">✦</div><h2>수상을 축하드립니다</h2><p>모든 수상자와 참가자 여러분께 감사드립니다.</p></div>'
+    : revealed ? `<div class="festa-ceremony-reveal"><h2 class="festa-awards-stage-label">${group.name}</h2>${card(recipient)}</div>`
+      : `<div class="festa-awards-curtain" data-testid="awards-curtain"><div class="festa-ceremony-seal" aria-hidden="true">✦</div><h2>${curtainTitle}</h2><p>${curtainBody}</p></div>`}
+        </div>
+        <div class="festa-awards-stage-controls"><button class="btn btn--outline" data-testid="awards-prev" data-ceremony-action ${position < 0 ? 'disabled' : ''}>이전</button>
+          ${ending ? `<a class="btn btn--primary" data-testid="awards-next" data-ceremony-action aria-describedby="festa-ceremony-current" href="#/festa/awards">${nextLabel}</a>` : `<button class="btn btn--primary" data-testid="awards-next" data-ceremony-action aria-describedby="festa-ceremony-current">${nextLabel}</button>`}
+          <button class="btn btn--quiet" data-testid="awards-restart" data-ceremony-action>처음부터</button></div>
       </section>` : `<div class="festa-awards-all" data-testid="awards-all">${allRecipients(publication)}</div>`}
       <p class="festa-awards-footer">말하는 대로, 바이브 코딩 페스타</p>
     </div>`;
-    mount.querySelector('[data-testid="awards-show-all"]').addEventListener('click', () => { presentation = false; render('awards-show-all'); });
-    mount.querySelector('[data-testid="awards-present"]').addEventListener('click', () => { presentation = true; stage = -1; render('awards-next'); });
-    mount.querySelector('[data-testid="awards-next"]')?.addEventListener('click', () => {
-      if (stage === 2) presentation = false; else stage += 1;
-      render(presentation ? 'awards-next' : 'awards-show-all');
+    const root = mount.querySelector('[data-testid="awards-public"]');
+    if (!ending) mount.querySelector('[data-testid="awards-next"]')?.addEventListener('click', (event) => action(event, () => {
+      if (position < 0 || revealed) { position += 1; revealed = false; } else revealed = true;
+    }));
+    else mount.querySelector('[data-testid="awards-next"]').addEventListener('click', (event) => {
+      if (performance.now() < lockedUntil || event.detail > 1) event.preventDefault();
     });
-    mount.querySelector('[data-testid="awards-prev"]')?.addEventListener('click', () => { stage = Math.max(-1, stage - 1); render(stage < 0 ? 'awards-next' : 'awards-prev'); });
-    mount.querySelector('[data-testid="awards-restart"]')?.addEventListener('click', () => { stage = -1; render('awards-next'); });
+    mount.querySelector('[data-testid="awards-prev"]')?.addEventListener('click', (event) => action(event, () => {
+      if (revealed) revealed = false; else position = Math.max(-1, position - 1);
+    }));
+    mount.querySelector('[data-testid="awards-restart"]')?.addEventListener('click', (event) => action(event, () => { position = -1; revealed = false; }));
+    root.addEventListener('keydown', (event) => {
+      if (event.repeat && ['Enter', ' '].includes(event.key)) event.preventDefault();
+    });
+    const lockButtons = () => root.querySelectorAll('[data-ceremony-action]').forEach((button) => button.setAttribute('aria-disabled', String(performance.now() < lockedUntil)));
+    lockButtons();
+    if (performance.now() < lockedUntil) unlockTimer = setTimeout(() => { if (root.isConnected) lockButtons(); }, lockedUntil - performance.now() + 1);
     window.scrollTo(0, 0);
     if (focusTarget) mount.querySelector(`[data-testid="${focusTarget}"]`)?.focus({ preventScroll: true });
   };
@@ -101,7 +132,7 @@ export async function festaAwardsAdminView(mount) {
   const render = (message = '') => {
     const root = mount.querySelector('[data-testid="awards-admin-root"]');
     root.innerHTML = `<div class="row"><a class="btn btn--outline" href="#/admin/festa/jury">심사위원·최종 후보 설정</a><a class="btn btn--outline" href="#/admin/festa">페스타 관리</a><button class="btn btn--quiet" data-testid="awards-refresh">다시 검토</button></div>
-      ${plan.published ? '<p class="notice notice--info">수상 결과를 공개했습니다. 공개된 발표 자료는 확정 당시의 결과로 고정됩니다.</p><div class="row"><a class="btn btn--primary" href="#/festa/awards?mode=present" data-testid="awards-present-link">시상식 발표 시작</a><a class="btn btn--outline" href="#/festa/awards" data-testid="awards-public-link">전체 수상자 보기</a></div>' : ''}
+      ${plan.published ? '<p class="notice notice--info">수상 결과를 공개했습니다. 공개된 발표 자료는 확정 당시의 결과로 고정됩니다.</p><div class="row"><a class="btn btn--primary" href="#/festa/results" data-testid="awards-present-link">시상식 발표 시작</a><a class="btn btn--outline" href="#/festa/awards" data-testid="awards-public-link">전체 수상자 보기</a></div>' : ''}
       <section class="card"><h2 class="page-title" style="font-size:2.2rem">선정 기준</h2>
         <p>행정안전부 상위 2명과 한국서부발전 상위 1명을 선정하고, 이 세 명의 최종 심사 평균 순으로 최우수상 1명과 우수상 2명을 결정합니다. 나머지 세 명은 장려상입니다.</p>
         <p class="field__hint" style="margin-top:var(--space-3)">${esc(plan.tieRule)}</p></section>

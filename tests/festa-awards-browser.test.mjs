@@ -51,10 +51,45 @@ async function publicPage(page) {
   const url = `${origin}/#/festa/awards`;
   if (page.url() === url) await page.reload(); else await page.goto(url);
 }
+async function presentationPage(page, path = '/festa/results') {
+  const url = `${origin}/#${path}`;
+  if (page.url() === url) await page.reload(); else await page.goto(url);
+  await page.getByTestId('awards-curtain').waitFor();
+}
+async function ready(page) {
+  await page.waitForFunction(() => document.querySelector('[data-testid="awards-next"]')?.getAttribute('aria-disabled') !== 'true');
+}
+async function advance(page, testid = 'awards-next') {
+  await ready(page);
+  await page.getByTestId(testid).click();
+}
+async function assertConcealed(page) {
+  assert.equal(await page.getByTestId('awards-recipient').count(), 0);
+  const content = await page.locator('main').innerText();
+  for (const name of names) assert.equal(content.includes(name), false, name);
+  for (const title of titles) assert.equal(content.includes(title), false, title);
+}
+async function assertFits(page) {
+  const layout = await page.evaluate(() => {
+    const elements = document.querySelectorAll('[data-testid="awards-recipient"], .festa-awards-certificate, .festa-awards-name, .festa-awards-institution, .festa-awards-project, .festa-awards-prize, [data-testid="awards-next"]');
+    return { scrollY, height: document.documentElement.scrollHeight, viewportHeight: innerHeight,
+      outOfView: [...elements].filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width <= 0 || rect.height <= 0 || rect.left < -1 || rect.top < -1 || rect.right > innerWidth + 1 || rect.bottom > innerHeight + 1;
+      }).map((element) => `${element.className}: ${element.textContent.trim()}`),
+    };
+  });
+  assert.equal(layout.scrollY, 0);
+  assert.deepEqual(layout.outOfView, []);
+  assert.ok(layout.height <= layout.viewportHeight + 1, `페이지 높이 ${layout.height}`);
+}
 async function screenshot(page, name, fullPage = true) {
   if (!process.env.FESTA_AWARDS_SCREENSHOT_DIR) return;
   await mkdir(process.env.FESTA_AWARDS_SCREENSHOT_DIR, { recursive: true });
   await page.evaluate(() => window.scrollTo(0, 0));
+  await page.evaluate(async () => {
+    await Promise.all(document.getAnimations().filter((animation) => animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => {})));
+  });
   await page.screenshot({ path: join(process.env.FESTA_AWARDS_SCREENSHOT_DIR, name), fullPage });
 }
 async function confirmPublish(admin) {
@@ -75,12 +110,16 @@ try {
   const guest = await person();
   const member = await person();
   const admin = await person();
+  const waiting = await person();
 
   await step('미발행 공개 주소에는 발표 대기 안내만 표시', async () => {
     await publicPage(guest);
     await guest.getByTestId('awards-unpublished').waitFor();
     assert.equal(await guest.getByTestId('awards-recipient').count(), 0);
     assert.ok((await guest.getByTestId('awards-unpublished').innerText()).includes('발표를 기다려 주세요'));
+    await waiting.goto(`${origin}/#/festa/results`);
+    await waiting.getByTestId('awards-unpublished').waitFor();
+    assert.ok((await waiting.getByTestId('awards-unpublished').innerText()).includes('2차 심사 마감과 수상 순서 확정 후 발표가 열립니다'));
   });
   await step('일반회원은 관리자 검토 화면에 접근 불가', async () => {
     await register(member, 'member@example.com');
@@ -106,7 +145,7 @@ try {
   });
   await step('관리자 확인 후 공개되며 공개 화면에 이름·기관·작품·상훈·상품만 표시', async () => {
     await confirmPublish(admin);
-    assert.equal(await admin.getByTestId('awards-present-link').getAttribute('href'), '#/festa/awards?mode=present');
+    assert.equal(await admin.getByTestId('awards-present-link').getAttribute('href'), '#/festa/results');
     assert.equal(await admin.getByTestId('awards-public-link').getAttribute('href'), '#/festa/awards');
     await publicPage(guest);
     await guest.getByTestId('awards-all').waitFor();
@@ -123,30 +162,123 @@ try {
     assert.equal(await guest.locator('.festa-awards-prize', { hasText: '30만원 상당' }).count(), 5);
     for (const privateText of ['평균', '심사위원', 'judge@example.com', '점수', 'not-public']) assert.equal(content.includes(privateText), false, privateText);
     await screenshot(guest, 'awards-all-desktop.png');
+    await waiting.getByTestId('awards-retry').click();
+    await waiting.getByTestId('awards-curtain').waitFor();
+    await assertConcealed(waiting);
   });
-  await step('발표 전용 주소로 열면 전체 명단을 먼저 보여주지 않고 가림 화면으로 시작', async () => {
-    await guest.goto(`${origin}/#/festa/awards?mode=present`);
-    await guest.getByTestId('awards-stage').waitFor();
-    assert.equal(await guest.getByTestId('awards-all').count(), 0);
-    assert.equal(await guest.getByTestId('awards-recipient').count(), 0);
-    const text = await guest.getByTestId('awards-public').innerText();
-    for (const name of names) assert.equal(text.includes(name), false, name);
-    assert.ok(text.includes('수상자를 발표합니다'));
+  await step('새 발표 주소와 기존 주소 모두 가림 화면에서 시작하고 자동 공개·음향이 없음', async () => {
+    await guest.setViewportSize({ width: 1280, height: 720 });
+    for (const path of ['/festa/results', '/festa/awards?mode=present']) {
+      await presentationPage(guest, path);
+      await assertConcealed(guest);
+      assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '-1');
+      assert.equal(await guest.locator('audio, video').count(), 0);
+    }
+    await presentationPage(guest);
+    await screenshot(guest, 'ceremony-opening-1280x720.png', false);
   });
-  await step('발표 모드는 장려상3명 → 우수상2명 → 최우수상1명 순서로 공개', async () => {
+  await step('새로고침·뒤로·앞으로 이동해도 수상자 정보가 먼저 나타나지 않음', async () => {
+    await advance(guest);
+    await advance(guest);
+    assert.equal(await guest.getByTestId('awards-recipient').count(), 1);
+    await guest.reload();
+    await guest.getByTestId('awards-curtain').waitFor();
+    await assertConcealed(guest);
+    await publicPage(guest);
+    await guest.getByTestId('awards-all').waitFor();
+    await guest.goBack();
+    await guest.getByTestId('awards-curtain').waitFor();
+    await assertConcealed(guest);
+    await guest.goForward();
+    await guest.getByTestId('awards-all').waitFor();
+    assert.equal(await guest.getByTestId('awards-recipient').count(), 6);
     await guest.getByTestId('awards-present').click();
-    assert.equal(await guest.getByTestId('awards-stage').getByTestId('awards-recipient').count(), 0);
-    await guest.getByTestId('awards-next').click();
-    assert.equal(await guest.getByTestId('awards-stage').getByTestId('awards-recipient').count(), 3);
-    assert.ok((await guest.getByTestId('awards-stage').innerText()).includes('한국서부발전 사장상'));
-    await guest.getByTestId('awards-next').click();
-    assert.equal(await guest.getByTestId('awards-stage').getByTestId('awards-recipient').count(), 2);
-    assert.ok((await guest.getByTestId('awards-stage').innerText()).includes('행정안전부 장관상'));
-    await guest.getByTestId('awards-next').click();
-    const stage = guest.getByTestId('awards-stage');
-    assert.equal(await stage.getByTestId('awards-recipient').count(), 1);
-    for (const phrase of ['최우수상', '정다온', '한국서부발전', '발전소 점검 보드', '행정안전부 장관상', '50만원 상당']) assert.ok((await stage.innerText()).includes(phrase), phrase);
-    const contrast = await stage.locator('.festa-awards-institution, .festa-awards-project').evaluateAll((elements) => {
+    await guest.getByTestId('awards-curtain').waitFor();
+    await assertConcealed(guest);
+  });
+  await step('더블클릭과 누른 채 반복되는 Enter는 다음 수상자를 건너뛰지 않음', async () => {
+    await advance(guest);
+    await ready(guest);
+    await guest.getByTestId('awards-next').dblclick({ delay: 30 });
+    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '0');
+    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-revealed'), 'true');
+    await ready(guest);
+    await guest.getByTestId('awards-next').focus();
+    await guest.keyboard.down('Enter');
+    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '1');
+    await ready(guest);
+    await guest.keyboard.down('Enter');
+    await guest.keyboard.up('Enter');
+    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-revealed'), 'false');
+    await assertConcealed(guest);
+    await guest.keyboard.press('Space');
+    assert.equal(await guest.getByTestId('awards-recipient').count(), 1);
+    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '1');
+  });
+  await step('이전과 처음부터는 가림 상태로 이동하고 키보드 포커스를 유지', async () => {
+    await advance(guest, 'awards-prev');
+    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '1');
+    await assertConcealed(guest);
+    await advance(guest, 'awards-prev');
+    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '0');
+    await assertConcealed(guest);
+    await advance(guest, 'awards-restart');
+    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '-1');
+    assert.equal(await guest.evaluate(() => document.activeElement?.dataset.testid), 'awards-next');
+    await assertConcealed(guest);
+  });
+  await step('장려 3명 → 우수 2명 → 최우수 1명을 각각 가림·공개하며 두 프로젝터 해상도에서 전체 정보 표시', async () => {
+    const order = [
+      ['encouragement', '최가람'], ['encouragement', '이바다'], ['encouragement', '한여울'],
+      ['excellence', '박나래'], ['excellence', '김하늘'], ['grand', '정다온'],
+    ];
+    await advance(guest);
+    for (const [index, [award, name]] of order.entries()) {
+      assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), String(index));
+      await assertConcealed(guest);
+      if (award === 'grand') {
+        await ready(guest);
+        await screenshot(guest, 'ceremony-grand-curtain-1280x720.png', false);
+      }
+      await advance(guest);
+      await ready(guest);
+      assert.equal(await guest.getByTestId('awards-recipient').count(), 1);
+      assert.equal(await guest.getByTestId('awards-recipient').getAttribute('data-award'), award);
+      const content = await guest.getByTestId('awards-recipient').innerText();
+      assert.ok(content.includes(name), name);
+      for (const otherName of names.filter((item) => item !== name)) assert.equal(content.includes(otherName), false, otherName);
+      assert.ok(content.includes(award === 'grand' ? '50만원 상당' : '30만원 상당'));
+      assert.ok(content.includes(award === 'encouragement' ? '한국서부발전 사장상' : '행정안전부 장관상'));
+      for (const viewport of [{ width: 1280, height: 720 }, { width: 1366, height: 768 }]) {
+        await guest.setViewportSize(viewport);
+        await assertFits(guest);
+      }
+      await guest.setViewportSize({ width: 1280, height: 720 });
+      if (award === 'grand') {
+        await screenshot(guest, 'ceremony-grand-reveal-1280x720.png', false);
+        await screenshot(guest, 'awards-grand-desktop.png', false);
+      }
+      await advance(guest);
+    }
+    await guest.getByTestId('awards-ending').waitFor();
+    await assertConcealed(guest);
+    await advance(guest);
+    await guest.getByTestId('awards-all').waitFor();
+    assert.equal(await guest.getByTestId('awards-recipient').count(), 6);
+    assert.equal(await guest.locator('#gnav').isVisible(), true);
+    assert.equal(await guest.locator('body > .foot').isVisible(), true);
+  });
+  await step('모바일에서도 개별 공개가 가능하고 동작 줄이기 설정에서는 애니메이션 없이 표시', async () => {
+    await guest.setViewportSize({ width: 375, height: 812 });
+    await guest.emulateMedia({ reducedMotion: 'reduce' });
+    await presentationPage(guest);
+    await advance(guest);
+    await advance(guest);
+    assert.equal(await guest.getByTestId('awards-recipient').count(), 1);
+    assert.ok(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+    assert.equal(await guest.locator('.festa-ceremony-reveal').evaluate((element) => getComputedStyle(element).animationName), 'none');
+    assert.equal(await guest.locator('.festa-ceremony-reveal').evaluate((element) => getComputedStyle(element, '::before').display), 'none');
+    const contrast = await guest.locator('.festa-awards-institution, .festa-awards-project').evaluateAll((elements) => {
       const luminance = (color) => {
         const channels = color.match(/[\d.]+/g).slice(0, 3).map(Number).map((c) => {
           const value = c / 255; return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
@@ -163,83 +295,39 @@ try {
         }));
       });
     });
-    assert.ok(contrast.every((ratio) => ratio >= 4.5), `기관·작품명 명암비: ${contrast}`);
+    assert.ok(contrast.every((ratio) => ratio >= 4.5), '기관·작품명 명암비: ' + contrast);
+    await screenshot(guest, 'ceremony-mobile-reveal.png');
+    await guest.emulateMedia({ reducedMotion: 'no-preference' });
   });
-  await step('1280×720·1366×768 프로젝터에서 각 시상 단계의 전체 카드와 다음 버튼이 동시에 보임', async () => {
-    for (const viewport of [{ width: 1280, height: 720 }, { width: 1366, height: 768 }]) {
-      await guest.setViewportSize(viewport);
-      await guest.getByTestId('awards-present').click();
-      await guest.evaluate(() => document.fonts.ready);
-      for (const [index, award] of ['encouragement', 'excellence', 'grand'].entries()) {
-        await guest.getByTestId('awards-next').click();
-        assert.equal(await guest.getByTestId('awards-recipient').count(), 3 - index);
-        const layout = await guest.evaluate(() => {
-          const elements = document.querySelectorAll('[data-testid="awards-recipient"], .festa-awards-certificate, .festa-awards-name, .festa-awards-institution, .festa-awards-project, .festa-awards-prize, [data-testid="awards-next"]');
-          return { scrollY, height: document.documentElement.scrollHeight, viewportHeight: innerHeight,
-            outOfView: [...elements].filter((element) => {
-              const rect = element.getBoundingClientRect();
-              return rect.width <= 0 || rect.height <= 0 || rect.left < -1 || rect.top < -1 || rect.right > innerWidth + 1 || rect.bottom > innerHeight + 1;
-            }).map((element) => `${element.className}: ${element.textContent.trim()}`),
-          };
-        });
-        assert.equal(layout.scrollY, 0, `${viewport.width} ${award} 스크롤 위치`);
-        assert.deepEqual(layout.outOfView, [], `${viewport.width} ${award} 화면 밖 요소`);
-        assert.ok(layout.height <= viewport.height + 1, `${viewport.width} ${award} 페이지 높이 ${layout.height}`);
-        assert.equal(await guest.locator('#gnav').isVisible(), false);
-        assert.equal(await guest.locator('body > .foot').isVisible(), false);
-        await screenshot(guest, `awards-${award}-${viewport.width}x${viewport.height}.png`, false);
-        if (viewport.width === 1280 && award === 'grand') await screenshot(guest, 'awards-grand-desktop.png', false);
-      }
-    }
-  });
-  await step('이전·처음부터·전체수상자로 전환 가능', async () => {
-    await guest.getByTestId('awards-prev').click();
-    assert.equal(await guest.getByTestId('awards-recipient').count(), 2);
-    assert.equal(await guest.evaluate(() => document.activeElement?.dataset.testid), 'awards-prev');
-    await guest.getByTestId('awards-restart').click();
-    assert.equal(await guest.getByTestId('awards-recipient').count(), 0);
-    assert.equal(await guest.evaluate(() => document.activeElement?.dataset.testid), 'awards-next');
-    await guest.getByTestId('awards-show-all').click();
-    assert.equal(await guest.getByTestId('awards-recipient').count(), 6);
-    assert.equal(await guest.locator('#gnav').isVisible(), true);
-    assert.equal(await guest.locator('body > .foot').isVisible(), true);
-  });
-  await step('모바일375px 공개수상목록과 발표화면의 가로 넘침이 없음', async () => {
-    await guest.setViewportSize({ width: 375, height: 812 });
-    assert.ok(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
-    await guest.getByTestId('awards-present').click();
-    for (let i = 0; i < 3; i += 1) await guest.getByTestId('awards-next').click();
-    assert.ok(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
-    await screenshot(guest, 'awards-grand-mobile.png');
-  });
-  await step('긴 성명·작품명도 잘리지 않고 모바일은 세로 스크롤로 다음 버튼에 접근 가능', async () => {
-    const publication = await (await guest.request.get(`${origin}/api/festa/awards`)).json();
+  await step('긴 성명·작품명도 잘리지 않고 모바일은 자연 스크롤로 진행 가능', async () => {
+    const publication = await (await guest.request.get(origin + '/api/festa/awards')).json();
     const longName = '긴성명'.repeat(20);
     const longTitle = '민원과 현장 업무를 돕는 지능형 업무 지원 서비스 '.repeat(8).slice(0, 160);
     publication.recipients = publication.recipients.map((row) => ({ ...row, name: longName, projectTitle: longTitle }));
     await guest.route('**/api/festa/awards', (route) => route.fulfill({ json: publication }));
     try {
-      const presentationUrl = `${origin}/#/festa/awards?mode=present`;
-      if (guest.url() === presentationUrl) await guest.reload(); else await guest.goto(presentationUrl);
-      await guest.getByTestId('awards-next').click();
+      await presentationPage(guest);
+      await advance(guest);
+      await advance(guest);
+      await ready(guest);
       for (const viewport of [{ width: 1280, height: 720 }, { width: 768, height: 1024 }, { width: 375, height: 812 }]) {
         await guest.setViewportSize(viewport);
         const layout = await guest.locator('.festa-awards-name, .festa-awards-project').evaluateAll((elements) => elements.map((element) => ({
           text: element.textContent, width: element.clientWidth, contentWidth: element.scrollWidth,
           height: element.clientHeight, contentHeight: element.scrollHeight,
         })));
+        assert.equal(layout.length, 2);
         for (const item of layout) {
           assert.ok([longName, longTitle].includes(item.text));
-          assert.ok(item.contentWidth <= item.width + 1, `긴 텍스트 가로 잘림: ${viewport.width}`);
-          assert.ok(item.contentHeight <= item.height + 1, `긴 텍스트 세로 잘림: ${viewport.width}`);
+          assert.ok(item.contentWidth <= item.width + 1, '긴 텍스트 가로 잘림: ' + viewport.width);
+          assert.ok(item.contentHeight <= item.height + 1, '긴 텍스트 세로 잘림: ' + viewport.width);
         }
         assert.ok(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
       }
       assert.ok(await guest.evaluate(() => document.documentElement.scrollHeight > innerHeight));
       await guest.getByTestId('awards-next').scrollIntoViewIfNeeded();
-      assert.ok(await guest.getByTestId('awards-next').isVisible());
-      await guest.getByTestId('awards-next').click();
-      assert.equal(await guest.getByTestId('awards-recipient').count(), 2);
+      await advance(guest);
+      assert.equal(await guest.getByTestId('awards-recipient').count(), 0);
       assert.equal(await guest.evaluate(() => scrollY), 0);
     } finally { await guest.unroute('**/api/festa/awards'); }
   });

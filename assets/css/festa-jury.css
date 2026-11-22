@@ -44,6 +44,11 @@
 .fj-progress { display: grid; gap: 6px; }
 .fj-progress progress { width: 100%; height: 12px; accent-color: var(--green-accent); }
 .fj-note { color: var(--text-black-soft); font-size: 1.4rem; }
+.fj-unlock { width:100%; margin-inline:auto; }
+.main:has(.fj-unlock) > .fj-hero { display:none; }
+.section:has(.fj-unlock) { padding-block:2.4rem; }
+.fj-unlock .page-title { margin-top:var(--space-2); font-size:clamp(2.2rem,5vw,3rem); }
+.fj-code-input { max-width:24rem; font-size:2.4rem; letter-spacing:.3em; font-variant-numeric:tabular-nums; }
 .festa-jury .btn { max-width: 100%; }
 @media (max-width: 640px) {
   .fj-form-grid, .fj-assign-row { grid-template-columns: minmax(0,1fr); }
