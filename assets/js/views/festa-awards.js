@@ -151,8 +151,8 @@ export async function festaAwardsAdminView(mount, { runId } = {}) {
       <h1>${paths.rehearsal ? 'AI Build Camp 테스트 수상 결과' : '최종 수상 결과 검토'}</h1><p style="margin-top:var(--space-3)">${paths.rehearsal ? '이 회차의 예시 점수와 회원 평가로 테스트 수상 결과를 확인합니다.' : '최종 심사와 기관별 수상 조건을 확인한 뒤 발표 자료를 공개합니다.'}</p></div></section>
       <section class="section"><div class="wrap festa-stack" data-testid="awards-admin-root">${spinner()}</div></section>`;
   };
-  const render = (message = '') => {
-    const root = mount.querySelector('[data-testid="awards-admin-root"]');
+  const render = (root, message = '') => {
+    if (!root.isConnected) return;
     root.innerHTML = `<div class="row"><a class="btn btn--outline" href="${attr(paths.manage)}">${paths.rehearsal ? '테스트 회차 관리' : '심사위원·최종 후보 설정'}</a><a class="btn btn--outline" href="#/admin/festa">페스타 관리</a><button class="btn btn--quiet" data-testid="awards-refresh">다시 검토</button></div>
       ${plan.published ? `<p class="notice notice--info">${paths.rehearsal ? '테스트 회차 수상 결과를 확정했습니다.' : '수상 결과를 공개했습니다. 공개된 발표 자료는 확정 당시의 결과로 고정됩니다.'}</p><div class="row"><a class="btn btn--primary" href="${attr(paths.results)}" data-testid="awards-present-link">시상식 발표 시작</a><a class="btn btn--outline" href="${attr(paths.list)}" data-testid="awards-public-link">전체 수상자 보기</a></div>` : ''}
       <section class="card"><h2 class="page-title" style="font-size:2.2rem">선정 기준</h2>
@@ -182,19 +182,19 @@ export async function festaAwardsAdminView(mount, { runId } = {}) {
       if (!tieForm.reportValidity()) return;
       const tieOrder = Array.from({ length: 6 }, (_, index) => tieForm.elements[`order${index}`].value);
       if (new Set(tieOrder).size !== 6) { tieForm.querySelector('[data-tie-status]').textContent = '후보 6명을 한 번씩만 선택해 주세요.'; return; }
-      try { plan = await api(paths, '/preview', { tieOrder }); render('동점 순서를 반영한 결과입니다. 공개 예정 수상자를 확인해 주세요.'); }
+      try { plan = await api(paths, '/preview', { tieOrder }); render(root, '동점 순서를 반영한 결과입니다. 공개 예정 수상자를 확인해 주세요.'); }
       catch (error) { tieForm.querySelector('[data-tie-status]').textContent = error.message; }
     });
     root.querySelector('[data-testid="awards-publish"]').addEventListener('click', async () => {
       if (!plan.ready || plan.published) return;
       const confirmed = await confirmModal({ title: '수상 결과를 확정하여 공개할까요?',
         body: paths.rehearsal ? '확정한 테스트 수상자 6명을 이 회차의 발표 화면에서 한 명씩 공개할 수 있습니다.' : '위에서 검토한 수상자 6명의 기관·성명·작품명·상훈·상품이 공개됩니다. 발표 자료는 확정 후 고정됩니다.', confirmLabel: '확정하고 공개' });
-      if (!confirmed) return;
+      if (!confirmed || !root.isConnected) return;
       const button = root.querySelector('[data-testid="awards-publish"]');
       button.disabled = true;
       try {
         plan.publication = await api(paths, '/publish', { revision: plan.revision, ...(plan.tieOrder.length ? { tieOrder: plan.tieOrder } : {}), confirm: true });
-        plan.published = true; render('수상 결과를 공개했습니다. 공개 발표 화면에서 확인할 수 있습니다.');
+        plan.published = true; render(root, '수상 결과를 공개했습니다. 공개 발표 화면에서 확인할 수 있습니다.');
       } catch (error) {
         root.querySelector('[data-testid="awards-admin-status"]').textContent = error.message;
         button.disabled = false;
@@ -203,8 +203,9 @@ export async function festaAwardsAdminView(mount, { runId } = {}) {
   };
   async function load() {
     shell();
-    try { plan = await api(paths, '/preview'); render(); }
-    catch (error) { mount.querySelector('[data-testid="awards-admin-root"]').innerHTML = `<p class="notice notice--err">${esc(error.message)}</p><a class="btn btn--outline" href="${attr(paths.manage)}">심사 설정으로 돌아가기</a>`; }
+    const root = mount.querySelector('[data-testid="awards-admin-root"]');
+    try { plan = await api(paths, '/preview'); render(root); }
+    catch (error) { if (root.isConnected) root.innerHTML = `<p class="notice notice--err">${esc(error.message)}</p><a class="btn btn--outline" href="${attr(paths.manage)}">심사 설정으로 돌아가기</a>`; }
   }
   await load();
 }

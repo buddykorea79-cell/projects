@@ -32,7 +32,8 @@ async function action(page, path, trigger) {
   assert.equal(response.status(), 200, await response.text()); return response.json();
 }
 async function confirm(page, testId, path) {
-  return action(page, path, async () => { await page.getByTestId(testId).click(); await page.locator('.modal [data-ok]').click(); });
+  await page.getByTestId(testId).click();
+  return action(page, path, () => page.getByRole('dialog').locator('[data-ok]').click());
 }
 async function screenshot(page, name) {
   if (!process.env.FESTA_SCREENSHOT_DIR) return;
@@ -154,6 +155,26 @@ try {
     await staleMemberPage.getByTestId('member-final-refresh').click();
     await staleMemberPage.getByTestId('juror-closed').waitFor();
     assert.equal((await learnerContext.request.get(fileUrl)).status(), 409);
+  });
+  await step('늦은 연습 시상 검토 응답이 운영 시상 화면을 덮어쓰지 않음', async () => {
+    const page = await adminContext.newPage();
+    await page.goto(`${origin}/#/admin/festa/rehearsal/${runId}/awards`);
+    await page.getByTestId('awards-present-link').waitFor();
+    const previewUrl = `${origin}/api/festa/rehearsal/${runId}/awards/preview`;
+    let capture;
+    const held = new Promise((resolve) => { capture = resolve; });
+    await page.route(previewUrl, (route) => capture(route));
+    await page.getByTestId('awards-refresh').click();
+    const route = await held;
+    await page.goto(`${origin}/#/admin/festa/awards`);
+    await page.getByTestId('awards-issues').waitFor();
+    const before = await page.getByTestId('awards-admin-root').innerText();
+    const finished = page.waitForEvent('requestfinished', (item) => item === route.request());
+    await route.continue();
+    await finished;
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    assert.equal(await page.getByTestId('awards-admin-root').innerText(), before);
+    await page.close();
   });
   await step('초기화 취소는 회차 유지, 초기화 후 오래된 주소·저장 거절', async () => {
     await admin.getByTestId('rehearsal-reset').click();
