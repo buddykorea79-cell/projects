@@ -5,6 +5,8 @@ const STATE_KEY = 'data/festa.json';
 const FILE_PREFIX = 'festa/uploads/';
 export const FESTA_FILE_BYTES = 30 * 1024 * 1024;
 export const FESTA_FILE_COUNT = 10;
+export const FESTA_ENTRY_COUNT = 2;
+export const FESTA_DEFAULT_DEADLINE = '2027-12-07';
 export const FESTA_FILE_EXTENSIONS = new Set([
   'jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf', 'ppt', 'pptx', 'doc', 'docx',
   'xls', 'xlsx', 'hwp', 'hwpx', 'zip', 'txt', 'md', 'csv', 'mp4', 'mov', 'webm',
@@ -12,6 +14,7 @@ export const FESTA_FILE_EXTENSIONS = new Set([
 const PHASES = ['open', 'closed', 'judging', 'finished'];
 const SCORE_LIMITS = [40, 30, 20, 10];
 const KEY_RE = /^festa\/uploads\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.[a-z0-9]+$/;
+const REQUEST_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
 class FestaError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -33,6 +36,7 @@ const isMine = (entry, member) => ownerOf(entry) === normEmail(member.email)
 const published = (state) => state.phase === 'judging' || state.phase === 'finished';
 const requireOpen = (state) => {
   if (state.phase !== 'open') fail(409, '출품이 마감되어 작품과 파일을 변경할 수 없습니다.');
+  if (deadlinePassed(state)) fail(409, '접수 마감일이 지나 작품과 파일을 변경할 수 없습니다.');
 };
 const requireAdmin = (member) => {
   if (!isAdmin(member)) fail(403, '관리자만 할 수 있습니다.');
@@ -48,11 +52,20 @@ function contactEmail(state, env) {
   return validEmail(saved) ? saved : (validEmail(configured) ? configured : '');
 }
 
+function validDeadline(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
+}
+const deadlineOf = (state) => state.deadline ?? FESTA_DEFAULT_DEADLINE;
+// 한국 날짜의 다음 날 00:00:00부터 마감. 서버/브라우저의 현지 시간대와 무관합니다.
+const deadlinePassed = (state) => Date.now() >= Date.parse(`${deadlineOf(state)}T00:00:00+09:00`) + 86400000;
+
 async function readState(env) {
   const obj = await env.BUCKET.get(STATE_KEY);
   if (!obj) return {
     etag: null,
-    state: { version: 1, phase: 'open', entries: [], scores: [], uploads: [] },
+    state: { version: 1, phase: 'open', deadline: FESTA_DEFAULT_DEADLINE, entries: [], scores: [], uploads: [] },
   };
   let state;
   try { state = JSON.parse(await obj.text()); } catch {
@@ -62,10 +75,12 @@ async function readState(env) {
   if (!state || typeof state !== 'object' || Array.isArray(state)
       || !PHASES.includes(state.phase) || !Array.isArray(state.entries)
       || !Array.isArray(state.scores)
-      || (state.uploads !== undefined && !Array.isArray(state.uploads))) {
+      || (state.uploads !== undefined && !Array.isArray(state.uploads))
+      || (state.deadline !== undefined && !validDeadline(state.deadline))) {
     fail(503, '페스타 데이터 형식이 올바르지 않습니다. 관리자에게 문의하세요.');
   }
   state.uploads ??= [];
+  state.deadline ??= FESTA_DEFAULT_DEADLINE;
   return { etag: obj.etag, state };
 }
 
@@ -194,16 +209,32 @@ function entryView(entry, summaries, member) {
 async function overview(env, member, cors) {
   const { state } = await readState(env);
   const summaries = scoreIndex(state, member);
-  const existing = state.entries.find((entry) => ownerOf(entry) === normEmail(member.email));
-  const own = existing && isMine(existing, member) ? existing : null;
+  const existing = state.entries.filter((entry) => ownerOf(entry) === normEmail(member.email));
+  const own = existing.filter((entry) => isMine(entry, member));
+  const myEntries = own.map((entry) => entryView(entry, summaries, member));
   return reply({
     phase: state.phase,
-    mine: own ? entryView(own, summaries, member) : null,
-    entryBlocked: existing && !own ? DUPLICATE_ENTRY : '',
+    deadline: deadlineOf(state), deadlinePassed: deadlinePassed(state),
+    mine: myEntries[0] || null,
+    myEntries,
+    entryBlocked: existing.some((entry) => !isMine(entry, member)) ? DUPLICATE_ENTRY : '',
     entries: isAdmin(member) || published(state) ? state.entries.map((entry) => entryView(entry, summaries, member)) : [],
     email: contactEmail(state, env),
   }, 200, cors);
 }
+
+function pruneUploads(state, member) {
+  // 두 작품 모두의 첨부(다른 소유자의 기록 포함)를 보호합니다. CAS 재시도 때 다시 계산합니다.
+  const attached = new Set(state.entries.flatMap((entry) => (entry?.files || []).map((file) => file.key)));
+  const pending = state.uploads.filter((upload) => upload.owner === normEmail(member.email)
+    && upload.ownerCreatedAt === incarnationOf(member) && !attached.has(upload.key));
+  const discarded = new Set(pending.slice(0, -2 * FESTA_FILE_COUNT).map((upload) => upload.key));
+  if (discarded.size) state.uploads = state.uploads.filter((upload) => !discarded.has(upload.key));
+  return discarded;
+}
+const deleteDiscarded = (env, discarded) => Promise.all(
+  [...discarded].map((key) => env.BUCKET.delete(key).catch(() => {})),
+);
 
 async function checkedFiles(files, env, member) {
   if (files === undefined) return [];
@@ -243,22 +274,52 @@ async function saveEntry(request, env, member, cors) {
   const deployUrl = localOnly ? '' : webUrl(body.deployUrl, '배포 주소', true);
   const githubUrl = webUrl(body.githubUrl, 'GitHub 저장소 주소', true, true);
   requireOpen((await readState(env)).state);
-  const files = await checkedFiles(body.files, env, member);
   const email = normEmail(member.email);
   const id = `fe_${crypto.randomUUID()}`;
-  const { state, result: saved } = await updateState(env, (current) => {
+  const hasId = Object.hasOwn(body, 'id');
+  if (hasId && body.id !== null
+      && (typeof body.id !== 'string' || !/^fe_[A-Za-z0-9_-]{1,64}$/.test(body.id))) {
+    fail(400, '수정할 작품 번호가 올바르지 않습니다.');
+  }
+  if (body.requestId !== undefined && (typeof body.requestId !== 'string' || !REQUEST_ID_RE.test(body.requestId))) {
+    fail(400, '작품 접수 요청 번호가 올바르지 않습니다.');
+  }
+  const requestId = hasId && body.id === null && body.requestId ? body.requestId.toLowerCase() : null;
+  // 응답을 받지 못해 재시도한 초안은, 그 후 파일이 교체/정리됐더라도 최신 저장본을 돌려줍니다.
+  const checked = await checkedFiles(body.files, env, member)
+    .then((files) => ({ files }), (error) => ({ error }));
+  const { state, result } = await updateState(env, (current) => {
     requireOpen(current);
+    const sameEmail = current.entries.filter((entry) => ownerOf(entry) === email);
+    if (sameEmail.some((entry) => !isMine(entry, member))) fail(409, DUPLICATE_ENTRY);
+    const replay = requestId && sameEmail.find((entry) => entry.requestId === requestId);
+    if (replay) return { saved: replay, discarded: new Set() };
+    if (checked.error) throw checked.error;
+    const files = checked.files;
     for (const file of files) {
       if (!current.uploads.some((upload) => upload?.key === file.key && upload.owner === email
           && upload.ownerCreatedAt === incarnationOf(member))) {
         fail(403, '직접 업로드한 페스타 파일만 첨부할 수 있습니다.');
       }
     }
-    const existing = current.entries.find((entry) => ownerOf(entry) === email);
-    if (existing && !isMine(existing, member)) fail(409, DUPLICATE_ENTRY);
+    let existing;
+    if (hasId && body.id !== null) {
+      existing = current.entries.find((entry) => entry.id === body.id);
+      if (!existing) fail(404, '수정할 작품을 찾을 수 없습니다.');
+      if (!isMine(existing, member)) fail(403, '본인의 작품만 수정할 수 있습니다.');
+    } else if (!hasId) {
+      // 이전 캐시 화면은 id를 보내지 않습니다. 한 작품일 때만 옛 수정 동작을 보존합니다.
+      if (sameEmail.length > 1) fail(409, '수정할 작품을 선택해 주세요. 화면을 새로고침한 뒤 다시 시도하세요.');
+      existing = sameEmail[0];
+    }
+    if (!existing && sameEmail.length >= FESTA_ENTRY_COUNT) {
+      fail(409, `작품은 회원당 최대 ${FESTA_ENTRY_COUNT}개까지 접수할 수 있습니다.`);
+    }
     const now = new Date().toISOString();
     const entry = {
       id: existing?.id || id, title, description, localOnly, deployUrl, githubUrl, files,
+      ...((existing?.requestId || (!existing && requestId))
+        ? { requestId: existing?.requestId || requestId } : {}),
       createdAt: existing?.createdAt || now, updatedAt: now,
       author: {
         email, memberCreatedAt: incarnationOf(member),
@@ -267,9 +328,11 @@ async function saveEntry(request, env, member, cors) {
     };
     if (existing) current.entries[current.entries.indexOf(existing)] = entry;
     else current.entries.push(entry);
-    return entry;
+    return { saved: entry, discarded: pruneUploads(current, member) };
   });
-  return reply({ entry: entryView(saved, scoreIndex(state, member), member) }, 200, cors);
+  // 상태에서 먼저 제외한 키만 지워 동시에 저장되는 다른 작품의 파일을 보존합니다.
+  await deleteDiscarded(env, result.discarded);
+  return reply({ entry: entryView(result.saved, scoreIndex(state, member), member) }, 200, cors);
 }
 
 async function setPhase(request, env, member, cors) {
@@ -293,6 +356,18 @@ async function setContact(request, env, member, cors) {
   if (!validEmail(email)) fail(400, '파일을 받을 이메일 주소 하나를 입력하세요.');
   await updateState(env, (state) => { state.email = email; });
   return reply({ email }, 200, cors);
+}
+
+async function setDeadline(request, env, member, cors) {
+  requireAdmin(member);
+  const body = await jsonBody(request);
+  if (!validDeadline(body.deadline)) fail(400, '접수 마감일을 올바른 YYYY-MM-DD 날짜로 입력하세요.');
+  const { state } = await updateState(env, (current) => {
+    // 날짜가 지나도 운영자가 수동 마감하기 전까지는 연장할 수 있습니다.
+    if (current.phase !== 'open') fail(409, '접수를 마감한 뒤에는 마감일을 변경할 수 없습니다.');
+    current.deadline = body.deadline;
+  });
+  return reply({ deadline: deadlineOf(state), deadlinePassed: deadlinePassed(state) }, 200, cors);
 }
 
 async function scoreEntry(request, env, member, cors) {
@@ -362,14 +437,7 @@ async function uploadFile(request, env, member, cors) {
     const update = await updateState(env, (state) => {
       requireOpen(state);
       state.uploads.push({ key, name, size: bytes.byteLength, owner, ownerCreatedAt: incarnationOf(member) });
-      // 수정 중인 파일과 저장된 작품을 보호하면서, 반복 선택으로 남은 임시 파일을 정리합니다.
-      const entry = state.entries.find((item) => isMine(item, member));
-      const attached = new Set(entry?.files.map((item) => item.key));
-      const pending = state.uploads.filter((item) => item.owner === owner
-        && item.ownerCreatedAt === incarnationOf(member) && !attached.has(item.key));
-      const expired = new Set(pending.slice(0, -2 * FESTA_FILE_COUNT).map((item) => item.key));
-      if (expired.size) state.uploads = state.uploads.filter((item) => !expired.has(item.key));
-      return expired;
+      return pruneUploads(state, member);
     });
     discarded = update.result;
   } catch (error) {
@@ -378,7 +446,7 @@ async function uploadFile(request, env, member, cors) {
     throw error;
   }
   // 목록에서 먼저 제외했으므로 동시에 저장한 작품의 첨부를 삭제하지 않습니다.
-  await Promise.all([...discarded].map((oldKey) => env.BUCKET.delete(oldKey).catch(() => {})));
+  await deleteDiscarded(env, discarded);
   return reply({ file: { key, name, size: bytes.byteLength } }, 200, cors);
 }
 
@@ -419,6 +487,7 @@ export async function handleFesta(request, env, { path, member, cors = {} }) {
       if (path === '/festa/entry') return await saveEntry(request, env, member, cors);
       if (path === '/festa/phase') return await setPhase(request, env, member, cors);
       if (path === '/festa/contact') return await setContact(request, env, member, cors);
+      if (path === '/festa/deadline') return await setDeadline(request, env, member, cors);
       if (path === '/festa/score') return await scoreEntry(request, env, member, cors);
       if (path === '/festa/upload') return await uploadFile(request, env, member, cors);
     }

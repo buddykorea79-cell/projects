@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import { MockBucket } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
 
+// 접수 기간 검증이 실행 날짜에 따라 달라지지 않도록 서버 시각을 고정합니다.
+const realNow = Date.now;
+const fixtureNow = () => Date.parse('2026-11-22T00:00:00Z');
+Date.now = fixtureNow;
+
 const ORIGIN = 'https://site.test';
 const ADMIN = 'aireader@mois.go.kr';
 const bucket = new MockBucket();
@@ -63,6 +68,20 @@ const rejected = (result, message) => {
     `${message}: expected 4xx, got ${result.status} ${JSON.stringify(result.data)}`);
 };
 
+async function isolatedFixture(tag, storage = new MockBucket()) {
+  const localEnv = { ...env, BUCKET: storage, TOKEN_SECRET: `festa-${tag}-fixture` };
+  const boss = session(localEnv);
+  const owner = session(localEnv);
+  const other = session(localEnv);
+  for (const [client, email] of [[boss, ADMIN], [owner, `${tag}@example.com`], [other, `${tag}-other@example.com`]]) {
+    const result = await post(client, '/auth/signup', {
+      email, name: '페스타 테스트', institution: '테스트 기관', password: 'Festa-test-2026!',
+    });
+    assert.equal(result.status, 200, result.data?.message);
+  }
+  return { localEnv, boss, owner, other };
+}
+
 console.log('\n== Festa: 인증 및 접수 ==');
 await test('관리자·일반회원·정지 대상 회원 가입', async () => {
   for (const [client, email, name] of [
@@ -81,6 +100,7 @@ await test('비회원은 목록·제출·단계변경·평가·업로드에 접�
   for (const [path, body] of [
     ['/festa/entry', entry()], ['/festa/phase', { phase: 'closed' }],
     ['/festa/contact', { email: 'help@example.com' }],
+    ['/festa/deadline', { deadline: '2027-12-07' }],
     ['/festa/score', { entryId: 'unknown', scores: [0, 0, 0, 0] }],
   ]) assert.equal((await post(anon, path, body)).status, 401, path);
   assert.equal((await upload(anon)).status, 401);
@@ -89,6 +109,9 @@ await test('최초 접수 상태와 빈 내 작품', async () => {
   const state = await get(alice);
   assert.equal(state.phase, 'open');
   assert.equal(state.mine, null);
+  assert.deepEqual(state.myEntries, []);
+  assert.equal(state.deadline, '2027-12-07');
+  assert.equal(state.deadlinePassed, false);
   assert.deepEqual(state.entries, []);
   assert.equal(state.email, 'festa@example.com');
 });
@@ -168,9 +191,10 @@ await test('접수된 작품은 로그인 회원 소유이며 수정해도 한 �
   const before = (await get(alice)).mine;
   aliceId = before.id;
   assert.equal(before.author.email, 'alice@example.com');
+  rejected(await post(alice, '/festa/entry', entry({ id: 'forged-entry-id' })), 'invalid explicit entry id');
   const result = await post(alice, '/festa/entry', entry({
     title: '민원 안내 도우미 최종본', files: [aliceFile],
-    author: { email: 'bob@example.com', name: '위조 작성자' }, id: 'forged-entry-id',
+    author: { email: 'bob@example.com', name: '위조 작성자' }, id: aliceId,
   }));
   assert.equal(result.status, 200, result.data?.message);
   const state = await get(alice);
@@ -188,8 +212,9 @@ await test('첨부 메타데이터를 조작해도 실제 업로드 이름과 �
   assert.deepEqual((await get(alice)).mine.files, [aliceFile]);
 });
 await test('로컬 실행 작품은 배포 URL 없이 접수되고 타인 작품은 덮어쓰지 않음', async () => {
+  assert.equal((await post(bob, '/festa/entry', entry({ id: aliceId }))).status, 403);
   const result = await post(bob, '/festa/entry', entry({
-    title: '오프라인 문서 정리기', localOnly: true, deployUrl: '', id: aliceId,
+    title: '오프라인 문서 정리기', localOnly: true, deployUrl: '', id: null,
   }));
   assert.equal(result.status, 200, result.data?.message);
   const mine = (await get(bob)).mine;
@@ -442,5 +467,218 @@ await test('미첨부 업로드는 최근 20개만 보관하고 접수된 파일
   assert.deepEqual((await get(member)).mine.files, [attached]);
 });
 
+console.log('\n== Festa: 두 작품 및 접수 마감일 ==');
+await test('기존 한 작품을 보존하고 명시적 신규 접수로 두 작품까지 등록·수정', async () => {
+  const { localEnv, owner, other, boss } = await isolatedFixture('two-entries');
+  const first = await post(owner, '/festa/entry', entry({ title: '기존 작품' }));
+  assert.equal(first.status, 200);
+  const firstId = first.data.entry.id;
+  const oldState = JSON.parse(await (await localEnv.BUCKET.get('data/festa.json')).text());
+  delete oldState.deadline;
+  await localEnv.BUCKET.put('data/festa.json', JSON.stringify(oldState));
+  const before = await (await localEnv.BUCKET.get('data/festa.json')).text();
+  assert.equal((await get(owner)).deadline, '2027-12-07', 'old state gets default deadline');
+  assert.equal(await (await localEnv.BUCKET.get('data/festa.json')).text(), before, 'GET does not overwrite old state');
+  const cachedEdit = await post(owner, '/festa/entry', entry({ title: '이전 화면에서 수정' }));
+  assert.equal(cachedEdit.status, 200);
+  assert.equal(cachedEdit.data.entry.id, firstId, 'legacy one-entry edit remains compatible');
+  const second = await post(owner, '/festa/entry', entry({ id: null, title: '두 번째 작품' }));
+  assert.equal(second.status, 200, second.data?.message);
+  const secondId = second.data.entry.id;
+  assert.notEqual(secondId, firstId);
+  let state = await get(owner);
+  assert.equal(state.myEntries.length, 2);
+  assert.equal(state.mine.id, firstId, 'mine remains first-entry compatibility alias');
+  assert.deepEqual(state.myEntries.map((row) => row.title), ['이전 화면에서 수정', '두 번째 작품']);
+  assert.equal((await post(owner, '/festa/entry', entry({ title: '모호한 구형 수정' }))).status, 409);
+  assert.equal((await post(owner, '/festa/entry', entry({ id: null, title: '세 번째 작품' }))).status, 409);
+  assert.equal((await post(owner, '/festa/entry', entry({ id: 'fe_missing', title: '없는 작품' }))).status, 404);
+  assert.equal((await post(owner, '/festa/entry', entry({ id: secondId, title: '두 번째만 수정' }))).status, 200);
+  state = await get(owner);
+  assert.deepEqual(state.myEntries.map((row) => row.title), ['이전 화면에서 수정', '두 번째만 수정']);
+  assert.equal((await post(owner, '/festa/entry', entry({ id: firstId, title: '첫 번째만 수정' }))).status, 200);
+  assert.deepEqual((await get(owner)).myEntries.map((row) => row.title), ['첫 번째만 수정', '두 번째만 수정']);
+  const foreign = await post(other, '/festa/entry', entry({ id: null, title: '다른 회원 작품' }));
+  assert.equal(foreign.status, 200);
+  assert.equal((await post(owner, '/festa/entry', entry({ id: foreign.data.entry.id }))).status, 403);
+  assert.equal((await post(boss, '/festa/entry', entry({ id: firstId }))).status, 403, 'admin cannot overwrite a member entry');
+  assert.equal((await get(boss)).entries.length, 3);
+});
+await test('동시 신규 출품도 두 자리만 할당하고 형제 작품을 덮어쓰지 않음', async () => {
+  const { owner } = await isolatedFixture('concurrent-create');
+  const results = await Promise.all([0, 1, 2].map((i) => post(owner, '/festa/entry', entry({ id: null, title: `초안 ${i}` }))));
+  assert.deepEqual(results.map((row) => row.status).sort(), [200, 200, 409]);
+  const state = await get(owner);
+  assert.equal(state.myEntries.length, 2);
+  assert.equal(new Set(state.myEntries.map((row) => row.id)).size, 2);
+  assert.deepEqual(new Set(state.myEntries.map((row) => row.title)),
+    new Set(results.filter((row) => row.status === 200).map((row) => row.data.entry.title)));
+});
+await test('같은 초안의 동시·반복 접수는 한 작품이며 뒤이은 수정을 되돌리지 않음', async () => {
+  const { localEnv, owner, other } = await isolatedFixture('idempotent-create');
+  const requestId = crypto.randomUUID();
+  const payload = entry({ id: null, requestId, title: '응답 유실 가능 초안' });
+  const results = await Promise.all([post(owner, '/festa/entry', payload), post(owner, '/festa/entry', payload)]);
+  results.forEach((row) => assert.equal(row.status, 200, row.data?.message));
+  const firstId = results[0].data.entry.id;
+  assert.equal(results[1].data.entry.id, firstId);
+  assert.equal((await get(owner)).myEntries.length, 1);
+  const second = await post(owner, '/festa/entry', entry({ id: null, requestId: crypto.randomUUID(), title: '서로 다른 초안' }));
+  assert.equal(second.status, 200);
+  assert.notEqual(second.data.entry.id, firstId);
+  assert.equal((await post(owner, '/festa/entry', entry({ id: firstId, title: '이미 수정한 최신본', requestId: crypto.randomUUID() }))).status, 200);
+  const replay = await post(owner, '/festa/entry', payload);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.data.entry.id, firstId);
+  assert.equal(replay.data.entry.title, '이미 수정한 최신본', 'replay never rolls back edits');
+  assert.equal((await get(owner)).myEntries.length, 2);
+  const saved = JSON.parse(await (await localEnv.BUCKET.get('data/festa.json')).text());
+  assert.equal(saved.entries.find((row) => row.id === firstId).requestId, requestId, 'edit preserves original request id');
+  assert.equal(JSON.stringify(await get(owner)).includes(requestId), false, 'request id remains private');
+  assert.equal(JSON.stringify(replay.data).includes(requestId), false);
+  const otherCreate = await post(other, '/festa/entry', payload);
+  assert.equal(otherCreate.status, 200);
+  assert.notEqual(otherCreate.data.entry.id, firstId, 'request id is scoped to member ownership');
+  rejected(await post(other, '/festa/entry', entry({ id: null, requestId: '__proto__' })), 'invalid request id');
+});
+await test('로컬 실행은 이전 배포 URL이나 Local 표시 문자열을 저장하지 않음', async () => {
+  const { owner } = await isolatedFixture('local-canonical');
+  const first = await post(owner, '/festa/entry', entry({ id: null }));
+  assert.equal(first.status, 200);
+  const result = await post(owner, '/festa/entry', entry({ id: first.data.entry.id, localOnly: true, deployUrl: 'Local' }));
+  assert.equal(result.status, 200, result.data?.message);
+  assert.equal(result.data.entry.deployUrl, '');
+  assert.equal(result.data.entry.localOnly, true);
+  assert.equal((await get(owner)).myEntries[0].deployUrl, '');
+});
+await test('마감일은 관리자만 실제 달력 날짜로 변경하고 잘못된 날짜는 저장하지 않음', async () => {
+  const { owner, boss } = await isolatedFixture('deadline-validation');
+  assert.equal((await post(owner, '/festa/deadline', { deadline: '2028-12-07' })).status, 403);
+  for (const deadline of ['', null, 20271207, '2027-2-07', '2027-02-29', '2027-04-31', '2027-13-01', '2027-12-07T23:59:59+09:00']) {
+    assert.equal((await post(boss, '/festa/deadline', { deadline })).status, 400, String(deadline));
+  }
+  assert.equal((await get(owner)).deadline, '2027-12-07');
+  const leap = await post(boss, '/festa/deadline', { deadline: '2028-02-29' });
+  assert.equal(leap.status, 200);
+  assert.deepEqual(leap.data, { deadline: '2028-02-29', deadlinePassed: false });
+});
+await test('한국 마감일 23:59:59.999까지 접수하고 자정부터 차단하며 수동 마감 전 연장 가능', async () => {
+  let now = Date.parse('2027-12-07T14:59:59.999Z');
+  Date.now = () => now;
+  try {
+    const { owner, other, boss } = await isolatedFixture('deadline-boundary');
+    assert.equal((await get(owner)).deadlinePassed, false);
+    const saved = await post(owner, '/festa/entry', entry({ id: null }));
+    assert.equal(saved.status, 200, saved.data?.message);
+    const uploadBefore = await upload(owner);
+    assert.equal(uploadBefore.status, 200);
+    now = Date.parse('2027-12-07T15:00:00Z');
+    const expired = await get(owner);
+    assert.equal(expired.deadlinePassed, true);
+    assert.equal(expired.phase, 'open', 'calendar expiry does not start publication/judging');
+    assert.equal(expired.myEntries.length, 1);
+    for (const client of [owner, other, boss]) {
+      assert.equal((await post(client, '/festa/entry', entry({ id: null }))).status, 409);
+      assert.equal((await upload(client)).status, 409);
+    }
+    assert.equal((await post(owner, '/festa/entry', entry({ id: saved.data.entry.id }))).status, 409);
+    assert.equal((await owner(filePath(uploadBefore.data.file))).status, 200, 'existing private files remain readable');
+    assert.equal((await post(boss, '/festa/deadline', { deadline: '2027-12-08' })).status, 200);
+    assert.equal((await get(owner)).deadlinePassed, false);
+    assert.equal((await post(owner, '/festa/entry', entry({ id: null, title: '연장 후 두 번째 작품' }))).status, 200);
+    assert.equal((await upload(owner)).status, 200);
+    assert.equal((await post(boss, '/festa/deadline', { deadline: '2027-12-07' })).status, 200, 'admin may shorten before manual close');
+    assert.equal((await post(boss, '/festa/phase', { phase: 'closed' })).status, 200);
+    assert.equal((await post(boss, '/festa/deadline', { deadline: '2027-12-09' })).status, 409);
+    assert.equal((await post(boss, '/festa/phase', { phase: 'judging' })).status, 200);
+    assert.equal((await post(other, '/festa/score', { entryId: saved.data.entry.id, scores: [40, 30, 20, 10] })).status, 200,
+      'submission deadline does not prevent judging');
+    assert.equal((await post(boss, '/festa/deadline', { deadline: '2027-12-09' })).status, 409);
+  } finally { Date.now = fixtureNow; }
+});
+await test('두 작품 첨부 20개를 모두 보존하며 미첨부 파일은 최근 20개로 제한', async () => {
+  const { localEnv, owner } = await isolatedFixture('two-attachment-sets');
+  const files = [];
+  for (let i = 0; i < 20; i += 1) {
+    const result = await upload(owner, `작품-첨부-${i}.txt`, `attached ${i}`);
+    assert.equal(result.status, 200);
+    files.push(result.data.file);
+  }
+  const first = await post(owner, '/festa/entry', entry({ id: null, files: files.slice(0, 10) }));
+  const second = await post(owner, '/festa/entry', entry({ id: null, title: '두 번째 첨부 작품', files: files.slice(10) }));
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  const drafts = [];
+  for (let i = 0; i < 21; i += 1) {
+    const result = await upload(owner, `초안-${i}.txt`, `pending ${i}`);
+    assert.equal(result.status, 200);
+    drafts.push(result.data.file);
+  }
+  assert.equal(localEnv.BUCKET.keys('festa/uploads/').length, 40, '20 attached + 20 pending');
+  assert.equal(await localEnv.BUCKET.get(drafts[0].key), null);
+  for (const file of files) assert.ok(await localEnv.BUCKET.get(file.key), `both works preserve ${file.name}`);
+  assert.equal((await post(owner, '/festa/entry', entry({ id: first.data.entry.id, files: files.slice(0, 1) }))).status, 200);
+  assert.equal(localEnv.BUCKET.keys('festa/uploads/').length, 31, 'save also prunes newly orphaned old attachments');
+  for (const file of files.slice(1, 10)) assert.equal(await localEnv.BUCKET.get(file.key), null);
+  for (const file of [files[0], ...files.slice(10)]) assert.ok(await localEnv.BUCKET.get(file.key));
+  assert.deepEqual((await get(owner)).myEntries.find((row) => row.id === second.data.entry.id).files, files.slice(10));
+});
+await test('최신 수정으로 파일이 정리되어도 오래된 신규 접수 재시도가 작품을 복원하거나 복제하지 않음', async () => {
+  const { localEnv, owner } = await isolatedFixture('replay-pruned-file');
+  const oldFile = (await upload(owner)).data.file;
+  const payload = entry({ id: null, requestId: crypto.randomUUID(), files: [oldFile] });
+  const first = await post(owner, '/festa/entry', payload);
+  assert.equal(first.status, 200);
+  assert.equal((await post(owner, '/festa/entry', entry({ id: first.data.entry.id, title: '첨부를 제거한 최신본', files: [] }))).status, 200);
+  for (let i = 0; i < 20; i += 1) assert.equal((await upload(owner, `새-초안-${i}.txt`, `draft ${i}`)).status, 200);
+  assert.equal(await localEnv.BUCKET.get(oldFile.key), null);
+  const replay = await post(owner, '/festa/entry', payload);
+  assert.equal(replay.status, 200, replay.data?.message);
+  assert.equal(replay.data.entry.id, first.data.entry.id);
+  assert.equal(replay.data.entry.title, '첨부를 제거한 최신본');
+  assert.deepEqual(replay.data.entry.files, []);
+  assert.equal((await get(owner)).myEntries.length, 1);
+});
+await test('업로드 정리와 두 번째 작품 저장이 충돌해도 저장된 첨부를 삭제하지 않음', async () => {
+  class RacingBucket extends MockBucket {
+    race = false;
+    waiting = null;
+    async put(key, value, opts) {
+      if (this.race && key === 'data/festa.json') {
+        if (!this.waiting) await new Promise((resolve) => { this.waiting = resolve; });
+        else { this.race = false; this.waiting(); }
+      }
+      return super.put(key, value, opts);
+    }
+  }
+  const storage = new RacingBucket();
+  const { owner } = await isolatedFixture('prune-race', storage);
+  assert.equal((await post(owner, '/festa/entry', entry({ id: null }))).status, 200);
+  const files = [];
+  for (let i = 0; i < 20; i += 1) files.push((await upload(owner, `경쟁-${i}.txt`, `race ${i}`)).data.file);
+  storage.race = true;
+  const [saved, uploaded] = await Promise.all([
+    post(owner, '/festa/entry', entry({ id: null, title: '동시 접수', files: [files[0]] })),
+    upload(owner, '새로운-경쟁.txt', 'new draft'),
+  ]);
+  assert.equal(uploaded.status, 200, uploaded.data?.message);
+  assert.ok([200, 403].includes(saved.status), saved.data?.message);
+  const state = await get(owner);
+  for (const work of state.myEntries) {
+    for (const file of work.files) assert.ok(await storage.get(file.key), 'a successful save never references a deleted file');
+  }
+  if (saved.status === 200) assert.ok(await storage.get(files[0].key));
+  else assert.equal(state.myEntries.length, 1, 'pruned file cannot be attached by a stale save');
+});
+await test('마감일 손상은 오류로 처리하고 저장 데이터를 초기화하지 않음', async () => {
+  const { localEnv, owner, boss } = await isolatedFixture('corrupt-deadline');
+  const corrupt = JSON.stringify({ phase: 'open', deadline: '2027-02-30', entries: [], scores: [], uploads: [] });
+  await localEnv.BUCKET.put('data/festa.json', corrupt);
+  assert.equal((await owner('/festa')).status, 503);
+  assert.equal((await post(boss, '/festa/deadline', { deadline: '2027-12-07' })).status, 503);
+  assert.equal(await (await localEnv.BUCKET.get('data/festa.json')).text(), corrupt);
+});
+
+Date.now = realNow;
 console.log(`\nFesta API: ${failures.length ? `${failures.length}건 실패` : '모든 검사 통과'}`);
 if (failures.length) process.exitCode = 1;

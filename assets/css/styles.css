@@ -12,6 +12,8 @@
   --house-green:   #1E3932;   /* deep feature bands, footer */
   --green-uplift:  #2b5148;   /* decorative accents */
   --green-light:   #d4e9e2;   /* valid tint, light utility */
+  --festa-accent:  #a51e57;
+  --festa-hover:   #861644;
 
   /* Gold — Rewards-ceremony only. Here: "제출 완료 / 우수" ceremony moments */
   --gold:          #cba258;
@@ -181,6 +183,13 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 /* display:flex 가 hidden 속성의 기본 display:none 을 덮어써서 서랍이 늘 열려 보였습니다. */
 .gnav__drawer[hidden] { display: none; }
 .gnav__drawer a { color: var(--text-black); font-weight: 600; padding: 12px 0; text-decoration: none; }
+.gnav a.gnav__festa {
+  align-self: center; padding: 6px 12px; border: 0; border-radius: var(--radius-pill);
+  background: var(--festa-accent); color: var(--white);
+}
+.gnav a.gnav__festa:hover { background: var(--festa-hover); }
+.gnav a.gnav__festa[aria-current="page"] { text-decoration: underline; text-underline-offset: 3px; }
+.gnav__drawer a.gnav__festa { align-self: flex-start; padding: 10px 16px; }
 .gnav__drawer-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
 @media (min-width: 1024px) { .gnav__drawer { display: none !important; } }
 
@@ -201,15 +210,15 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .btn--primary   { background: var(--green-accent); color: #fff; border-color: var(--green-accent); }
 .btn--primary:hover { background: #00623d; border-color: #00623d; }
 .btn--festa {
-  background: #a51e57; color: #fff; border-color: #a51e57;
+  background: var(--festa-accent); color: #fff; border-color: var(--festa-accent);
   white-space: normal; text-align: center; word-break: keep-all;
 }
-.btn--festa:hover { background: #861644; border-color: #861644; color: #fff; }
+.btn--festa:hover { background: var(--festa-hover); border-color: var(--festa-hover); color: #fff; }
 
 .band.festa-hero { padding-block: var(--space-4); }
 .festa-stack { display: grid; gap: var(--space-4); min-width: 0; overflow-wrap: anywhere; }
 .festa-stack > * { min-width: 0; }
-.festa-form-grid, .festa-score-grid {
+.festa-score-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4);
 }
 .festa-description { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -218,9 +227,39 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .festa-entry-head > * { min-width: 0; max-width: 100%; }
 .festa-file-row > :first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .card.festa-receipt { background: #f3faf6; border: 1px solid #8ab69d; }
+.card.festa-deadline {
+  background: #fff7fa; border-inline-start: 4px solid var(--festa-accent);
+}
+.festa-writing-guide { display: grid; gap: var(--space-2); margin-bottom: var(--space-3); }
+.festa-writing-guide ul { display: grid; gap: var(--space-1); }
 .festa-total { font-weight: 700; font-variant-numeric: tabular-nums; }
+.festa-practice-layout {
+  display: grid; grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
+  gap: var(--space-4); align-items: start;
+}
+.festa-practice-list, .festa-practice-result-list { display: grid; gap: var(--space-2); }
+.festa-practice-choice {
+  display: block; width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere;
+  background: var(--white); border: 1px solid var(--input-border); border-radius: 8px;
+  padding: 10px 12px; cursor: pointer;
+}
+.festa-practice-choice > * { display: block; }
+#practiceDetailTitle, [data-festa-editor-host], .festa-receipt { scroll-margin-top: calc(var(--nav-h) + var(--space-3)); }
+.festa-practice-choice:hover { border-color: var(--festa-accent); }
+.festa-practice-choice.is-selected {
+  background: #fff3f7; color: #73123d; border-color: var(--festa-accent);
+  box-shadow: inset 3px 0 var(--festa-accent);
+}
+.festa-practice-example { padding: var(--space-3); border-radius: 8px; background: var(--neutral-cool); }
+.festa-practice-result-row {
+  display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap;
+  gap: var(--space-2); padding-block: var(--space-2); border-bottom: 1px solid var(--hairline);
+}
+@media (max-width: 760px) {
+  .festa-practice-layout { grid-template-columns: minmax(0, 1fr); }
+}
 @media (max-width: 640px) {
-  .festa-form-grid, .festa-score-grid { grid-template-columns: minmax(0, 1fr); }
+  .festa-score-grid { grid-template-columns: minmax(0, 1fr); }
 }
 .btn--outline   { background: transparent; color: var(--green-accent); border-color: var(--green-accent); }
 .btn--outline:hover { background: rgba(0,117,74,.06); }

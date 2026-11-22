@@ -8,6 +8,7 @@ import * as R from './router.js';
 
 import { homeView } from './views/home.js';
 import { festaView, festaAdminView } from './views/festa.js';
+import { festaPracticeView } from './views/festa-practice.js';
 import { projectView, submitView } from './views/project.js';
 import { myView, submissionView, editSubmissionView } from './views/my.js';
 import { guideView } from './views/guide.js';
@@ -68,7 +69,7 @@ function renderNavLinks() {
 
 function markActiveNav(path) {
   const key = path === '/' ? 'home' : path.split('/')[1];
-  document.querySelectorAll('.gnav__links a').forEach((a) => {
+  document.querySelectorAll('.gnav [data-nav]').forEach((a) => {
     const nav = a.dataset.nav;
     const active = (nav === 'home' && (key === 'home' || key === 'p'))
       || (nav === 'materials' && key === 'materials')
@@ -184,6 +185,7 @@ function registerRoutes() {
   R.route('/camp', view((m) => campHomeView(m)));
   R.route('/festa', view(festaView));
   R.route('/admin/festa', view(festaAdminView, { admin: true }));
+  R.route('/admin/festa/practice', view(festaPracticeView, { admin: true }));
   R.route('/camp/:id', view((m, p, q) => campProjectView(m, p, q)));
 
   // 기존 과제의 상호 투표와 조별 발표는 프로젝트 상세에서 접근합니다.
