@@ -459,10 +459,16 @@ export function buildXlsx(sheets) {
   });
 }
 
-/** 엑셀이 한글을 바로 알아보도록 BOM 을 붙인 CSV. */
+/** 엑셀이 한글을 바로 알아보도록 BOM 을 붙인 CSV (수식 인젝션 방지 포함). */
 export function buildCsv(rows) {
   const cell = (v) => {
-    const s = v === null || v === undefined ? '' : String(v);
+    if (v === null || v === undefined) return '';
+    let s = String(v);
+    if (typeof v !== 'number'
+        && /^[\t\r ]*[=+\-@]|^[\t\r]/.test(s)
+        && !/^-\d+(\.\d+)?$/.test(s)) {
+      s = `'${s}`;
+    }
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const body = (rows || []).map((r) => (r || []).map(cell).join(',')).join('\r\n');

@@ -137,9 +137,16 @@ export function debounce(fn, ms = 250) {
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
 
-/** CSV 한 줄 이스케이프. */
+/** CSV 한 셀 이스케이프 (엑셀 수식 인젝션 방지 포함). */
 export function csvCell(v) {
-  const s = v === null || v === undefined ? '' : String(v);
+  if (v === null || v === undefined) return '';
+  let s = String(v);
+  // 숫자가 아닌 문자열이 수식 시작 문자(=, +, -, @, 탭, CR)로 시작하면 작은따옴표로 무력화합니다.
+  if (typeof v !== 'number'
+      && /^[\t\r ]*[=+\-@]|^[\t\r]/.test(s)
+      && !/^-\d+(\.\d+)?$/.test(s)) {
+    s = `'${s}`;
+  }
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

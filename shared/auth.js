@@ -669,7 +669,7 @@ export async function mergeLegacyAccount(env, { googleEmail, legacyEmail }) {
     return changed ? list : null;
   });
 
-  // 6) 바이브 코딩 페스타 출품작 · 본선 평가 이관
+  // 6) 바이브 코딩 페스타 출품작 · 첨부파일 소유권 · 본선 평가 이관
   await mutateJsonObject(env, 'data/festa.json', async (state) => {
     if (!state || typeof state !== 'object') return null;
     let changed = false;
@@ -678,6 +678,21 @@ export async function mergeLegacyAccount(env, { googleEmail, legacyEmail }) {
         entry.author.email = targetEmail;
         entry.author.memberCreatedAt = mergedCreatedAt;
         migrated.festa += 1;
+        changed = true;
+      } else if (normEmail(entry?.author?.email) === targetEmail
+          && entry.author.memberCreatedAt !== mergedCreatedAt) {
+        entry.author.memberCreatedAt = mergedCreatedAt;
+        changed = true;
+      }
+    }
+    for (const upload of state.uploads || []) {
+      if (normEmail(upload?.owner) === oldEmail) {
+        upload.owner = targetEmail;
+        upload.ownerCreatedAt = mergedCreatedAt;
+        changed = true;
+      } else if (normEmail(upload?.owner) === targetEmail
+          && upload.ownerCreatedAt !== mergedCreatedAt) {
+        upload.ownerCreatedAt = mergedCreatedAt;
         changed = true;
       }
     }

@@ -47,6 +47,18 @@ const DUPLICATE_ENTRY = '이 이메일로 이미 접수된 작품이 있습니�
 // 이메일을 삭제 후 재가입해도 예전 회원의 비공개 작품·파일·점수를 넘겨받지 않습니다.
 const isMine = (entry, member) => ownerOf(entry) === normEmail(member.email)
   && entry?.author?.memberCreatedAt === incarnationOf(member);
+// 기존 회원 연계(병합)로 이전된 R2 첨부파일의 customMetadata.owner(이전 이메일)도 허용합니다.
+function ownsUploadMetadata(meta, member) {
+  const owner = normEmail(meta?.owner);
+  if (!owner) return false;
+  if (owner === normEmail(member.email) && meta?.ownerCreatedAt === incarnationOf(member)) {
+    return true;
+  }
+  const linked = Array.isArray(member.linkedFromEmails)
+    ? member.linkedFromEmails.map(normEmail)
+    : [];
+  return linked.includes(owner);
+}
 const requireOpen = (state) => {
   if (state.phase !== 'open') fail(409, '출품이 마감되어 작품과 파일을 변경할 수 없습니다.');
   if (deadlinePassed(state)) fail(409, '접수 마감일이 지나 작품과 파일을 변경할 수 없습니다.');
@@ -247,8 +259,7 @@ async function checkedFiles(files, env, member) {
     keys.add(file.key);
     const obj = typeof env.BUCKET.head === 'function'
       ? await env.BUCKET.head(file.key) : await env.BUCKET.get(file.key);
-    if (!obj || normEmail(obj.customMetadata?.owner) !== normEmail(member.email)
-        || obj.customMetadata?.ownerCreatedAt !== incarnationOf(member)) {
+    if (!obj || !ownsUploadMetadata(obj.customMetadata, member)) {
       fail(403, '직접 업로드한 페스타 파일만 첨부할 수 있습니다.');
     }
     if (!Number.isInteger(obj.size) || obj.size <= 0 || obj.size > FESTA_FILE_BYTES) {
