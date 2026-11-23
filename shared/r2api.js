@@ -66,15 +66,18 @@ import {
   SESSION_COOKIE, SESSION_TTL_MS,
   signSession, readSession, cookieValue, sessionCookie, clearCookie,
   readMembers, updateMembers, findMember, findMemberByGoogleSub, publicMember,
-  epochOf, bumpEpoch, normEmail, signupPolicyOf, isDomainAllowed, validateProfile,
+  epochOf, bumpEpoch, normEmail, signupPolicyOf, isDomainAllowed,
+  validateProfile, isValidEmail, mergeLegacyAccount,
 } from './auth.js';
 import {
-  OAUTH_COOKIE, googleConfigured, sanitizeNext,
-  oauthCookie, clearOAuthCookie, createOAuthChallenge, verifyOAuthChallenge,
+  OAUTH_COOKIE, ONBOARD_COOKIE, googleConfigured, sanitizeNext,
+  oauthCookie, clearOAuthCookie, onboardCookie, clearOnboardCookie,
+  createOnboardToken, readOnboardToken,
+  createOAuthChallenge, verifyOAuthChallenge,
   buildGoogleAuthUrl, exchangeGoogleCode,
 } from './google.js';
 import {
-  notifySignup, notifySubmission, notifyApprovalRequest, handleTelegramWebhook,
+  notifySignup, notifySubmission, notifyApprovalRequest, notifyLinkRequest, handleTelegramWebhook,
 } from './telegram.js';
 import { handleFesta, FestaError, reply as festaReply } from './festa.js';
 import { handleJury } from './festa-jury.js';
@@ -177,6 +180,12 @@ async function route(request, env, url, path, cors, waitUntil, basePath, googleE
   if (path === '/auth/google/callback' && method === 'GET') {
     return googleCallback(request, env, url, basePath, waitUntil, googleEndpoints);
   }
+  if (path === '/auth/onboard' && method === 'GET') {
+    return getOnboardInfo(request, env, noStore);
+  }
+  if (path === '/auth/onboard' && method === 'POST') {
+    return submitOnboard(request, env, url, basePath, noStore, waitUntil);
+  }
   if (path === '/auth/logout' && method === 'POST') {
     return logout(request, env, url, noStore);
   }
@@ -186,7 +195,10 @@ async function route(request, env, url, path, cors, waitUntil, basePath, googleE
     return json({ me: publicMember(me) }, 200, noStore);
   }
   if (path === '/auth/profile' && method === 'POST') {
-    return completeProfile(request, env, noStore);
+    return completeProfile(request, env, noStore, waitUntil);
+  }
+  if (path === '/auth/link-request' && method === 'POST') {
+    return requestAccountLink(request, env, noStore, waitUntil);
   }
 
   // 기존 비밀번호 기반 인증 경로는 보안상 완전히 비활성화합니다.
@@ -216,6 +228,11 @@ async function route(request, env, url, path, cors, waitUntil, basePath, googleE
     const admin = await requireAdmin(request, env);
     if (admin.error) return json({ message: admin.error }, admin.status, noStore);
     return inviteMembers(request, env, noStore);
+  }
+  if (path === '/auth/members/link' && method === 'POST') {
+    const admin = await requireAdmin(request, env);
+    if (admin.error) return json({ message: admin.error }, admin.status, noStore);
+    return handleMemberLink(request, env, noStore);
   }
 
   /* --------------------------------------------------------- 텔레그램 -- */
@@ -476,10 +493,9 @@ async function googleCallback(request, env, url, basePath, waitUntil, googleEndp
   const policy = signupPolicyOf(env);
   const now = new Date().toISOString();
 
-  let outcome = null; // 'active' | 'pending' | 'blocked' | 'not_invited' | 'google_mismatch'
+  let outcome = null; // 'active' | 'onboard' | 'pending' | 'blocked' | 'not_invited' | 'google_mismatch'
   let memberRecord = null;
   let newlyCreatedActive = false;
-  let newlyCreatedPending = false;
 
   await updateMembers(env, (list) => {
     const bySub = findMemberByGoogleSub(list, sub);
@@ -510,7 +526,9 @@ async function googleCallback(request, env, url, basePath, waitUntil, googleEndp
         if (!existing.name && name) existing.name = name;
         existing.updatedAt = now;
         memberRecord = existing;
-        outcome = 'pending';
+        // 소속·성명을 아직 입력하지 않은 대기 회원은 온보딩 입력 화면으로 보냅니다.
+        outcome = (!String(existing.institution || '').trim() || !String(existing.name || '').trim())
+          ? 'onboard' : 'pending';
         return list;
       }
 
@@ -559,33 +577,24 @@ async function googleCallback(request, env, url, basePath, waitUntil, googleEndp
     }
 
     if (policy === 'approval') {
-      const created = {
-        email,
-        name: name || '',
-        institution: '',
-        googleSub: sub,
-        authProvider: 'google',
-        role: 'member',
-        status: 'pending',
-        createdAt: now,
-        updatedAt: now,
-        lastLoginAt: null,
-      };
-      list.push(created);
-      memberRecord = created;
-      newlyCreatedPending = true;
-      outcome = 'pending';
-      return list;
+      // 바로 빈 대기 계정을 만들지 않고, 소속·성명·기존 이메일 입력 화면(#/onboard)으로 보냅니다.
+      outcome = 'onboard';
+      return null;
     }
 
     outcome = 'not_invited';
     return null;
   });
 
+  if (outcome === 'onboard') {
+    const obToken = await createOnboardToken({ sub, email, name }, env);
+    return redirectWithCookies(`${url.origin}/#/onboard`, [
+      clearState,
+      onboardCookie(obToken, url, basePath),
+    ]);
+  }
+
   if (outcome !== 'active' || !memberRecord) {
-    if (newlyCreatedPending && memberRecord) {
-      notifyApprovalRequest(env, waitUntil, memberRecord);
-    }
     return loginErrorRedirect(url, outcome || 'oauth_failed', [clearState]);
   }
 
@@ -629,12 +638,91 @@ async function logout(request, env, url, cors) {
   return json({ ok: true }, 200, { ...cors, 'Set-Cookie': clearCookie(url) });
 }
 
+/** 승인 대기 온보딩 쿠키에서 본인 Google 이메일·기본 이름을 돌려줍니다. */
+async function getOnboardInfo(request, env, cors) {
+  const token = cookieValue(request.headers.get('Cookie'), ONBOARD_COOKIE);
+  const info = await readOnboardToken(token, env);
+  if (!info) return json({ message: '온보딩 요청이 만료되었습니다. Google 로그인을 다시 진행해 주세요.' }, 401, cors);
+  return json({ email: info.email, name: info.name }, 200, cors);
+}
+
 /**
- * 최초 Google 로그인 후 성명·기관명 등록 (본인).
- * 이미 기관명·성명이 모두 등록된 계정은 임의 변경을 막아 사칭을 방지합니다
- * (변경이 필요하면 관리자가 회원 관리에서 수정합니다).
+ * 신규 Google 사용자의 가입 승인 요청 접수 (소속 · 성명 · 선택적 기존 계정 이메일).
+ * 서명된 ah_onboard 쿠키가 있어야만 호출할 수 있고, 세션은 발급하지 않습니다.
  */
-async function completeProfile(request, env, cors) {
+async function submitOnboard(request, env, url, basePath, cors, waitUntil) {
+  const token = cookieValue(request.headers.get('Cookie'), ONBOARD_COOKIE);
+  const info = await readOnboardToken(token, env);
+  if (!info) return json({ message: '온보딩 요청이 만료되었습니다. Google 로그인을 다시 진행해 주세요.' }, 401, cors);
+
+  const body = await request.json().catch(() => null);
+  if (!body) return json({ message: '잘못된 요청 형식입니다.' }, 400, cors);
+
+  const errors = validateProfile(body);
+  const rawLegacy = String(body.legacyEmail || '').trim();
+  const legacyEmail = rawLegacy ? normEmail(rawLegacy) : '';
+  if (legacyEmail) {
+    if (!isValidEmail(legacyEmail)) errors.legacyEmail = '올바른 기존 이메일 주소를 입력하세요.';
+    else if (legacyEmail === info.email) errors.legacyEmail = '현재 Google 이메일과 다른 기존 이메일을 입력하세요.';
+  }
+  if (Object.keys(errors).length) {
+    return json({ message: '입력을 확인하세요.', errors }, 400, cors);
+  }
+
+  const name = String(body.name).trim().slice(0, 60);
+  const institution = String(body.institution).trim().slice(0, 80);
+  const now = new Date().toISOString();
+  let saved = null;
+  let blocked = false;
+  let alreadyActive = false;
+
+  await updateMembers(env, (list) => {
+    const existing = findMemberByGoogleSub(list, info.sub) || findMember(list, info.email);
+    if (existing) {
+      if ((existing.status || 'active') === 'blocked') { blocked = true; return null; }
+      if ((existing.status || 'active') === 'active') { alreadyActive = true; return null; }
+      existing.name = name;
+      existing.institution = institution;
+      existing.googleSub = info.sub;
+      existing.authProvider = 'google';
+      existing.linkRequestedEmail = legacyEmail || null;
+      existing.updatedAt = now;
+      saved = existing;
+      return list;
+    }
+    const created = {
+      email: info.email,
+      name,
+      institution,
+      googleSub: info.sub,
+      authProvider: 'google',
+      role: 'member',
+      status: 'pending',
+      linkRequestedEmail: legacyEmail || null,
+      createdAt: now,
+      updatedAt: now,
+      lastLoginAt: null,
+    };
+    list.push(created);
+    saved = created;
+    return list;
+  });
+
+  const clearOb = clearOnboardCookie(url, basePath);
+  if (blocked) {
+    return json({ message: '이용이 정지된 계정입니다. 관리자에게 문의하세요.' }, 403, { ...cors, 'Set-Cookie': clearOb });
+  }
+  if (alreadyActive) {
+    return json({ ok: true, status: 'active' }, 200, { ...cors, 'Set-Cookie': clearOb });
+  }
+  if (saved) notifyApprovalRequest(env, waitUntil, saved);
+  return json({ ok: true, status: 'pending' }, 200, { ...cors, 'Set-Cookie': clearOb });
+}
+
+/**
+ * 최초 Google 로그인 후 성명·소속(기관명) 등록 + 선택적 기존 계정 연계 신청 (본인).
+ */
+async function completeProfile(request, env, cors, waitUntil) {
   const got = await requireMember(request, env);
   if (got.error) return json({ message: got.error }, got.status, cors);
 
@@ -642,8 +730,16 @@ async function completeProfile(request, env, cors) {
   if (!body) return json({ message: '잘못된 요청 형식입니다.' }, 400, cors);
 
   const errors = validateProfile(body);
+  const rawLegacy = String(body.legacyEmail || '').trim();
+  const legacyEmail = rawLegacy ? normEmail(rawLegacy) : '';
+  if (legacyEmail) {
+    if (!isValidEmail(legacyEmail)) errors.legacyEmail = '올바른 기존 이메일 주소를 입력하세요.';
+    else if (legacyEmail === normEmail(got.member.email)) {
+      errors.legacyEmail = '현재 Google 이메일과 다른 기존 이메일을 입력하세요.';
+    }
+  }
   if (Object.keys(errors).length) {
-    return json({ message: '성명과 기관명을 모두 입력하세요.', errors }, 400, cors);
+    return json({ message: '성명과 소속(기관명)을 모두 입력하세요.', errors }, 400, cors);
   }
 
   const name = String(body.name).trim().slice(0, 60);
@@ -651,6 +747,7 @@ async function completeProfile(request, env, cors) {
 
   let updated = null;
   let alreadyComplete = false;
+  let newLinkRequested = false;
   await updateMembers(env, (list) => {
     const m = findMember(list, got.member.email);
     if (!m) return null;
@@ -660,6 +757,10 @@ async function completeProfile(request, env, cors) {
     }
     m.name = name;
     m.institution = institution;
+    if (legacyEmail) {
+      m.linkRequestedEmail = legacyEmail;
+      newLinkRequested = true;
+    }
     m.updatedAt = new Date().toISOString();
     updated = m;
     return list;
@@ -670,7 +771,83 @@ async function completeProfile(request, env, cors) {
   }
   if (!updated) return json({ message: '회원 정보를 찾을 수 없습니다.' }, 404, cors);
 
+  if (newLinkRequested) notifyLinkRequest(env, waitUntil, updated);
   return json({ me: publicMember(withRole(updated, env)) }, 200, cors);
+}
+
+/**
+ * 이미 로그인한 회원의 기존 비-구글 계정 연계 신청 또는 취소 (본인).
+ * 실제 병합은 관리자가 확인 후 승인해야 실행됩니다.
+ */
+async function requestAccountLink(request, env, cors, waitUntil) {
+  const got = await requireMember(request, env);
+  if (got.error) return json({ message: got.error }, got.status, cors);
+
+  const body = await request.json().catch(() => null);
+  const raw = String(body?.legacyEmail || '').trim();
+  const legacyEmail = raw ? normEmail(raw) : '';
+
+  if (legacyEmail) {
+    if (!isValidEmail(legacyEmail)) {
+      return json({ message: '올바른 기존 이메일 주소를 입력하세요.' }, 400, cors);
+    }
+    if (legacyEmail === normEmail(got.member.email)) {
+      return json({ message: '현재 Google 이메일과 다른 기존 이메일을 입력하세요.' }, 400, cors);
+    }
+  }
+
+  let updated = null;
+  await updateMembers(env, (list) => {
+    const m = findMember(list, got.member.email);
+    if (!m) return null;
+    m.linkRequestedEmail = legacyEmail || null;
+    m.updatedAt = new Date().toISOString();
+    updated = m;
+    return list;
+  });
+
+  if (!updated) return json({ message: '회원 정보를 찾을 수 없습니다.' }, 404, cors);
+  if (legacyEmail) notifyLinkRequest(env, waitUntil, updated);
+  return json({ me: publicMember(withRole(updated, env)) }, 200, cors);
+}
+
+/**
+ * 기존 비-구글 계정 연계 승인 또는 거절 (관리자).
+ */
+async function handleMemberLink(request, env, cors) {
+  const body = await request.json().catch(() => null);
+  const email = normEmail(body?.email);
+  const action = String(body?.action || 'approve');
+  if (!email) return json({ message: '대상 Google 이메일이 필요합니다.' }, 400, cors);
+
+  const { list } = await readMembers(env);
+  const target = findMember(list, email);
+  if (!target) return json({ message: '대상 회원을 찾을 수 없습니다.' }, 404, cors);
+
+  if (action === 'reject') {
+    let updated = null;
+    await updateMembers(env, (l) => {
+      const m = findMember(l, email);
+      if (!m) return null;
+      m.linkRequestedEmail = null;
+      m.updatedAt = new Date().toISOString();
+      updated = m;
+      return l;
+    });
+    return json({ ok: true, member: publicMember(withRole(updated, env)) }, 200, cors);
+  }
+
+  const legacyEmail = normEmail(body?.legacyEmail || target.linkRequestedEmail || '');
+  if (!legacyEmail) return json({ message: '연계할 기존 이메일이 없습니다.' }, 400, cors);
+
+  const merged = await mergeLegacyAccount(env, { googleEmail: email, legacyEmail });
+  if (!merged.ok) return json({ message: merged.message }, merged.status || 400, cors);
+
+  return json({
+    ok: true,
+    member: publicMember(withRole(merged.member, env)),
+    migrated: merged.migrated,
+  }, 200, cors);
 }
 
 /**
@@ -1043,10 +1220,22 @@ function checkProjectOpen(projects, projectId) {
   return null;
 }
 
+/** 회원이 소유한 업로드 폴더 접두어 목록 (기존 계정에서 연계된 이메일 포함). */
+async function memberPrefixes(member, extraEmail = '') {
+  const emails = new Set([normEmail(member?.email)]);
+  if (extraEmail) emails.add(normEmail(extraEmail));
+  for (const e of member?.linkedFromEmails || []) emails.add(normEmail(e));
+  emails.delete('');
+  return Promise.all([...emails].map((e) => memberKey(e)));
+}
+
 /** 남의 업로드 폴더를 가리키지 못하게 막습니다. */
-function ownsFiles(files, prefix, isAdmin) {
+function ownsFiles(files, prefixes, isAdmin) {
   if (isAdmin) return true;
-  return (files || []).every((f) => typeof f?.key === 'string' && f.key.startsWith(`uploads/${prefix}/`));
+  const list = Array.isArray(prefixes) ? prefixes : [prefixes];
+  return (files || []).every(
+    (f) => typeof f?.key === 'string' && list.some((p) => f.key.startsWith(`uploads/${p}/`)),
+  );
 }
 
 async function createSubmission(request, env, cors, waitUntil) {
@@ -1078,8 +1267,8 @@ async function createSubmission(request, env, cors, waitUntil) {
     return json({ message: `조를 선택하세요 (1조~${TEAM_MAX}조).` }, 400, cors);
   }
 
-  const prefix = await memberKey(me.email);
-  if (!ownsFiles(body.files, prefix, me.role === 'admin')) {
+  const prefixes = await memberPrefixes(me);
+  if (!ownsFiles(body.files, prefixes, me.role === 'admin')) {
     return json({ message: '첨부 파일 경로가 올바르지 않습니다.' }, 400, cors);
   }
 
@@ -1161,8 +1350,8 @@ async function patchSubmission(request, env, id, cors) {
     if (!isCamp(project)) team = 0;
   }
 
-  const prefix = await memberKey(existing.author?.email || me.email);
-  if (body.files && !ownsFiles(body.files, prefix, me.role === 'admin')) {
+  const prefixes = await memberPrefixes(me, existing.author?.email || '');
+  if (body.files && !ownsFiles(body.files, prefixes, me.role === 'admin')) {
     return json({ message: '첨부 파일 경로가 올바르지 않습니다.' }, 400, cors);
   }
 

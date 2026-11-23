@@ -26,6 +26,8 @@ export const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export const OAUTH_COOKIE = 'ah_oauth';
 export const OAUTH_TTL_MS = 10 * 60 * 1000;
+export const ONBOARD_COOKIE = 'ah_onboard';
+export const ONBOARD_TTL_MS = 30 * 60 * 1000;
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -76,6 +78,36 @@ export function oauthCookie(token, url, basePath = '/api', maxAgeSec = OAUTH_TTL
 }
 
 export const clearOAuthCookie = (url, basePath = '/api') => oauthCookie('', url, basePath, 0);
+
+/** 신규 승인 대기 사용자의 소속·성명·기존계정 연계 신청용 단기 서명 쿠키 (세션 권한 없음). */
+export function onboardCookie(token, url, basePath = '/api', maxAgeSec = ONBOARD_TTL_MS / 1000) {
+  const secure = url.protocol === 'https:' ? '; Secure' : '';
+  const path = `${String(basePath || '').replace(/\/$/, '')}/auth` || '/auth';
+  return `${ONBOARD_COOKIE}=${encodeURIComponent(token)}; Path=${path}; HttpOnly; SameSite=Lax`
+    + `${secure}; Max-Age=${Math.max(0, Math.floor(maxAgeSec))}`;
+}
+
+export const clearOnboardCookie = (url, basePath = '/api') => onboardCookie('', url, basePath, 0);
+
+export function createOnboardToken({ sub, email, name }, env) {
+  return signSession({
+    sub: String(sub || ''),
+    purpose: 'google-onboard',
+    email: normEmail(email),
+    name: String(name || '').trim().slice(0, 60),
+    exp: Date.now() + ONBOARD_TTL_MS,
+  }, env);
+}
+
+export async function readOnboardToken(token, env) {
+  if (!token) return null;
+  const payload = await readSession(token, env);
+  if (!payload || payload.purpose !== 'google-onboard') return null;
+  const sub = String(payload.sub || '').trim();
+  const email = normEmail(payload.email);
+  if (!sub || !email) return null;
+  return { sub, email, name: String(payload.name || '').trim().slice(0, 60) };
+}
 
 /** OAuth 시작 시 state · PKCE verifier · nonce 를 만들고 서명된 쿠키 값을 반환합니다. */
 export async function createOAuthChallenge(next, env) {

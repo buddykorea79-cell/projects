@@ -96,17 +96,23 @@ await t('텔레그램 환경변수가 없으면 로그인해도 호출하지 않
   eq(calls.length, 0, '호출 없음');
 });
 
-console.log('\n== 알림: 신규 승인 요청 + 웹훅 승인/거절 ==');
+console.log('\n== 알림: 신규 승인 요청(소속·성명·연계) + 웹훅 승인/거절 ==');
 
-await t('미등록 Google 로그인 시도 시 승인/거절 버튼이 담긴 텔레그램 알림 전송', async () => {
+await t('미등록 Google 사용자가 온보딩(소속·성명) 제출 시 승인/거절 버튼이 담긴 텔레그램 알림 전송', async () => {
   calls = [];
-  const res = await mockGoogleLogin(client(), {
+  const c = client();
+  const res = await mockGoogleLogin(c, {
     email: 'student1@gmail.com', name: '김교육', completeProfile: false,
   });
-  if (!res.callbackLocation.includes('error=pending')) throw new Error(res.callbackLocation);
+  if (!res.callbackLocation.includes('#/onboard')) throw new Error(res.callbackLocation);
+  const ob = await c('/auth/onboard', {
+    method: 'POST', body: { name: '김교육', institution: '행정안전부' },
+  });
+  eq(ob.status, 200, '온보딩 제출');
   eq(calls.length, 1, '알림 1건');
   eq(calls[0].method, 'sendMessage', 'sendMessage');
   if (!calls[0].payload.text.includes('student1@gmail.com')) throw new Error('이메일 누락');
+  if (!calls[0].payload.text.includes('행정안전부')) throw new Error('소속 누락');
   const buttons = calls[0].payload.reply_markup?.inline_keyboard?.[0] || [];
   eq(buttons[0]?.callback_data, 'approve:student1@gmail.com', '승인 버튼');
   eq(buttons[1]?.callback_data, 'reject:student1@gmail.com', '거절 버튼');
@@ -125,7 +131,7 @@ await t('허용되지 않은 채팅 ID 의 승인 버튼 클릭은 무시', asyn
   if (!answer?.payload?.text?.includes('허용되지 않은')) throw new Error('거부 응답 없음');
 });
 
-await t('관리자 채팅에서 승인 버튼을 누르면 회원이 active 로 전환되고 로그인 가능', async () => {
+await t('관리자 채팅에서 승인 버튼을 누르면 회원이 active 로 전환되고 바로 로그인 가능', async () => {
   calls = [];
   const res = await webhook(cbUpdate('approve:student1@gmail.com', '424242'), 'wh-secret');
   eq(res.status, 200, '200');
@@ -134,17 +140,49 @@ await t('관리자 채팅에서 승인 버튼을 누르면 회원이 active 로 
 
   const c = client();
   const loginRes = await mockGoogleLogin(c, {
-    email: 'student1@gmail.com', name: '김교육', institution: '행정안전부',
+    email: 'student1@gmail.com', name: '김교육', completeProfile: false,
   });
-  eq(loginRes.profile.status, 200, '승인 후 로그인 성공');
+  eq(loginRes.callbackLocation, `${ORIGIN}/#/`, '승인 후 바로 홈 이동');
+});
+
+await t('기존 계정 연계 신청이 포함된 온보딩 → 텔레그램 승인+연계 버튼으로 병합 완료', async () => {
+  const admin = client();
+  await mockGoogleLogin(admin, { email: ADMIN, completeProfile: false });
+  await admin('/auth/members/invite', {
+    method: 'POST', body: { members: [{ email: 'old-trainee@korea.kr', name: '이기존', institution: '한국서부발전' }] },
+  });
+
+  calls = [];
+  const c = client();
+  await mockGoogleLogin(c, { email: 'new-trainee@gmail.com', name: 'Lee', completeProfile: false });
+  await c('/auth/onboard', {
+    method: 'POST',
+    body: { name: '이기존', institution: '한국서부발전', legacyEmail: 'old-trainee@korea.kr' },
+  });
+  eq(calls.length, 1, '알림 1건');
+  const btns = calls[0].payload.reply_markup?.inline_keyboard?.[0] || [];
+  eq(btns[0]?.callback_data, 'approve_link:new-trainee@gmail.com', '승인+연계 버튼');
+
+  calls = [];
+  const res = await webhook(cbUpdate('approve_link:new-trainee@gmail.com', '424242'), 'wh-secret');
+  eq(res.status, 200, '200');
+  const edit = calls.find((x) => x.method === 'editMessageText');
+  if (!edit?.payload?.text?.includes('승인 + 연계 완료')) throw new Error('연계 완료 메시지 없음');
+
+  const list = await admin('/auth/members');
+  if (list.data.data.some((m) => m.email === 'old-trainee@korea.kr')) throw new Error('기존 중복 계정이 남음');
+  const merged = list.data.data.find((m) => m.email === 'new-trainee@gmail.com');
+  eq(merged?.status, 'active', '활성화됨');
 });
 
 await t('관리자 채팅에서 거절 버튼을 누르면 pending 요청이 삭제됨', async () => {
-  await mockGoogleLogin(client(), { email: 'rejectme@gmail.com', name: '거절대상', completeProfile: false });
+  const c = client();
+  await mockGoogleLogin(c, { email: 'rejectme@gmail.com', name: '거절대상', completeProfile: false });
+  await c('/auth/onboard', { method: 'POST', body: { name: '거절대상', institution: '외부' } });
   calls = [];
   const res = await webhook(cbUpdate('reject:rejectme@gmail.com', '424242'), 'wh-secret');
   eq(res.status, 200, '200');
-  const edit = calls.find((c) => c.method === 'editMessageText');
+  const edit = calls.find((x) => x.method === 'editMessageText');
   if (!edit?.payload?.text?.includes('거절 완료')) throw new Error('거절 완료 메시지 없음');
 
   const admin = client();

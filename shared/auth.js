@@ -450,16 +450,263 @@ export function publicMember(m) {
     authProvider: m.authProvider || (m.googleSub ? 'google' : 'legacy'),
     googleLinked: Boolean(m.googleSub),
     needsProfile: !name || !institution,
+    linkRequestedEmail: m.linkRequestedEmail ? normEmail(m.linkRequestedEmail) : null,
+    linkedFromEmails: Array.isArray(m.linkedFromEmails) ? m.linkedFromEmails : [],
     createdAt: m.createdAt,
     lastLoginAt: m.lastLoginAt || null,
   };
 }
 
+export function isValidEmail(v) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(normEmail(v));
+}
+
 export function validateProfile({ name, institution }) {
   const errors = {};
   if (!String(name || '').trim()) errors.name = '성명을 입력하세요.';
-  if (!String(institution || '').trim()) errors.institution = '기관명을 입력하세요.';
+  if (!String(institution || '').trim()) errors.institution = '소속(기관명)을 입력하세요.';
   return errors;
+}
+
+/* ------------------------------------------------ 기존 계정 연계(병합) -- */
+
+async function mutateJsonObject(env, key, mutate) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const obj = await env.BUCKET.get(key);
+    if (!obj) return { ok: false, missing: true };
+    let data;
+    try { data = JSON.parse(await obj.text()); } catch { return { ok: false }; }
+    const next = await mutate(structuredClone(data));
+    if (next === null) return { ok: true, changed: false };
+    const put = await env.BUCKET.put(key, JSON.stringify(next, null, 2), {
+      httpMetadata: { contentType: 'application/json; charset=utf-8' },
+      onlyIf: conditionFor(obj.etag),
+    });
+    if (put) return { ok: true, changed: true };
+    await new Promise((r) => setTimeout(r, 60 * (attempt + 1) + Math.random() * 80));
+  }
+  throw new Error(`${key} 저장 충돌이 계속되어 이관하지 못했습니다.`);
+}
+
+async function festaMemberId(env, email, createdAt) {
+  const secret = await sessionSecret(env);
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
+  );
+  const sig = new Uint8Array(await crypto.subtle.sign(
+    'HMAC', key, enc.encode(JSON.stringify(['festa-jury-v1', 'member', 'final', JSON.stringify([email, createdAt])])),
+  ));
+  return `fm_${Array.from(sig, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+}
+
+const ROLE_RANK = { member: 1, leader: 2, admin: 3 };
+
+/**
+ * 기존 비-구글 회원(legacyEmail)의 권한·제출물·게시글·투표·평가·페스타 기록을
+ * Google 회원(googleEmail)으로 안전하게 병합·이관합니다.
+ * 관리자 승인 시에만 호출됩니다.
+ */
+export async function mergeLegacyAccount(env, { googleEmail, legacyEmail }) {
+  const targetEmail = normEmail(googleEmail);
+  const oldEmail = normEmail(legacyEmail);
+  if (!isValidEmail(targetEmail) || !isValidEmail(oldEmail)) {
+    return { ok: false, status: 400, message: '올바른 이메일 주소가 아닙니다.' };
+  }
+  if (targetEmail === oldEmail) {
+    return { ok: false, status: 400, message: '같은 이메일은 연계할 수 없습니다.' };
+  }
+
+  let error = null;
+  let mergedMember = null;
+  let mergedCreatedAt = '';
+  const now = new Date().toISOString();
+
+  await updateMembers(env, (list) => {
+    const target = findMember(list, targetEmail);
+    const legacy = findMember(list, oldEmail);
+    if (!target) { error = { status: 404, message: '대상 Google 회원을 찾을 수 없습니다.' }; return null; }
+    if (!legacy) { error = { status: 404, message: `기존 회원(${oldEmail})을 찾을 수 없습니다.` }; return null; }
+    if (legacy.googleSub && target.googleSub && legacy.googleSub !== target.googleSub) {
+      error = { status: 409, message: '해당 기존 계정은 이미 다른 Google 계정에 연결되어 있습니다.' };
+      return null;
+    }
+
+    // 권한은 둘 중 더 높은 권한을 승계합니다.
+    const tRole = target.role || 'member';
+    const lRole = legacy.role || 'member';
+    if ((ROLE_RANK[lRole] || 1) > (ROLE_RANK[tRole] || 1)) {
+      target.role = lRole;
+      target.team = lRole === 'leader' ? Number(legacy.team || 0) : 0;
+    } else if (tRole === 'leader' && !Number(target.team || 0) && Number(legacy.team || 0)) {
+      target.team = Number(legacy.team || 0);
+    }
+
+    if (!String(target.name || '').trim() && legacy.name) target.name = String(legacy.name).trim();
+    if (!String(target.institution || '').trim() && legacy.institution) {
+      target.institution = String(legacy.institution).trim();
+    }
+    if (!target.googleSub && legacy.googleSub) target.googleSub = legacy.googleSub;
+
+    // 페스타 소유권 연속성을 위해 기존 계정의 createdAt 을 우선 유지합니다.
+    mergedCreatedAt = String(legacy.createdAt || target.createdAt || now);
+    target.createdAt = mergedCreatedAt;
+
+    const prevLinked = [
+      ...(Array.isArray(target.linkedFromEmails) ? target.linkedFromEmails : []),
+      ...(Array.isArray(legacy.linkedFromEmails) ? legacy.linkedFromEmails : []),
+      oldEmail,
+    ].map(normEmail).filter((e) => e && e !== targetEmail);
+    target.linkedFromEmails = [...new Set(prevLinked)];
+
+    target.status = 'active';
+    target.authProvider = 'google';
+    target.linkRequestedEmail = null;
+    target.updatedAt = now;
+    delete target.passwordHash;
+    delete target.mustChangePassword;
+    delete target.tempPasswordUntil;
+    delete target.resetTokenHash;
+    delete target.resetTokenExpiresAt;
+    delete target.resetRequestedAt;
+    bumpEpoch(target);
+
+    mergedMember = target;
+    return list.filter((m) => normEmail(m.email) !== oldEmail);
+  });
+
+  if (error || !mergedMember) {
+    return { ok: false, status: error?.status || 400, message: error?.message || '계정 연계에 실패했습니다.' };
+  }
+
+  const migrated = { submissions: 0, posts: 0, votes: 0, scores: 0, festa: 0 };
+
+  // 1) 제출물 이관
+  await mutateJsonObject(env, 'data/submissions.json', (list) => {
+    if (!Array.isArray(list)) return null;
+    let changed = false;
+    for (const s of list) {
+      if (normEmail(s?.author?.email) === oldEmail) {
+        s.author.email = targetEmail;
+        migrated.submissions += 1;
+        changed = true;
+      }
+      if (normEmail(s?.registeredBy) === oldEmail) {
+        s.registeredBy = targetEmail;
+        changed = true;
+      }
+    }
+    return changed ? list : null;
+  });
+
+  // 2) 소통방 글·댓글 이관
+  await mutateJsonObject(env, 'data/posts.json', (list) => {
+    if (!Array.isArray(list)) return null;
+    let changed = false;
+    for (const p of list) {
+      if (normEmail(p?.author?.email) === oldEmail) {
+        p.author.email = targetEmail;
+        migrated.posts += 1;
+        changed = true;
+      }
+      for (const c of p?.comments || []) {
+        if (normEmail(c?.author?.email) === oldEmail) {
+          c.author.email = targetEmail;
+          migrated.posts += 1;
+          changed = true;
+        }
+      }
+    }
+    return changed ? list : null;
+  });
+
+  // 3) 상호 투표 이관 (중복 표 제거)
+  await mutateJsonObject(env, 'data/votes.json', (list) => {
+    if (!Array.isArray(list)) return null;
+    let changed = false;
+    const seen = new Set();
+    const out = [];
+    for (const v of list) {
+      const voter = normEmail(v?.voter) === oldEmail ? targetEmail : normEmail(v?.voter);
+      if (normEmail(v?.voter) === oldEmail) { changed = true; migrated.votes += 1; }
+      const key = `${v?.projectId || ''}/${v?.submissionId || ''}/${voter}`;
+      if (seen.has(key)) { changed = true; continue; }
+      seen.add(key);
+      out.push(normEmail(v?.voter) === oldEmail ? { ...v, voter: targetEmail } : v);
+    }
+    return changed ? out : null;
+  });
+
+  // 4) Build Camp 발표 평가 점수 이관 (중복 시 최신 유지)
+  await mutateJsonObject(env, 'data/scores.json', (list) => {
+    if (!Array.isArray(list)) return null;
+    let changed = false;
+    const byKey = new Map();
+    for (const r of list) {
+      const isOld = normEmail(r?.voter) === oldEmail;
+      if (isOld) { changed = true; migrated.scores += 1; }
+      const row = isOld ? { ...r, voter: targetEmail } : r;
+      const key = `${row?.projectId || ''}/${row?.submissionId || ''}/${normEmail(row?.voter)}`;
+      const prev = byKey.get(key);
+      if (!prev || String(row?.updatedAt || '') >= String(prev?.updatedAt || '')) {
+        byKey.set(key, row);
+      } else {
+        changed = true;
+      }
+    }
+    return changed ? [...byKey.values()] : null;
+  });
+
+  // 5) 발표 순서 추첨 기록 이관
+  await mutateJsonObject(env, 'data/draws.json', (list) => {
+    if (!Array.isArray(list)) return null;
+    let changed = false;
+    for (const d of list) {
+      if (normEmail(d?.drawnBy) === oldEmail) {
+        d.drawnBy = targetEmail;
+        changed = true;
+      }
+    }
+    return changed ? list : null;
+  });
+
+  // 6) 바이브 코딩 페스타 출품작 · 본선 평가 이관
+  await mutateJsonObject(env, 'data/festa.json', async (state) => {
+    if (!state || typeof state !== 'object') return null;
+    let changed = false;
+    for (const entry of state.entries || []) {
+      if (normEmail(entry?.author?.email) === oldEmail) {
+        entry.author.email = targetEmail;
+        entry.author.memberCreatedAt = mergedCreatedAt;
+        migrated.festa += 1;
+        changed = true;
+      }
+    }
+    const finalScores = state.juryPanels?.final?.memberScores;
+    if (Array.isArray(finalScores)) {
+      const newMemberId = await festaMemberId(env, targetEmail, mergedCreatedAt);
+      const dedup = new Map();
+      for (const row of finalScores) {
+        const isOld = normEmail(row?.email) === oldEmail;
+        const nextRow = isOld
+          ? { ...row, email: targetEmail, memberCreatedAt: mergedCreatedAt, memberId: newMemberId }
+          : (normEmail(row?.email) === targetEmail
+            ? { ...row, memberCreatedAt: mergedCreatedAt, memberId: newMemberId }
+            : row);
+        if (isOld) { changed = true; migrated.festa += 1; }
+        const k = `${normEmail(nextRow?.email)}/${nextRow?.entryId || ''}`;
+        const prev = dedup.get(k);
+        if (!prev || String(nextRow?.updatedAt || '') >= String(prev?.updatedAt || '')) {
+          dedup.set(k, nextRow);
+        } else {
+          changed = true;
+        }
+      }
+      if (changed) state.juryPanels.final.memberScores = [...dedup.values()];
+    }
+    return changed ? state : null;
+  });
+
+  return { ok: true, member: mergedMember, migrated };
 }
 
 /* ------------------------------------------------------ 시도 제한 -- */

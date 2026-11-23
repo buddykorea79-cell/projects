@@ -511,8 +511,23 @@ class R2Auth {
     this.synced = true;
   }
 
-  async completeProfile({ name, institution }) {
-    const { me } = await this.store.post('/auth/profile', { name, institution });
+  async getOnboardInfo() {
+    return this.store.json('/auth/onboard', { cache: 'no-store' });
+  }
+
+  async submitOnboard({ name, institution, legacyEmail = '' }) {
+    return this.store.post('/auth/onboard', { name, institution, legacyEmail });
+  }
+
+  async completeProfile({ name, institution, legacyEmail = '' }) {
+    const { me } = await this.store.post('/auth/profile', { name, institution, legacyEmail });
+    this.setMe(me);
+    this.synced = true;
+    return me;
+  }
+
+  async requestAccountLink(legacyEmail) {
+    const { me } = await this.store.post('/auth/link-request', { legacyEmail });
     this.setMe(me);
     this.synced = true;
     return me;
@@ -525,6 +540,10 @@ class R2Auth {
 
   async inviteMembers(members) {
     return this.store.post('/auth/members/invite', { members });
+  }
+
+  async resolveMemberLink(email, { legacyEmail = '', action = 'approve' } = {}) {
+    return this.store.post('/auth/members/link', { email, legacyEmail, action });
   }
 
   async patchMember(email, changes) {

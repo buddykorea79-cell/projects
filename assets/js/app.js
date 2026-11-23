@@ -19,7 +19,7 @@ import { materialsView } from './views/materials.js';
 import { boardView, postView, postFormView } from './views/board.js';
 import { voteHomeView, voteProjectView } from './views/vote.js';
 import { campHomeView, campProjectView, campResultView } from './views/camp.js';
-import { loginView, signupView, accountView, forgotView, resetView } from './views/account.js';
+import { loginView, signupView, onboardView, accountView, forgotView, resetView } from './views/account.js';
 import {
   adminView, projectFormView, adminSubmissionsView, materialFormView, membersView, rosterView,
 } from './views/admin.js';
@@ -33,7 +33,7 @@ const main = $('#main');
  * 로그인 없이 볼 수 있는 화면. 나머지는 전부 회원 전용입니다.
  * 홈은 소개용이라 열어 두되, 프로젝트 목록은 homeView 가 로그인 안내로 대체합니다.
  */
-const PUBLIC_PATHS = new Set(['/', '/login', '/signup', '/forgot', '/reset', '/guide']);
+const PUBLIC_PATHS = new Set(['/', '/login', '/signup', '/onboard', '/forgot', '/reset', '/guide']);
 
 /* ------------------------------------------------------------- 크롬 -- */
 
@@ -224,6 +224,7 @@ function registerRoutes() {
 
   R.route('/login', view((m) => loginView(m)));
   R.route('/signup', view((m) => signupView(m)));
+  R.route('/onboard', view((m) => onboardView(m), { publicPage: true }));
   R.route('/forgot', view((m) => forgotView(m)));
   R.route('/reset', view((m) => resetView(m)));
   R.route('/account', view((m) => accountView(m)));

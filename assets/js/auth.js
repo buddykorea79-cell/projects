@@ -72,8 +72,22 @@ export async function demoLogin(payload) {
   return me;
 }
 
+export async function getOnboardInfo() {
+  return store.auth.getOnboardInfo();
+}
+
+export async function submitOnboard(payload) {
+  return store.auth.submitOnboard(payload);
+}
+
 export async function completeProfile(payload) {
   const me = await store.auth.completeProfile(payload);
+  announceAuthChange();
+  return me;
+}
+
+export async function requestAccountLink(legacyEmail) {
+  const me = await store.auth.requestAccountLink(legacyEmail);
   announceAuthChange();
   return me;
 }

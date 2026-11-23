@@ -203,17 +203,26 @@ export async function adminView(mount) {
 
     const memberHolder = mount.querySelector('#adminMembers');
     const admins = active.filter((m) => m.role === 'admin');
+    const linkWaiting = members.filter((m) => m.linkRequestedEmail);
     memberHolder.innerHTML = members.length
       ? `${pending.length ? `
          <div class="notice notice--warn" style="margin-bottom:var(--space-3)">
            <strong>가입 승인 대기 ${esc(pending.length)}명</strong> —
-           ${esc(pending.map((m) => m.name || m.email).slice(0, 3).join(', '))}${pending.length > 3 ? ' 외' : ''}.
+           ${esc(pending.map((m) => [m.name, m.institution].filter(Boolean).join('(') + (m.name && m.institution ? ')' : '') || m.email).slice(0, 3).join(', '))}${pending.length > 3 ? ' 외' : ''}.
            <a href="#/admin/members">회원 관리</a>에서 승인하거나 거절하세요.
+         </div>` : ''}
+         ${linkWaiting.length ? `
+         <div class="notice notice--info" style="margin-bottom:var(--space-3)">
+           <strong>기존 계정 연계 요청 ${esc(linkWaiting.length)}건</strong> —
+           ${esc(linkWaiting.map((m) => `${m.name || m.email} ← ${m.linkRequestedEmail}`).slice(0, 3).join(', '))}${linkWaiting.length > 3 ? ' 외' : ''}.
+           <a href="#/admin/members">회원 관리</a>에서 확인 후 승인하세요.
          </div>` : ''}
          <div class="kv">
            <div class="kv__row"><div class="kv__k">이용중</div><div class="kv__v">${active.length}명</div></div>
            <div class="kv__row"><div class="kv__k">승인 대기</div><div class="kv__v">${pending.length}명${
              pending.length ? ' — <a href="#/admin/members">회원 관리</a>에서 승인할 수 있습니다' : ''}</div></div>
+           <div class="kv__row"><div class="kv__k">계정 연계 요청</div><div class="kv__v">${linkWaiting.length}건${
+             linkWaiting.length ? ' — <a href="#/admin/members">회원 관리</a>에서 승인할 수 있습니다' : ''}</div></div>
            <div class="kv__row"><div class="kv__k">이용 정지</div><div class="kv__v">${blocked.length}명${
              blocked.length ? ' — <a href="#/admin/members">회원 관리</a> 맨 아래에서 삭제할 수 있습니다' : ''}</div></div>
            <div class="kv__row"><div class="kv__k">관리자</div><div class="kv__v">${
@@ -1259,6 +1268,7 @@ export async function membersView(mount) {
           <select class="select" id="filter">
             <option value="all">전체</option>
             <option value="pending">승인 대기</option>
+            <option value="link">계정 연계 요청</option>
             <option value="active">이용중만</option>
             <option value="blocked">정지만</option>
             <option value="leader">그룹장만</option>
@@ -1315,21 +1325,26 @@ export async function membersView(mount) {
 
   const draw = () => {
     const q = qEl.value.trim().toLowerCase();
+    const byEmail = new Map(all.map((m) => [normEmail(m.email), m]));
     const statusOrder = (m) => {
       const st = m.status || 'active';
       if (st === 'pending') return 0;
-      if (st === 'blocked') return 2;
-      return 1;
+      if (m.linkRequestedEmail) return 1;
+      if (st === 'blocked') return 3;
+      return 2;
     };
     let rows = all.filter((m) => {
       const st = m.status || 'active';
       if (filterEl.value === 'pending' && st !== 'pending') return false;
+      if (filterEl.value === 'link' && !m.linkRequestedEmail) return false;
       if (filterEl.value === 'active' && st !== 'active') return false;
       if (filterEl.value === 'blocked' && st !== 'blocked') return false;
       if (filterEl.value === 'admin' && m.role !== 'admin') return false;
       if (filterEl.value === 'leader' && normRole(m.role) !== 'leader') return false;
       if (!q) return true;
-      return [m.institution, m.name, m.email].some((v) => String(v || '').toLowerCase().includes(q));
+      return [m.institution, m.name, m.email, m.linkRequestedEmail].some(
+        (v) => String(v || '').toLowerCase().includes(q),
+      );
     }).sort((a, b) => {
       if (statusOrder(a) !== statusOrder(b)) return statusOrder(a) - statusOrder(b);
       return (b.createdAt || '').localeCompare(a.createdAt || '');
@@ -1348,22 +1363,35 @@ export async function membersView(mount) {
     rowsEl.innerHTML = `
       <div class="tablewrap">
         <table class="table">
-          <thead><tr><th>기관명</th><th>성명</th><th>이메일</th><th>권한</th><th>상태</th>
+          <thead><tr><th>소속 (기관명)</th><th>성명</th><th>이메일</th><th>권한</th><th>상태</th>
                      <th>등록일</th><th>최근 로그인</th><th></th></tr></thead>
           <tbody>
             ${rows.map((m) => {
               const self = m.email === me.email;
               const st = m.status || 'active';
+              const legacyEmail = m.linkRequestedEmail || '';
+              const legacyMatch = legacyEmail ? byEmail.get(normEmail(legacyEmail)) : null;
               const statusBadge = st === 'pending'
                 ? '<span class="badge badge--gold">승인 대기</span>'
                 : st === 'blocked'
                   ? '<span class="badge badge--due">정지</span>'
                   : '<span class="badge badge--open">이용중</span>';
+              const linkInfo = legacyEmail ? `
+                <div style="margin-top:4px;font-size:1.25rem;color:var(--text-black-soft)">
+                  <span class="badge badge--gold">연계 요청</span>
+                  <code>${esc(legacyEmail)}</code>
+                  ${legacyMatch
+                    ? `<span style="color:var(--green-accent)">(기존: ${esc([legacyMatch.name, legacyMatch.institution].filter(Boolean).join(' · ') || '정보 없음')})</span>`
+                    : '<span style="color:var(--red)">(기존 명부에 없음)</span>'}
+                </div>` : '';
               return `
               <tr class="${st === 'blocked' ? 'is-blocked' : ''}">
                 <td>${esc(m.institution || '—')}</td>
                 <td>${esc(m.name || '—')}</td>
-                <td><a href="mailto:${attr(m.email)}">${esc(m.email)}</a></td>
+                <td>
+                  <a href="mailto:${attr(m.email)}">${esc(m.email)}</a>
+                  ${linkInfo}
+                </td>
                 <td>${self || st === 'pending'
                   ? `<span class="badge ${m.role === 'admin' ? 'badge--gold' : 'badge--soft'}">${esc(ROLE_LABEL[normRole(m.role)])}</span>`
                   : `<select class="select select--sm" data-rolepick="${attr(m.email)}"
@@ -1382,9 +1410,15 @@ export async function membersView(mount) {
                 <td style="white-space:nowrap">
                   ${self ? '<span style="color:var(--text-black-mute);font-size:1.3rem">본인</span>'
                     : st === 'pending' ? `
-                      <button class="btn btn--primary btn--sm" data-approve="${attr(m.email)}">승인</button>
+                      ${legacyEmail && legacyMatch ? `
+                        <button class="btn btn--primary btn--sm" data-link-approve="${attr(m.email)}" data-legacy="${attr(legacyEmail)}">승인 + 연계</button>
+                        <button class="btn btn--outline btn--sm" data-approve="${attr(m.email)}">신규 승인</button>` : `
+                        <button class="btn btn--primary btn--sm" data-approve="${attr(m.email)}">승인</button>`}
                       <button class="btn btn--danger btn--sm" data-remove="${attr(m.email)}">거절</button>`
                     : `
+                      ${legacyEmail ? `
+                        ${legacyMatch ? `<button class="btn btn--primary btn--sm" data-link-approve="${attr(m.email)}" data-legacy="${attr(legacyEmail)}">연계 승인</button>` : ''}
+                        <button class="btn btn--quiet btn--sm" data-link-reject="${attr(m.email)}">연계 거절</button>` : ''}
                       <button class="btn btn--quiet btn--sm" data-status="${attr(m.email)}"
                               data-next="${st === 'blocked' ? 'active' : 'blocked'}"
                               style="color:${st === 'blocked' ? 'var(--moss, var(--sb-green))' : 'var(--red)'}">
@@ -1398,6 +1432,40 @@ export async function membersView(mount) {
           </tbody>
         </table>
       </div>`;
+
+    rowsEl.querySelectorAll('[data-link-approve]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const email = btn.dataset.linkApprove;
+        const legacy = btn.dataset.legacy;
+        const ok = await confirmModal({
+          title: '기존 회원 정보를 연계할까요?',
+          body: `기존 계정(${legacy})의 제출물·소통방·투표·페스타·권한을\n`
+            + `Google 계정(${email})으로 모두 이관하고 기존 중복 계정은 정리합니다.`,
+          confirmLabel: '연계 승인',
+        });
+        if (!ok) return;
+        try {
+          const res = await store.auth.resolveMemberLink(email, { legacyEmail: legacy, action: 'approve' });
+          const mig = res?.migrated || {};
+          const moved = (mig.submissions || 0) + (mig.posts || 0) + (mig.festa || 0);
+          toastOk(moved
+            ? `연계를 완료했습니다 (제출물·게시글·페스타 ${moved}건 이관).`
+            : `${legacy} → ${email} 연계를 완료했습니다.`);
+          await load();
+        } catch (e) { toastErr(e.message); }
+      });
+    });
+
+    rowsEl.querySelectorAll('[data-link-reject]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const email = btn.dataset.linkReject;
+        try {
+          await store.auth.resolveMemberLink(email, { action: 'reject' });
+          toastOk('계정 연계 요청을 거절했습니다.');
+          await load();
+        } catch (e) { toastErr(e.message); }
+      });
+    });
 
     rowsEl.querySelectorAll('[data-approve]').forEach((btn) => {
       btn.addEventListener('click', async () => {

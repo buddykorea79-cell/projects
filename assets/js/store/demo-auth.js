@@ -39,6 +39,8 @@ function publicMember(m) {
     authProvider: 'google',
     googleLinked: true,
     needsProfile: !name || !institution,
+    linkRequestedEmail: m.linkRequestedEmail || null,
+    linkedFromEmails: Array.isArray(m.linkedFromEmails) ? m.linkedFromEmails : [],
     createdAt: m.createdAt,
     lastLoginAt: m.lastLoginAt || null,
   };
@@ -101,17 +103,46 @@ export class DemoAuth {
     return this._me;
   }
 
-  async completeProfile({ name, institution }) {
+  async completeProfile({ name, institution, legacyEmail = '' }) {
     const m = this.find(this._me?.email);
     if (!m) throw new Error('로그인이 필요합니다.');
     if (!String(name || '').trim() || !String(institution || '').trim()) {
-      throw new Error('성명과 기관명을 모두 입력하세요.');
+      throw new Error('성명과 소속(기관명)을 모두 입력하세요.');
     }
     m.name = String(name).trim().slice(0, 60);
     m.institution = String(institution).trim().slice(0, 80);
+    if (String(legacyEmail || '').trim()) m.linkRequestedEmail = normEmail(legacyEmail);
     write(MEMBERS_KEY, this.members().map((x) => (normEmail(x.email) === normEmail(m.email) ? m : x)));
     this.setMe(publicMember(m));
     return this._me;
+  }
+
+  async requestAccountLink(legacyEmail) {
+    const m = this.find(this._me?.email);
+    if (!m) throw new Error('로그인이 필요합니다.');
+    m.linkRequestedEmail = String(legacyEmail || '').trim() ? normEmail(legacyEmail) : null;
+    write(MEMBERS_KEY, this.members().map((x) => (normEmail(x.email) === normEmail(m.email) ? m : x)));
+    this.setMe(publicMember(m));
+    return this._me;
+  }
+
+  async resolveMemberLink(email, { legacyEmail = '', action = 'approve' } = {}) {
+    const list = this.members();
+    const target = list.find((x) => normEmail(x.email) === normEmail(email));
+    if (!target) throw new Error('대상 회원을 찾을 수 없습니다.');
+    if (action === 'reject') {
+      target.linkRequestedEmail = null;
+      write(MEMBERS_KEY, list);
+      return { ok: true, member: publicMember(target) };
+    }
+    const oldEmail = normEmail(legacyEmail || target.linkRequestedEmail || '');
+    const legacy = list.find((x) => normEmail(x.email) === oldEmail);
+    if (!legacy) throw new Error(`기존 회원(${oldEmail})을 찾을 수 없습니다.`);
+    target.status = 'active';
+    target.linkRequestedEmail = null;
+    target.linkedFromEmails = [...new Set([...(target.linkedFromEmails || []), oldEmail])];
+    write(MEMBERS_KEY, list.filter((x) => normEmail(x.email) !== oldEmail));
+    return { ok: true, member: publicMember(target) };
   }
 
   async logout() {

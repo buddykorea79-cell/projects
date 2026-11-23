@@ -1,12 +1,13 @@
-/** Google 로그인 · 최초 프로필 설정 · 내 계정. */
+/** Google 로그인 · 신규 가입(온보딩) · 최초 프로필 설정 · 내 계정 · 기존 계정 연계. */
 import { CONFIG } from '../config.js';
 import {
   currentUser, isSimulated, isGoogleEnabled, signupPolicy,
-  googleLoginUrl, demoLogin, completeProfile, logout,
+  googleLoginUrl, demoLogin, getOnboardInfo, submitOnboard,
+  completeProfile, requestAccountLink, logout,
 } from '../auth.js';
 import { esc, attr, fmtDate, isEmail } from '../utils.js';
 import {
-  toastOk, fieldError, clearErrors, focusFirstError, busy, confirmModal,
+  toastOk, toastErr, fieldError, clearErrors, focusFirstError, busy, confirmModal, spinner,
 } from '../ui.js';
 import { go, currentQuery } from '../router.js';
 
@@ -28,7 +29,7 @@ const ERROR_MESSAGES = {
   pending: {
     kind: 'info',
     title: '가입 승인 요청이 접수되었습니다',
-    body: '담당자(관리자)가 교육생 여부를 확인한 뒤 승인하면 바로 로그인할 수 있습니다.',
+    body: '담당자(관리자)가 소속·성명(및 기존 계정 연계 요청)을 확인한 뒤 승인하면 바로 로그인할 수 있습니다.',
   },
   not_invited: {
     kind: 'warn',
@@ -98,8 +99,8 @@ export function loginView(mount) {
   const policyHint = policy === 'allowlist'
     ? '사전 등록된 교육생 Google 계정으로만 로그인할 수 있습니다.'
     : policy === 'open'
-      ? 'Google 계정으로 로그인하면 최초 1회 기관명·성명 입력 후 바로 이용할 수 있습니다.'
-      : '사전 등록된 교육생은 즉시 로그인되며, 처음 접속하는 계정은 담당자 승인 후 이용할 수 있습니다.';
+      ? 'Google 계정으로 로그인하면 최초 1회 소속·성명 입력 후 바로 이용할 수 있습니다.'
+      : '사전 등록된 교육생은 즉시 로그인되며, 처음 접속하는 경우 소속·성명을 입력해 담당자 승인 후 이용할 수 있습니다.';
 
   mount.innerHTML = `
     <section class="section">
@@ -122,14 +123,14 @@ export function loginView(mount) {
         ${simulated ? `
           <form class="card" id="demoLoginForm" novalidate>
             <p class="field__hint" style="margin-bottom:var(--space-3)">
-              로컬 시연 모드입니다. 테스트할 Google 이메일과 성명·기관명을 입력하세요.
+              로컬 시연 모드입니다. 테스트할 Google 이메일과 소속·성명을 입력하세요.
             </p>
             <label class="field">
               <span class="field__label">이메일<span class="field__req">*</span></span>
               <input class="input" name="email" type="email" inputmode="email" placeholder="you@gmail.com" />
             </label>
             <label class="field">
-              <span class="field__label">기관명</span>
+              <span class="field__label">소속 (기관명)</span>
               <input class="input" name="institution" placeholder="예) 행정안전부" />
             </label>
             <label class="field">
@@ -203,6 +204,140 @@ export function loginView(mount) {
   }
 }
 
+/* ------------------------------------------- 신규 Google 가입 신청 (온보딩) -- */
+
+/**
+ * 사전 미등록 Google 계정이 처음 로그인했을 때 열리는 소속·성명·기존계정 연계 신청 화면.
+ * 서버의 서명된 ah_onboard 쿠키가 있어야 열리고, 제출하면 pending(승인 대기) 상태로 저장됩니다.
+ */
+export async function onboardView(mount) {
+  if (currentUser()) { go('/', { replace: true }); return; }
+
+  mount.innerHTML = `<section class="section"><div class="wrap wrap--narrow">${spinner()}</div></section>`;
+
+  let info;
+  try {
+    info = await getOnboardInfo();
+  } catch {
+    go('/login?error=invalid_state', { replace: true });
+    return;
+  }
+
+  mount.innerHTML = `
+    <section class="section">
+      <div class="wrap wrap--narrow" style="max-width:520px">
+        <div style="text-align:center;margin-bottom:var(--space-5)">
+          <h1 class="page-title">교육생 가입 신청</h1>
+          <p class="page-sub">소속과 성명을 입력해 주시면 담당자 확인 후 바로 이용하실 수 있습니다.</p>
+        </div>
+
+        <form class="card" id="onboardForm" novalidate>
+          <div class="kv" style="margin-bottom:var(--space-4)">
+            <div class="kv__row">
+              <div class="kv__k">Google 계정</div>
+              <div class="kv__v"><strong>${esc(info.email)}</strong></div>
+            </div>
+          </div>
+
+          <label class="field">
+            <span class="field__label">소속 (기관명)<span class="field__req">*</span></span>
+            <input class="input" name="institution" autocomplete="organization"
+                   placeholder="예) 행정안전부, 한국서부발전" />
+          </label>
+          <label class="field">
+            <span class="field__label">성명<span class="field__req">*</span></span>
+            <input class="input" name="name" autocomplete="name"
+                   placeholder="예) 홍길동" value="${attr(info.name || '')}" />
+            <span class="field__hint">Google 프로필 이름이 영문·별명이라면 실명으로 고쳐 주세요.</span>
+          </label>
+
+          <hr style="border:0;border-top:1px solid var(--line, #e2e0db);margin:var(--space-4) 0" />
+
+          <label class="field">
+            <span class="field__label">기존 가입 이메일 <span style="font-weight:400;color:var(--text-black-mute)">(선택 — 기존 회원 정보 연계)</span></span>
+            <input class="input" name="legacyEmail" type="email" inputmode="email"
+                   placeholder="예) hong@korea.kr 또는 hong@naver.com" />
+            <span class="field__hint">
+              예전에 <strong>다른 이메일</strong>로 가입해 과제를 제출하신 적이 있다면 입력해 주세요.
+              관리자 승인 시 기존 제출물·페스타 기록·권한을 현재 Google 계정으로 연계해 드립니다.
+              처음 가입하시는 분은 비워 두시면 됩니다.
+            </span>
+          </label>
+
+          <label class="check">
+            <input type="checkbox" name="agree" />
+            <span>소속·성명·이메일이 교육 과정 확인과 본인 인증에 쓰이는 데 동의합니다.<span class="field__req">*</span></span>
+          </label>
+
+          <button class="btn btn--primary btn--block btn--lg" type="submit" style="margin-top:var(--space-3)">
+            가입 승인 요청하기
+          </button>
+        </form>
+
+        <div id="onboardDone" hidden>
+          <div class="card" style="text-align:center">
+            <h2 class="page-title" style="font-size:2rem">가입 승인 요청이 접수되었습니다</h2>
+            <p style="color:var(--text-black-soft);margin-top:var(--space-3);font-size:1.5rem;line-height:1.7">
+              담당자(관리자)가 입력하신 소속·성명을 확인한 뒤 승인하면<br>
+              <strong>Google 계정으로 로그인</strong>을 눌러 바로 이용하실 수 있습니다.
+            </p>
+            <div class="row" style="justify-content:center;margin-top:var(--space-4)">
+              <a class="btn btn--primary" href="#/login">로그인 화면으로</a>
+              <a class="btn btn--outline" href="#/">홈으로</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>`;
+
+  const form = mount.querySelector('#onboardForm');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearErrors(form);
+
+    let ok = true;
+    if (!form.institution.value.trim()) { fieldError(form.institution, '소속(기관명)을 입력하세요.'); ok = false; }
+    if (!form.name.value.trim()) { fieldError(form.name, '성명을 입력하세요.'); ok = false; }
+    const legacy = form.legacyEmail.value.trim();
+    if (legacy) {
+      if (!isEmail(legacy)) { fieldError(form.legacyEmail, '올바른 이메일 주소를 입력하세요.'); ok = false; }
+      else if (legacy.toLowerCase() === info.email.toLowerCase()) {
+        fieldError(form.legacyEmail, '현재 Google 이메일과 다른 기존 이메일을 입력하세요.'); ok = false;
+      }
+    }
+    if (!form.agree.checked) { fieldError(form.agree.closest('.check'), '동의가 필요합니다.'); ok = false; }
+    if (!ok) { focusFirstError(form); return; }
+
+    const btn = form.querySelector('button[type="submit"]');
+    busy(btn, true, '요청 전송 중…');
+    try {
+      const res = await submitOnboard({
+        institution: form.institution.value,
+        name: form.name.value,
+        legacyEmail: legacy,
+      });
+      if (res?.status === 'active') {
+        toastOk('이미 승인된 계정입니다. 다시 로그인해 주세요.');
+        go('/login', { replace: true });
+        return;
+      }
+      toastOk('가입 승인 요청이 접수되었습니다.');
+      form.hidden = true;
+      mount.querySelector('#onboardDone').hidden = false;
+    } catch (err) {
+      busy(btn, false);
+      const fields = err.errors || {};
+      let shown = false;
+      for (const [key, message] of Object.entries(fields)) {
+        if (form[key]) { fieldError(form[key], message); shown = true; }
+      }
+      if (!shown) toastErr(err.message);
+      focusFirstError(form);
+    }
+  });
+  form.institution.focus();
+}
+
 /** 예전 북마크(#/signup, #/forgot, #/reset)는 Google 로그인 화면으로 안내합니다. */
 export function signupView() {
   const next = currentQuery().get('next');
@@ -225,6 +360,7 @@ export function accountView(mount) {
 
   const setup = me.needsProfile || currentQuery().get('setup') === '1';
   const next = nextPath();
+  const linkedList = Array.isArray(me.linkedFromEmails) ? me.linkedFromEmails : [];
 
   mount.innerHTML = `
     <section class="section">
@@ -240,24 +376,34 @@ export function accountView(mount) {
         ${me.needsProfile ? `
           <div class="notice notice--info">
             <span><strong>Google 로그인이 완료되었습니다.</strong> 과제 제출과 출결 확인에 쓰일
-            <strong>기관명</strong>과 <strong>성명</strong>을 한 번만 입력해 주세요.</span>
+            <strong>소속(기관명)</strong>과 <strong>성명</strong>을 입력해 주세요.</span>
           </div>
 
           <form class="card" id="profileForm" novalidate>
             <h2 class="page-title" style="font-size:1.8rem;margin-bottom:var(--space-3)">기본 정보 등록</h2>
             <label class="field">
-              <span class="field__label">기관명<span class="field__req">*</span></span>
+              <span class="field__label">소속 (기관명)<span class="field__req">*</span></span>
               <input class="input" name="institution" autocomplete="organization"
-                     placeholder="예) 행정안전부" value="${attr(me.institution || '')}" />
+                     placeholder="예) 행정안전부, 한국서부발전" value="${attr(me.institution || '')}" />
             </label>
             <label class="field">
               <span class="field__label">성명<span class="field__req">*</span></span>
               <input class="input" name="name" autocomplete="name"
                      placeholder="예) 홍길동" value="${attr(me.name || '')}" />
+              <span class="field__hint">Google 프로필 이름이 영문·별명이라면 실명으로 고쳐 주세요.</span>
+            </label>
+            <label class="field">
+              <span class="field__label">기존 가입 이메일 <span style="font-weight:400;color:var(--text-black-mute)">(선택 — 기존 회원 정보 연계)</span></span>
+              <input class="input" name="legacyEmail" type="email" inputmode="email"
+                     placeholder="예) hong@korea.kr 또는 hong@naver.com"
+                     value="${attr(me.linkRequestedEmail || '')}" />
+              <span class="field__hint">
+                예전에 다른 이메일로 가입한 기록이 있다면 입력해 주세요. 관리자 승인 후 기존 제출물·권한이 현재 계정으로 연계됩니다.
+              </span>
             </label>
             <label class="check">
               <input type="checkbox" name="agree" />
-              <span>기관명·성명·이메일이 과제 확인과 본인 인증에 쓰이는 데 동의합니다.<span class="field__req">*</span></span>
+              <span>소속·성명·이메일이 과제 확인과 본인 인증에 쓰이는 데 동의합니다.<span class="field__req">*</span></span>
             </label>
             <div class="row row--end" style="margin-top:var(--space-3)">
               <button class="btn btn--primary btn--lg" type="submit">저장하고 시작하기</button>
@@ -268,20 +414,49 @@ export function accountView(mount) {
           <div class="kv">
             <div class="kv__row"><div class="kv__k">로그인 방식</div><div class="kv__v"><span class="badge badge--open">Google 계정 연동</span></div></div>
             <div class="kv__row"><div class="kv__k">이메일</div><div class="kv__v">${esc(me.email)}</div></div>
-            <div class="kv__row"><div class="kv__k">기관명</div><div class="kv__v">${esc(me.institution || '—')}</div></div>
+            <div class="kv__row"><div class="kv__k">소속 (기관명)</div><div class="kv__v">${esc(me.institution || '—')}</div></div>
             <div class="kv__row"><div class="kv__k">성명</div><div class="kv__v">${esc(me.name || '—')}</div></div>
             <div class="kv__row"><div class="kv__k">권한</div><div class="kv__v">${
               me.role === 'admin' ? '<span class="badge badge--gold">관리자</span>' : '일반 회원'
             }</div></div>
+            ${linkedList.length ? `
+              <div class="kv__row">
+                <div class="kv__k">연계된 기존 계정</div>
+                <div class="kv__v">${linkedList.map((e) => `<span class="badge badge--soft">${esc(e)}</span>`).join(' ')}</div>
+              </div>` : ''}
             <div class="kv__row"><div class="kv__k">가입일</div><div class="kv__v">${esc(fmtDate(me.createdAt))}</div></div>
           </div>
           ${me.needsProfile ? '' : `
             <p class="field__hint" style="margin-top:var(--space-3)">
-              기관명·성명을 바꾸려면 담당자에게 문의하세요. 비밀번호는 Google 계정에서 관리됩니다.
+              소속·성명을 바꾸려면 담당자에게 문의하세요. 비밀번호는 Google 계정에서 관리됩니다.
             </p>`}
         </div>
 
         ${me.needsProfile ? '' : `
+          <div class="card" id="linkCard">
+            <h2 class="page-title" style="font-size:1.8rem;margin-bottom:var(--space-2)">기존 회원 정보 연계</h2>
+            ${me.linkRequestedEmail ? `
+              <div class="notice notice--info" style="margin-bottom:var(--space-3)">
+                <span><strong>연계 승인 대기중</strong> — 기존 이메일 <code>${esc(me.linkRequestedEmail)}</code> 의
+                제출물·기록을 현재 Google 계정으로 이관해 달라고 신청했습니다. 관리자가 승인하면 자동으로 반영됩니다.</span>
+              </div>
+              <button class="btn btn--quiet btn--sm" type="button" id="cancelLinkReq">연계 요청 취소</button>` : `
+              <p class="field__hint" style="margin-bottom:var(--space-3)">
+                Google 로그인 전환 전에 <strong>다른 이메일 주소</strong>로 가입해 과제를 제출하셨다면,
+                기존 이메일을 입력해 연계 신청을 남겨주세요. 관리자가 확인 후 승인하면 기존 제출물·페스타·권한이 현재 계정으로 합쳐집니다.
+              </p>
+              <form id="linkForm" novalidate>
+                <label class="field">
+                  <span class="field__label">기존 가입 이메일</span>
+                  <input class="input" name="legacyEmail" type="email" inputmode="email"
+                         placeholder="예) hong@korea.kr 또는 hong@naver.com" />
+                </label>
+                <div class="row row--end">
+                  <button class="btn btn--outline" type="submit">기존 계정 연계 신청</button>
+                </div>
+              </form>`}
+          </div>
+
           <div class="row">
             <a class="btn btn--outline" href="#/my">내 제출물 보기</a>
             <a class="btn btn--quiet" href="#/">프로젝트 목록</a>
@@ -305,10 +480,17 @@ export function accountView(mount) {
 
       let ok = true;
       if (!profileForm.institution.value.trim()) {
-        fieldError(profileForm.institution, '기관명을 입력하세요.'); ok = false;
+        fieldError(profileForm.institution, '소속(기관명)을 입력하세요.'); ok = false;
       }
       if (!profileForm.name.value.trim()) {
         fieldError(profileForm.name, '성명을 입력하세요.'); ok = false;
+      }
+      const legacy = profileForm.legacyEmail.value.trim();
+      if (legacy) {
+        if (!isEmail(legacy)) { fieldError(profileForm.legacyEmail, '올바른 이메일 주소를 입력하세요.'); ok = false; }
+        else if (legacy.toLowerCase() === me.email.toLowerCase()) {
+          fieldError(profileForm.legacyEmail, '현재 Google 이메일과 다른 기존 이메일을 입력하세요.'); ok = false;
+        }
       }
       if (!profileForm.agree.checked) {
         fieldError(profileForm.agree.closest('.check'), '동의가 필요합니다.'); ok = false;
@@ -321,8 +503,11 @@ export function accountView(mount) {
         const updated = await completeProfile({
           institution: profileForm.institution.value,
           name: profileForm.name.value,
+          legacyEmail: legacy,
         });
-        toastOk(`${updated.name}님, 등록이 완료되었습니다.`);
+        toastOk(legacy
+          ? `${updated.name}님, 등록이 완료되었습니다. 기존 계정 연계는 관리자 승인 후 반영됩니다.`
+          : `${updated.name}님, 등록이 완료되었습니다.`);
         go(setup ? next : '/account', { replace: true });
       } catch (err) {
         busy(btn, false);
@@ -336,5 +521,46 @@ export function accountView(mount) {
       }
     });
     profileForm.institution.focus();
+  }
+
+  const linkForm = mount.querySelector('#linkForm');
+  if (linkForm) {
+    linkForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearErrors(linkForm);
+      const legacy = linkForm.legacyEmail.value.trim();
+      if (!isEmail(legacy)) {
+        fieldError(linkForm.legacyEmail, '올바른 기존 이메일 주소를 입력하세요.');
+        focusFirstError(linkForm);
+        return;
+      }
+      if (legacy.toLowerCase() === me.email.toLowerCase()) {
+        fieldError(linkForm.legacyEmail, '현재 Google 이메일과 다른 기존 이메일을 입력하세요.');
+        focusFirstError(linkForm);
+        return;
+      }
+      const btn = linkForm.querySelector('button[type="submit"]');
+      busy(btn, true, '신청 중…');
+      try {
+        await requestAccountLink(legacy);
+        toastOk('기존 계정 연계 신청이 접수되었습니다. 관리자 승인 후 반영됩니다.');
+        accountView(mount);
+      } catch (err) {
+        busy(btn, false);
+        fieldError(linkForm.legacyEmail, err.message);
+        focusFirstError(linkForm);
+      }
+    });
+  }
+
+  const cancelLinkBtn = mount.querySelector('#cancelLinkReq');
+  if (cancelLinkBtn) {
+    cancelLinkBtn.addEventListener('click', async () => {
+      try {
+        await requestAccountLink('');
+        toastOk('연계 요청을 취소했습니다.');
+        accountView(mount);
+      } catch (err) { toastErr(err.message); }
+    });
   }
 }

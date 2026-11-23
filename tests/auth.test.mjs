@@ -175,29 +175,146 @@ await t('이미 등록된 이메일에 다른 Google sub 로 로그인 시도하
 console.log('\n== 가입 통제 (승인제 · 사전 등록 · 허용 도메인 · allowlist) ==');
 
 const pendingUser = client();
-await t('approval 정책(기본): 사전 미등록 Google 계정은 pending 으로 대기하고 세션 미발급', async () => {
+await t('approval 정책(기본): 사전 미등록 Google 계정은 #/onboard 로 이동해 소속·성명 입력 후 pending 대기', async () => {
   const res = await mockGoogleLogin(pendingUser, {
-    email: 'newbie@gmail.com', name: '신규교육생', completeProfile: false,
+    email: 'newbie@gmail.com', name: 'Newbie', completeProfile: false,
   });
-  if (!res.callbackLocation.includes('error=pending')) {
-    throw new Error(`pending 이 아님: ${res.callbackLocation}`);
+  if (!res.callbackLocation.includes('#/onboard')) {
+    throw new Error(`onboard 가 아님: ${res.callbackLocation}`);
   }
   if (pendingUser.hasSession()) throw new Error('미승인 사용자에게 세션이 발급됨');
-  const me = await pendingUser('/auth/me');
-  eq(me.status, 401, '비로그인 상태');
+  eq((await pendingUser('/auth/me')).status, 401, '온보딩 단계에서는 비로그인');
+
+  const obInfo = await pendingUser('/auth/onboard');
+  eq(obInfo.status, 200, '온보딩 정보 조회');
+  eq(obInfo.data.email, 'newbie@gmail.com', '온보딩 이메일');
+
+  // 소속·성명 누락은 거부
+  eq((await pendingUser('/auth/onboard', { method: 'POST', body: { name: '', institution: '' } })).status, 400, '필수값 검증');
+
+  const sub = await pendingUser('/auth/onboard', {
+    method: 'POST', body: { name: '신규교육생', institution: '한국서부발전' },
+  });
+  eq(sub.status, 200, '온보딩 제출 200');
+  eq(sub.data.status, 'pending', 'pending 상태');
+  if (pendingUser.hasSession()) throw new Error('제출 후에도 세션이 발급되면 안 됨');
+
+  // 제출 완료된 pending 사용자가 다시 로그인 시도하면 바로 error=pending 으로 이동
+  const again = await mockGoogleLogin(pendingUser, {
+    email: 'newbie@gmail.com', name: 'Newbie', completeProfile: false,
+  });
+  if (!again.callbackLocation.includes('error=pending')) {
+    throw new Error(`재시도 시 pending 이어야 함: ${again.callbackLocation}`);
+  }
 });
 
-await t('관리자가 pending 회원을 승인하면 Google 로그인 성공 + 프로필 입력 가능', async () => {
+await t('관리자가 pending 회원을 승인하면 입력해 둔 소속·성명 그대로 바로 홈 진입', async () => {
   const patch = await admin('/auth/members', {
     method: 'PATCH', body: { email: 'newbie@gmail.com', status: 'active' },
   });
   eq(patch.status, 200, '승인 200');
   const res = await mockGoogleLogin(pendingUser, {
-    email: 'newbie@gmail.com', name: '신규교육생', institution: '한국서부발전',
+    email: 'newbie@gmail.com', name: 'Newbie', completeProfile: false,
   });
-  eq(res.profile.status, 200, '프로필 저장');
-  eq(res.profile.data.me.institution, '한국서부발전', '기관명');
+  eq(res.callbackLocation, `${ORIGIN}/#/`, '이미 소속·성명이 있어 바로 홈 이동');
+  const me = await pendingUser('/auth/me');
+  eq(me.data.me.name, '신규교육생', '입력한 성명 유지');
+  eq(me.data.me.institution, '한국서부발전', '입력한 소속 유지');
   if (!pendingUser.hasSession()) throw new Error('승인 후 세션 발급 실패');
+});
+
+await t('기존 비-구글 회원 연계(방식 A): 온보딩 연계 신청 → 관리자 승인 시 제출물·게시글·페스타·권한 일괄 이관', async () => {
+  // 기존 비-구글 회원(hong@korea.kr)과 제출물·첨부·소통방·페스타 기록을 시드합니다.
+  const rawMembers = JSON.parse(await (await bucket.get('data/members.json')).text());
+  rawMembers.push({
+    email: 'hong@korea.kr',
+    name: '홍길동',
+    institution: '행정안전부',
+    passwordHash: 'legacy-hash',
+    role: 'leader',
+    team: 3,
+    status: 'active',
+    createdAt: '2026-08-01T00:00:00Z',
+    updatedAt: '2026-08-01T00:00:00Z',
+  });
+  await bucket.put('data/members.json', JSON.stringify(rawMembers));
+
+  // 기존 회원의 업로드 폴더 키 생성 (memberKey 규칙: sha256 앞 8바이트)
+  const digestBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('hong@korea.kr'));
+  const legacyPrefix = `m_${Array.from(new Uint8Array(digestBuf).slice(0, 8), (b) => b.toString(16).padStart(2, '0')).join('')}`;
+  const legacyFileKey = `uploads/${legacyPrefix}/f_old_report.pdf`;
+  await bucket.put(legacyFileKey, new Uint8Array([1, 2, 3]));
+  await bucket.put('data/projects.json', JSON.stringify([
+    { id: 'p_legacy', title: '기존 과제', description: '설명', status: 'open', visibility: 'private' },
+  ]));
+  await bucket.put('data/submissions.json', JSON.stringify([{
+    id: 's_legacy_1',
+    projectId: 'p_legacy',
+    author: { email: 'hong@korea.kr', name: '홍길동', institution: '행정안전부' },
+    title: '기존 제출물',
+    body: '내용',
+    files: [{ id: 'f_old', key: legacyFileKey, name: 'report.pdf' }],
+    status: 'submitted',
+    createdAt: '2026-08-02T00:00:00Z',
+    updatedAt: '2026-08-02T00:00:00Z',
+  }]));
+  await bucket.put('data/posts.json', JSON.stringify([{
+    id: 'b_legacy_1',
+    author: { email: 'hong@korea.kr', name: '홍길동', institution: '행정안전부' },
+    title: '기존 글',
+    body: '본문',
+    comments: [{ id: 'c_1', author: { email: 'hong@korea.kr', name: '홍길동', institution: '행정안전부' }, body: '댓글' }],
+  }]));
+  await bucket.put('data/festa.json', JSON.stringify({
+    version: 1, phase: 'open', deadline: '2027-12-07',
+    entries: [{
+      id: 'fe_legacy_1', title: '기존 출품작', description: '설명', institution: '행정안전부',
+      author: { email: 'hong@korea.kr', name: '홍길동', institution: '행정안전부', memberCreatedAt: '2026-08-01T00:00:00Z' },
+      files: [],
+    }],
+    scores: [], uploads: [],
+  }));
+
+  // 1) 교육생이 새 Google 계정(hong.new@gmail.com)으로 로그인 → 온보딩에서 소속·성명 + 기존 이메일 신청
+  const hong = client();
+  const res = await mockGoogleLogin(hong, { email: 'hong.new@gmail.com', name: 'Gildong', completeProfile: false });
+  if (!res.callbackLocation.includes('#/onboard')) throw new Error(res.callbackLocation);
+  const ob = await hong('/auth/onboard', {
+    method: 'POST',
+    body: { name: '홍길동', institution: '행정안전부', legacyEmail: 'hong@korea.kr' },
+  });
+  eq(ob.status, 200, '연계 포함 온보딩 신청');
+  eq(ob.data.status, 'pending', '승인 전에는 pending');
+
+  // 2) 관리자가 승인 + 연계 실행
+  const merged = await admin('/auth/members/link', {
+    method: 'POST',
+    body: { email: 'hong.new@gmail.com', action: 'approve' },
+  });
+  eq(merged.status, 200, `연계 승인: ${JSON.stringify(merged.data)}`);
+  eq(merged.data.member.role, 'leader', '기존 그룹장 권한 승계');
+  eq(merged.data.member.team, 3, '기존 3조 승계');
+  eq(merged.data.migrated.submissions, 1, '제출물 1건 이관');
+  eq(merged.data.migrated.posts, 2, '글+댓글 2건 이관');
+  eq(merged.data.migrated.festa, 1, '페스타 1건 이관');
+
+  // 3) 새 Google 계정으로 로그인하면 기존 제출물 조회·수정(기존 첨부 유지) 및 페스타 소유권까지 유지됨
+  await mockGoogleLogin(hong, { email: 'hong.new@gmail.com', completeProfile: false });
+  const subs = await hong('/submissions');
+  eq(subs.status, 200, '내 제출물 조회');
+  if (!subs.data.data.some((s) => s.id === 's_legacy_1')) throw new Error('기존 제출물 누락');
+
+  const patchSub = await hong('/submissions/s_legacy_1', {
+    method: 'PATCH',
+    body: { title: '수정된 제출물', files: [{ id: 'f_old', key: legacyFileKey, name: 'report.pdf' }] },
+  });
+  eq(patchSub.status, 200, `기존 첨부 포함 제출물 수정: ${JSON.stringify(patchSub.data)}`);
+
+  const festa = await hong('/festa');
+  eq(festa.status, 200, '페스타 조회');
+  if (!festa.data.mine || festa.data.mine.id !== 'fe_legacy_1') {
+    throw new Error(`페스타 소유권 승계 실패: ${JSON.stringify(festa.data.mine)}`);
+  }
 });
 
 const alice = client();
@@ -327,6 +444,7 @@ await t('제출물 생성·수정·삭제 권한 격리', async () => {
 await t('승인 대기(pending) 회원은 이용 정지 없이 바로 거절(삭제) 가능', async () => {
   const sp = client();
   await mockGoogleLogin(sp, { email: 'spammer@gmail.com', name: '스팸', completeProfile: false });
+  await sp('/auth/onboard', { method: 'POST', body: { name: '스팸', institution: '외부' } });
   const del = await admin('/auth/members', { method: 'DELETE', body: { email: 'spammer@gmail.com' } });
   eq(del.status, 200, 'pending 즉시 삭제');
 });
