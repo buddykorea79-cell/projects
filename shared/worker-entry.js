@@ -2,25 +2,48 @@
  * Workers(정적 자산) 배포용 진입점.
  *
  * Cloudflare 는 이제 신규 프로젝트에 Pages 대신 **Workers + static assets** 를
- * 권장합니다. 그 방식으로 배포한다면 `functions/` 폴더는 쓰이지 않으므로
- * 이 파일이 대신 /api 를 처리하고 나머지는 정적 자산으로 넘깁니다.
- *
- * Pages 로 배포한다면 이 파일은 필요 없습니다
- * (`functions/api/[[path]].js` 가 같은 일을 합니다).
- *
- * wrangler.jsonc 예시:
- *
- *   {
- *     "name": "ai-leaders-academy",
- *     "main": "shared/worker-entry.js",
- *     "compatibility_date": "2026-08-01",
- *     "assets": { "directory": "./", "binding": "ASSETS" },
- *     "r2_buckets": [
- *       { "binding": "BUCKET", "bucket_name": "assignment-hub" }
- *     ]
- *   }
+ * 권장합니다. 이 파일이 /api 를 처리하고 나머지는 보안 헤더를 붙여 정적 자산으로
+ * 넘깁니다.
  */
 import { handleApi } from './r2api.js';
+
+function withSecurityHeaders(response, url) {
+  const headers = new Headers(response.headers);
+  headers.set('X-Content-Type-Options', 'nosniff');
+  headers.set('X-Frame-Options', 'DENY');
+  headers.set('Referrer-Policy', 'no-referrer');
+  headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (url.protocol === 'https:') {
+    headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+
+  const ct = headers.get('Content-Type') || '';
+  if (ct.includes('text/html')) {
+    const isReceipt = url.pathname === '/receipt' || url.pathname.startsWith('/receipt/');
+    const scriptSrc = isReceipt
+      ? "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com"
+      : "script-src 'self'";
+    headers.set('Content-Security-Policy', [
+      "default-src 'self'",
+      scriptSrc,
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src 'self' https://fonts.gstatic.com data:",
+      "img-src 'self' data: blob: https:",
+      "media-src 'self' blob:",
+      "connect-src 'self'",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "frame-ancestors 'none'",
+      "form-action 'self'",
+    ].join('; '));
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -39,6 +62,7 @@ export default {
         { status: 500, headers: { 'Content-Type': 'text/plain; charset=utf-8' } },
       );
     }
-    return env.ASSETS.fetch(request);
+    const res = await env.ASSETS.fetch(request);
+    return withSecurityHeaders(res, url);
   },
 };

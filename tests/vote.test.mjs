@@ -2,7 +2,7 @@
  * 상호 투표 · 회원 삭제 테스트.
  * 메모리 R2 스텁 위에서 실제 shared/r2api.js 를 돌립니다 (브라우저·네트워크 없음).
  */
-import { MockBucket } from './mock-r2.mjs';
+import { MockBucket, TEST_GOOGLE_ENV, mockGoogleLogin, applySetCookies } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
 
 const ORIGIN = 'https://site.test';
@@ -18,37 +18,33 @@ const eq = (a, b, m) => {
 };
 
 const bucket = new MockBucket();
-const env = { BUCKET: bucket, PBKDF2_ITERATIONS: 1000 };
+const env = { BUCKET: bucket, ...TEST_GOOGLE_ENV, SIGNUP_POLICY: 'open' };
 
 function client() {
-  let cookie = '';
+  const jar = new Map();
   return async (path, { method = 'GET', body, headers = {} } = {}) => {
     const init = { method, headers: { Origin: ORIGIN, ...headers } };
-    if (cookie) init.headers.Cookie = cookie;
+    if (jar.size) init.headers.Cookie = [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
     if (body !== undefined) {
       init.headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(body);
     }
     const res = await handleApi(new Request(`${ORIGIN}/api${path}`, init), env, { basePath: '/api' });
-    const set = res.headers.get('Set-Cookie');
-    if (set) {
-      const pair = set.split(';')[0];
-      cookie = pair.endsWith('=') ? '' : pair;
-    }
+    applySetCookies(jar, res.headers);
     let data = null;
     if ((res.headers.get('Content-Type') || '').includes('json')) {
       data = await res.json().catch(() => null);
     }
-    return { status: res.status, data };
+    return { status: res.status, data, res };
   };
 }
 
-const signup = (c, email, extra = {}) => c('/auth/signup', {
-  method: 'POST',
-  body: {
-    email, password: 'hunter2!hunter2', name: email.split('@')[0], institution: '한국디자인진흥원', ...extra,
-  },
-});
+const signup = async (c, email, extra = {}) => {
+  const r = await mockGoogleLogin(c, {
+    email, name: extra.name || email.split('@')[0], institution: extra.institution || '한국디자인진흥원',
+  });
+  return { status: r.profile?.status || (r.callback?.status === 302 ? 200 : 400), data: r.profile?.data || null };
+};
 
 /** 프로젝트 색인을 통째로 갈아끼웁니다 (관리자 경로). */
 async function putProjects(admin, list) {

@@ -4,13 +4,13 @@ import { chromium } from 'playwright';
 import { chromeOptions } from './chrome.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { startServer } from './mock-r2.mjs';
+import { startServer, browserGoogleLogin } from './mock-r2.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const failures = [];
 const errors = [];
-const { server, origin } = await startServer({
-  root, env: { PBKDF2_ITERATIONS: 1000, FESTA_EMAIL: 'festa@example.com' },
+const { server, origin, setNextGoogleUser } = await startServer({
+  root, env: { FESTA_EMAIL: 'festa@example.com' },
 });
 const browser = await chromium.launch(chromeOptions());
 console.log(`\nFesta 브라우저 서버: ${origin}`);
@@ -31,14 +31,9 @@ async function person(label) {
   return page;
 }
 async function signup(page, email, name) {
-  await page.goto(`${origin}/#/signup`);
-  await page.locator('#signupForm').waitFor();
-  for (const [key, value] of Object.entries({
-    institution: '행정안전부', name, email, password: 'Festa-test-2026!', confirm: 'Festa-test-2026!',
-  })) await page.locator(`#signupForm [name="${key}"]`).fill(value);
-  await page.locator('#signupForm [name="agree"]').check();
-  await page.locator('#signupForm button[type="submit"]').click();
-  await page.waitForURL((url) => url.hash === '#/' || url.hash === '');
+  await browserGoogleLogin(page, {
+    origin, setNextGoogleUser, email, name, institution: '행정안전부',
+  });
 }
 async function festa(page) {
   const url = `${origin}/#/festa`;

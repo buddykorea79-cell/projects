@@ -1,6 +1,6 @@
 /** 개별 위원 초대, 독립 심사 단계, PIN·파일·점수 권한과 CAS 경쟁을 검증합니다. */
 import assert from 'node:assert/strict';
-import { MockBucket } from './mock-r2.mjs';
+import { MockBucket, TEST_GOOGLE_ENV, mockGoogleLogin, applySetCookies } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
 
 const ORIGIN = 'https://site.test';
@@ -27,15 +27,16 @@ function client(env, source) {
     const response = await handleApi(new Request(`${ORIGIN}/api${path}`, {
       method, headers, body: body === undefined ? undefined : JSON.stringify(body),
     }), env, { basePath: '/api' });
-    const set = response.headers.get('Set-Cookie');
-    if (set) {
-      const pair = set.split(';')[0];
-      const split = pair.indexOf('=');
-      cookies.set(pair.slice(0, split), pair.slice(split + 1));
-    }
+    applySetCookies(cookies, response.headers);
     return { status: response.status, headers: response.headers,
       data: response.headers.get('Content-Type')?.includes('json') ? await response.json() : null, response };
   };
+}
+async function googleSignIn(call, { email, name = '검증 회원', institution = MOIS }) {
+  const r = await mockGoogleLogin((p, opts = {}) => call(p, opts.body, opts.method || (opts.body ? 'POST' : 'GET')), {
+    email, name, institution,
+  });
+  return r.profile || { status: r.callback?.status === 302 ? 200 : 400, data: null };
 }
 const ok = (response, expected = 200) => { assert.equal(response.status, expected, JSON.stringify(response.data)); return response.data; };
 const entry = (index, institution = index < 3 ? MOIS : IWEST) => ({
@@ -46,12 +47,15 @@ const entry = (index, institution = index < 3 ? MOIS : IWEST) => ({
 });
 async function fixture(options = {}) {
   const bucket = new MockBucket();
-  const env = { BUCKET: bucket, ADMIN_EMAILS: ADMIN, TOKEN_SECRET: 'isolated-jury-test-key', PBKDF2_ITERATIONS: 1000 };
+  const env = {
+    BUCKET: bucket, ADMIN_EMAILS: ADMIN, TOKEN_SECRET: 'isolated-jury-test-key',
+    PBKDF2_ITERATIONS: 1000, ...TEST_GOOGLE_ENV, SIGNUP_POLICY: 'open',
+  };
   const admin = client(env);
   const member = client(env);
   const anonymous = client(env);
   for (const [call, email] of [[admin, ADMIN], [member, 'author-0@example.com']]) {
-    ok(await call('/auth/signup', { email, name: '검증 회원', institution: MOIS, password: 'Jury-test-2026!' }));
+    ok(await googleSignIn(call, { email, name: '검증 회원', institution: MOIS }));
   }
   const entries = options.entries || Array.from({ length: 6 }, (_, i) => entry(i));
   const file = { key: 'festa/uploads/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.txt', name: '심사 자료.txt', size: 8 };
@@ -85,7 +89,7 @@ const memberScore = (call, entryId, scores = [40, 30, 20, 10], extras = {}) => c
 const memberFile = (file) => `/festa/jury/member-file/${encodeURIComponent(file.key)}`;
 async function memberClient(f, email = 'audience@example.com') {
   const call = client(f.env);
-  ok(await call('/auth/signup', { email, name: '회원 평가자', institution: MOIS, password: 'Member-vote-2026!' }));
+  ok(await googleSignIn(call, { email, name: '회원 평가자', institution: MOIS }));
   return call;
 }
 

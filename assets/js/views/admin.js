@@ -134,9 +134,10 @@ export async function adminView(mount) {
     const openCount = projects.filter((p) => p.status === 'open' && !isPastDue(p.dueAt)).length;
     const fileCount = submissions.reduce((n, s) => n + (s.files || []).length, 0);
     const people = new Set(submissions.map((s) => s.author?.email)).size;
-    // 이용이 정지된 계정은 회원 수에서 뺍니다 — 실제로 이용중인 인원만 셉니다.
-    const active = members.filter((m) => (m.status || 'active') !== 'blocked');
-    const blocked = members.length - active.length;
+    // 실제로 이용중인 계정만 회원 수에 셉니다 (승인 대기·이용 정지 제외).
+    const active = members.filter((m) => (m.status || 'active') === 'active');
+    const pending = members.filter((m) => m.status === 'pending');
+    const blocked = members.filter((m) => m.status === 'blocked');
 
     mount.querySelector('#stats').innerHTML = `
       ${stat(projects.length, '전체 프로젝트')}
@@ -202,25 +203,26 @@ export async function adminView(mount) {
 
     const memberHolder = mount.querySelector('#adminMembers');
     const admins = active.filter((m) => m.role === 'admin');
-    const waiting = members.filter((m) => m.resetRequestedAt);
     memberHolder.innerHTML = members.length
-      ? `${waiting.length ? `
+      ? `${pending.length ? `
          <div class="notice notice--warn" style="margin-bottom:var(--space-3)">
-           <strong>비밀번호 재설정 요청 ${esc(waiting.length)}건</strong> —
-           ${esc(waiting.map((m) => m.name).slice(0, 3).join(', '))}${waiting.length > 3 ? ' 외' : ''}.
-           <a href="#/admin/members">회원 관리</a>에서 임시 비밀번호를 발급해 전달하세요.
+           <strong>가입 승인 대기 ${esc(pending.length)}명</strong> —
+           ${esc(pending.map((m) => m.name || m.email).slice(0, 3).join(', '))}${pending.length > 3 ? ' 외' : ''}.
+           <a href="#/admin/members">회원 관리</a>에서 승인하거나 거절하세요.
          </div>` : ''}
          <div class="kv">
            <div class="kv__row"><div class="kv__k">이용중</div><div class="kv__v">${active.length}명</div></div>
-           <div class="kv__row"><div class="kv__k">이용 정지</div><div class="kv__v">${blocked}명${
-             blocked ? ' — <a href="#/admin/members">회원 관리</a> 맨 아래에서 삭제할 수 있습니다' : ''}</div></div>
+           <div class="kv__row"><div class="kv__k">승인 대기</div><div class="kv__v">${pending.length}명${
+             pending.length ? ' — <a href="#/admin/members">회원 관리</a>에서 승인할 수 있습니다' : ''}</div></div>
+           <div class="kv__row"><div class="kv__k">이용 정지</div><div class="kv__v">${blocked.length}명${
+             blocked.length ? ' — <a href="#/admin/members">회원 관리</a> 맨 아래에서 삭제할 수 있습니다' : ''}</div></div>
            <div class="kv__row"><div class="kv__k">관리자</div><div class="kv__v">${
-             admins.map((m) => esc(m.name)).join(', ') || '—'}</div></div>
+             admins.map((m) => esc(m.name || m.email)).join(', ') || '—'}</div></div>
            <div class="kv__row"><div class="kv__k">최근 가입</div><div class="kv__v">${
              esc(fmtDate([...active].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))[0]?.createdAt))
            }</div></div>
          </div>`
-      : emptyState({ title: '아직 회원이 없습니다', body: '교육생이 가입하면 이곳에 표시됩니다.' });
+      : emptyState({ title: '아직 회원이 없습니다', body: '교육생 이메일을 사전 등록하거나 Google 로그인 요청을 승인하세요.' });
 
     const attHolder = mount.querySelector('#adminAttendance');
     const attSessions = mergeSessions(attRecords);
@@ -1190,6 +1192,26 @@ export async function rosterView(mount, { projectId }) {
 
 /* ---------------------------------------------------------- 회원 관리 -- */
 
+/** 붙여넣기 줄을 { email, name, institution } 배열로 파싱합니다. */
+function parseInviteLines(raw) {
+  const out = [];
+  for (const line of String(raw || '').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split(/[\t,]+/).map((s) => s.trim()).filter(Boolean);
+    const emailIdx = parts.findIndex((p) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(p));
+    if (emailIdx < 0) continue;
+    const email = parts[emailIdx];
+    const rest = parts.filter((_, idx) => idx !== emailIdx);
+    out.push({
+      email,
+      name: rest[0] || '',
+      institution: rest[1] || '',
+    });
+  }
+  return out;
+}
+
 export async function membersView(mount) {
   mount.innerHTML = `
     <section class="section">
@@ -1199,13 +1221,32 @@ export async function membersView(mount) {
           <div>
             <h1 class="page-title">회원 관리</h1>
             <p class="page-sub">
-              가입한 교육생을 확인하고 권한·이용 상태를 조정합니다.
-              이용이 정지된 회원은 목록 맨 아래로 내려갑니다.
-              삭제는 <strong>이용 정지된 일반 회원</strong>만 가능합니다.
+              교육생의 Google 이메일을 사전 등록하거나, 승인 대기 요청을 수락·거절합니다.
+              승인 대기 회원은 맨 위, 이용 정지 회원은 맨 아래에 표시됩니다.
             </p>
           </div>
-          <button class="btn btn--outline" data-csv>CSV 내려받기</button>
+          <div class="row">
+            <button class="btn btn--primary" type="button" id="toggleInvite">＋ 교육생 이메일 사전 등록</button>
+            <button class="btn btn--outline" data-csv>CSV 내려받기</button>
+          </div>
         </div>
+
+        <form class="card" id="inviteCard" hidden style="margin-bottom:var(--space-4)" novalidate>
+          <h2 class="page-title" style="font-size:1.8rem;margin-bottom:var(--space-2)">교육생 Google 이메일 사전 등록</h2>
+          <p class="field__hint" style="margin-bottom:var(--space-3)">
+            여기에 등록한 이메일은 교육생이 Google 로그인할 때 <strong>승인 대기 없이 즉시 이용</strong>할 수 있습니다.
+            한 줄에 한 명씩 <code>이메일</code> 또는 <code>이메일, 성명, 기관명</code> 형식으로 입력하세요 (엑셀 복사·붙여넣기 가능).
+          </p>
+          <label class="field">
+            <span class="field__label">등록할 목록</span>
+            <textarea class="textarea" name="lines" rows="5"
+              placeholder="hong@gmail.com, 홍길동, 행정안전부&#10;kim@gmail.com, 김철수, 한국서부발전&#10;lee@gmail.com"></textarea>
+          </label>
+          <div class="row row--end" style="margin-top:var(--space-3)">
+            <button class="btn btn--quiet" type="button" id="cancelInvite">닫기</button>
+            <button class="btn btn--primary" type="submit">사전 등록하기</button>
+          </div>
+        </form>
 
         ${isSimulated() ? `
           <div class="notice notice--warn" style="margin-bottom:var(--space-3)">
@@ -1217,7 +1258,7 @@ export async function membersView(mount) {
           <input class="input" id="q" type="search" placeholder="기관 · 성명 · 이메일 검색" />
           <select class="select" id="filter">
             <option value="all">전체</option>
-            <option value="reset">비밀번호 재설정 요청</option>
+            <option value="pending">승인 대기</option>
             <option value="active">이용중만</option>
             <option value="blocked">정지만</option>
             <option value="leader">그룹장만</option>
@@ -1232,38 +1273,74 @@ export async function membersView(mount) {
   const rowsEl = mount.querySelector('#memberRows');
   const qEl = mount.querySelector('#q');
   const filterEl = mount.querySelector('#filter');
+  const inviteCard = mount.querySelector('#inviteCard');
   const me = currentUser();
   let all = [];
-  /**
-   * 이메일 → 그 사람이 낸 제출물 수.
-   * 표에는 넣지 않습니다(줄이 좁아집니다) — 삭제할 때 무엇이 딸려 있는지 알려 주고,
-   * CSV 에 함께 담는 용도입니다.
-   */
   let subCount = new Map();
+
+  mount.querySelector('#toggleInvite').addEventListener('click', () => {
+    inviteCard.hidden = !inviteCard.hidden;
+    if (!inviteCard.hidden) inviteCard.lines.focus();
+  });
+  mount.querySelector('#cancelInvite').addEventListener('click', () => {
+    inviteCard.hidden = true;
+  });
+  inviteCard.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    clearErrors(inviteCard);
+    const parsed = parseInviteLines(inviteCard.lines.value);
+    if (!parsed.length) {
+      fieldError(inviteCard.lines, '올바른 이메일 주소를 한 줄에 하나 이상 입력하세요.');
+      focusFirstError(inviteCard);
+      return;
+    }
+    const btn = inviteCard.querySelector('button[type="submit"]');
+    busy(btn, true, '등록 중…');
+    try {
+      const res = await store.auth.inviteMembers(parsed);
+      const parts = [];
+      if (res.added) parts.push(`신규 ${res.added}명 등록`);
+      if (res.activated) parts.push(`대기 ${res.activated}명 승인`);
+      if (res.skipped) parts.push(`기존 ${res.skipped}명 유지`);
+      toastOk(parts.join(' · ') || '등록되었습니다.');
+      inviteCard.lines.value = '';
+      inviteCard.hidden = true;
+      await load();
+    } catch (err) {
+      toastErr(err.message);
+    } finally {
+      busy(btn, false);
+    }
+  });
 
   const draw = () => {
     const q = qEl.value.trim().toLowerCase();
+    const statusOrder = (m) => {
+      const st = m.status || 'active';
+      if (st === 'pending') return 0;
+      if (st === 'blocked') return 2;
+      return 1;
+    };
     let rows = all.filter((m) => {
-      if (filterEl.value === 'active' && m.status === 'blocked') return false;
-      if (filterEl.value === 'blocked' && m.status !== 'blocked') return false;
+      const st = m.status || 'active';
+      if (filterEl.value === 'pending' && st !== 'pending') return false;
+      if (filterEl.value === 'active' && st !== 'active') return false;
+      if (filterEl.value === 'blocked' && st !== 'blocked') return false;
       if (filterEl.value === 'admin' && m.role !== 'admin') return false;
       if (filterEl.value === 'leader' && normRole(m.role) !== 'leader') return false;
-      if (filterEl.value === 'reset' && !m.resetRequestedAt) return false;
       if (!q) return true;
       return [m.institution, m.name, m.email].some((v) => String(v || '').toLowerCase().includes(q));
     }).sort((a, b) => {
-      // 이용이 정지된 회원은 무엇보다 먼저 맨 아래로 내립니다.
-      const stopped = (m) => (m.status === 'blocked' ? 1 : 0);
-      if (stopped(a) !== stopped(b)) return stopped(a) - stopped(b);
-      // 그 위에서, 처리할 일이 있는 사람(재설정 요청)을 맨 앞으로 올립니다.
-      if (Boolean(b.resetRequestedAt) !== Boolean(a.resetRequestedAt)) return b.resetRequestedAt ? 1 : -1;
+      if (statusOrder(a) !== statusOrder(b)) return statusOrder(a) - statusOrder(b);
       return (b.createdAt || '').localeCompare(a.createdAt || '');
     });
 
     if (!rows.length) {
       rowsEl.innerHTML = emptyState({
         title: all.length ? '검색 결과가 없습니다' : '아직 회원이 없습니다',
-        body: all.length ? '다른 검색어로 시도해 보세요.' : '교육생이 가입하면 이곳에 표시됩니다.',
+        body: all.length
+          ? '다른 검색어로 시도해 보세요.'
+          : '위 [교육생 이메일 사전 등록]으로 이메일을 미리 등록하거나, 교육생의 Google 로그인 요청을 승인하세요.',
       });
       return;
     }
@@ -1272,19 +1349,25 @@ export async function membersView(mount) {
       <div class="tablewrap">
         <table class="table">
           <thead><tr><th>기관명</th><th>성명</th><th>이메일</th><th>권한</th><th>상태</th>
-                     <th>가입일</th><th>최근 로그인</th><th></th></tr></thead>
+                     <th>등록일</th><th>최근 로그인</th><th></th></tr></thead>
           <tbody>
             ${rows.map((m) => {
               const self = m.email === me.email;
+              const st = m.status || 'active';
+              const statusBadge = st === 'pending'
+                ? '<span class="badge badge--gold">승인 대기</span>'
+                : st === 'blocked'
+                  ? '<span class="badge badge--due">정지</span>'
+                  : '<span class="badge badge--open">이용중</span>';
               return `
-              <tr class="${m.status === 'blocked' ? 'is-blocked' : ''}">
+              <tr class="${st === 'blocked' ? 'is-blocked' : ''}">
                 <td>${esc(m.institution || '—')}</td>
-                <td>${esc(m.name)}</td>
+                <td>${esc(m.name || '—')}</td>
                 <td><a href="mailto:${attr(m.email)}">${esc(m.email)}</a></td>
-                <td>${self
-                  ? `<span class="badge badge--gold">${esc(ROLE_LABEL[normRole(m.role)])}</span>`
+                <td>${self || st === 'pending'
+                  ? `<span class="badge ${m.role === 'admin' ? 'badge--gold' : 'badge--soft'}">${esc(ROLE_LABEL[normRole(m.role)])}</span>`
                   : `<select class="select select--sm" data-rolepick="${attr(m.email)}"
-                             aria-label="${attr(m.name)} 권한">
+                             aria-label="${attr(m.name || m.email)} 권한">
                       <option value="member" ${normRole(m.role) === 'member' ? 'selected' : ''}>회원</option>
                       <optgroup label="그룹장">
                         ${TEAMS.map((n) => `<option value="leader:${attr(n)}"
@@ -1293,30 +1376,39 @@ export async function membersView(mount) {
                       </optgroup>
                       <option value="admin" ${normRole(m.role) === 'admin' ? 'selected' : ''}>관리자</option>
                     </select>`}</td>
-                <td>${m.status === 'blocked'
-                  ? '<span class="badge badge--due">정지</span>'
-                  : '<span class="badge badge--open">이용중</span>'}
-                  ${m.resetRequestedAt
-                    ? `<span class="badge badge--gold" title="${attr(fmtDate(m.resetRequestedAt, true))} 요청">비밀번호 요청</span>`
-                    : ''}</td>
+                <td>${statusBadge}</td>
                 <td>${esc(fmtDate(m.createdAt))}</td>
-                <td>${esc(m.lastLoginAt ? fmtDate(m.lastLoginAt, true) : '—')}</td>
+                <td>${esc(m.lastLoginAt ? fmtDate(m.lastLoginAt, true) : (st === 'active' ? '로그인 전' : '—'))}</td>
                 <td style="white-space:nowrap">
-                  ${self ? '<span style="color:var(--text-black-mute);font-size:1.3rem">본인</span>' : `
-                    <button class="btn btn--quiet btn--sm" data-reset="${attr(m.email)}">비밀번호 초기화</button>
-                    <button class="btn btn--quiet btn--sm" data-status="${attr(m.email)}"
-                            data-next="${m.status === 'blocked' ? 'active' : 'blocked'}"
-                            style="color:${m.status === 'blocked' ? 'var(--moss, var(--sb-green))' : 'var(--red)'}">
-                      ${m.status === 'blocked' ? '정지 해제' : '이용 정지'}
-                    </button>
-                    ${m.status === 'blocked' && m.role !== 'admin' ? `
-                      <button class="btn btn--danger btn--sm" data-remove="${attr(m.email)}">삭제</button>` : ''}`}
+                  ${self ? '<span style="color:var(--text-black-mute);font-size:1.3rem">본인</span>'
+                    : st === 'pending' ? `
+                      <button class="btn btn--primary btn--sm" data-approve="${attr(m.email)}">승인</button>
+                      <button class="btn btn--danger btn--sm" data-remove="${attr(m.email)}">거절</button>`
+                    : `
+                      <button class="btn btn--quiet btn--sm" data-status="${attr(m.email)}"
+                              data-next="${st === 'blocked' ? 'active' : 'blocked'}"
+                              style="color:${st === 'blocked' ? 'var(--moss, var(--sb-green))' : 'var(--red)'}">
+                        ${st === 'blocked' ? '정지 해제' : '이용 정지'}
+                      </button>
+                      ${st === 'blocked' && m.role !== 'admin' ? `
+                        <button class="btn btn--danger btn--sm" data-remove="${attr(m.email)}">삭제</button>` : ''}`}
                 </td>
               </tr>`;
             }).join('')}
           </tbody>
         </table>
       </div>`;
+
+    rowsEl.querySelectorAll('[data-approve]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const email = btn.dataset.approve;
+        try {
+          await store.auth.patchMember(email, { status: 'active' });
+          toastOk(`${email} 가입을 승인했습니다.`);
+          await load();
+        } catch (e) { toastErr(e.message); }
+      });
+    });
 
     rowsEl.querySelectorAll('[data-status]').forEach((btn) => {
       btn.addEventListener('click', async () => {
@@ -1336,8 +1428,6 @@ export async function membersView(mount) {
       });
     });
 
-    // 권한 — 회원 · 그룹장(조와 함께) · 관리자. 그룹장은 자기 조가 낸 과제를
-    // 모아 보고 그 중에서 발표 과제를 뽑습니다 (assets/js/camp.js).
     rowsEl.querySelectorAll('[data-rolepick]').forEach((sel) => {
       const before = sel.value;
       sel.addEventListener('change', async () => {
@@ -1371,24 +1461,25 @@ export async function membersView(mount) {
       });
     });
 
-    // 삭제는 정지된 일반 회원에게만 붙습니다 — 서버도 같은 조건을 다시 봅니다.
+    // 삭제는 정지 또는 승인 대기 일반 회원에게만 붙습니다 — 서버도 같은 조건을 다시 봅니다.
     rowsEl.querySelectorAll('[data-remove]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const email = btn.dataset.remove;
         const target = all.find((x) => x.email === email);
+        const isPending = (target?.status || 'active') === 'pending';
         const mine = subCount.get(normEmail(email)) || 0;
 
         const ok = await confirmModal({
-          title: '이 회원을 삭제할까요?',
+          title: isPending ? '가입 요청을 거절(삭제)할까요?' : '이 회원을 삭제할까요?',
           body: `${target?.name || ''} · ${email}\n`
             + '명부에서 완전히 지워집니다. 되돌릴 수 없습니다.\n'
-            + (mine ? `이 회원의 제출물 ${mine}건을 어떻게 할지는 다음 화면에서 고릅니다.`
-              : '남아 있는 제출물은 없습니다.'),
-          confirmLabel: '삭제', danger: true, requireText: '삭제',
+            + (mine ? `이 회원의 제출물 ${mine}건을 어떻게 할지는 다음 화면에서 고릅니다.` : ''),
+          confirmLabel: isPending ? '거절' : '삭제',
+          danger: true,
+          ...(isPending ? {} : { requireText: '삭제' }),
         });
         if (!ok) return;
 
-        // 제출물은 프로젝트의 기록이기도 해서, 지울지 남길지는 관리자가 정합니다.
         let purgeSubmissions = false;
         if (mine) {
           purgeSubmissions = await confirmModal({
@@ -1403,28 +1494,7 @@ export async function membersView(mount) {
           const out = await store.auth.deleteMember(email, { purgeSubmissions });
           toastOk(out?.removedSubmissions
             ? `삭제했습니다. 제출물 ${out.removedSubmissions}건도 함께 지웠습니다.`
-            : '삭제했습니다.');
-          await load();
-        } catch (e) { toastErr(e.message); }
-      });
-    });
-
-    rowsEl.querySelectorAll('[data-reset]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        const email = btn.dataset.reset;
-        const ok = await confirmModal({
-          title: '비밀번호를 초기화할까요?',
-          body: `${email} 의 비밀번호가 숫자 6자리 임시 비밀번호로 바뀝니다.\n메일 발송 기능이 없으니 화면에 뜨는 값을 본인에게 직접 전달해 주세요.\n임시 비밀번호는 30분 동안만 쓸 수 있습니다.`,
-          confirmLabel: '초기화', danger: true,
-        });
-        if (!ok) return;
-        try {
-          const temp = await store.auth.resetPassword(email);
-          await confirmModal({
-            title: '임시 비밀번호',
-            body: `${email}\n\n${temp}\n\n이 값을 본인에게 전달하세요. 창을 닫으면 다시 볼 수 없습니다.\n30분 안에 로그인해 새 비밀번호를 정하시면 됩니다.`,
-            confirmLabel: '확인했습니다', cancelLabel: '닫기',
-          });
+            : (isPending ? '가입 요청을 거절했습니다.' : '삭제했습니다.'));
           await load();
         } catch (e) { toastErr(e.message); }
       });
@@ -1433,7 +1503,6 @@ export async function membersView(mount) {
 
   const load = async () => {
     try {
-      // 제출물은 "이 사람을 지우면 무엇이 함께 사라지는가"를 보여주기 위해 함께 셉니다.
       const [members, subs] = await Promise.all([
         store.auth.listMembers(),
         store.listSubmissions().catch(() => []),
@@ -1454,14 +1523,15 @@ export async function membersView(mount) {
   filterEl.addEventListener('change', draw);
 
   mount.querySelector('[data-csv]').addEventListener('click', () => {
-    const header = ['번호', '기관명', '성명', '이메일', '권한', '조', '상태', '제출건수', '가입일', '최근 로그인'];
+    const header = ['번호', '기관명', '성명', '이메일', '권한', '조', '상태', '제출건수', '등록일', '최근 로그인'];
     const lines = [header.map(csvCell).join(',')];
     all.forEach((m, i) => {
+      const st = m.status || 'active';
       lines.push([
-        i + 1, m.institution || '', m.name, m.email,
+        i + 1, m.institution || '', m.name || '', m.email,
         ROLE_LABEL[normRole(m.role)],
         normTeam(m.team) ? teamLabel(m.team) : '',
-        m.status === 'blocked' ? '정지' : '이용중',
+        st === 'pending' ? '승인 대기' : st === 'blocked' ? '정지' : '이용중',
         subCount.get(normEmail(m.email)) || 0,
         fmtDate(m.createdAt), m.lastLoginAt ? fmtDate(m.lastLoginAt, true) : '',
       ].map(csvCell).join(','));

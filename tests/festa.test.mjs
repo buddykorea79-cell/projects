@@ -1,6 +1,6 @@
 /** Festa: 실제 API의 접수·마감·심사 경계와 회원별 소유권을 검증합니다. */
 import assert from 'node:assert/strict';
-import { MockBucket } from './mock-r2.mjs';
+import { MockBucket, TEST_GOOGLE_ENV, mockGoogleLogin, applySetCookies } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
 
 // 접수 기간 검증이 실행 날짜에 따라 달라지지 않도록 서버 시각을 고정합니다.
@@ -12,7 +12,8 @@ const ORIGIN = 'https://site.test';
 const ADMIN = 'aireader@mois.go.kr';
 const bucket = new MockBucket();
 const env = {
-  BUCKET: bucket, PBKDF2_ITERATIONS: 1000, TOKEN_SECRET: 'festa-test-only-secret',
+  BUCKET: bucket, ...TEST_GOOGLE_ENV, SIGNUP_POLICY: 'open',
+  TOKEN_SECRET: 'festa-test-only-secret',
   FESTA_EMAIL: 'festa@example.com',
 };
 const failures = [];
@@ -22,16 +23,15 @@ async function test(name, fn) {
 }
 
 function session(sessionEnv = env) {
-  let cookie = '';
+  const jar = new Map();
   return async (path, { method = 'GET', body, form } = {}) => {
     const headers = { Origin: ORIGIN };
-    if (cookie) headers.Cookie = cookie;
+    if (jar.size) headers.Cookie = [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const response = await handleApi(new Request(`${ORIGIN}/api${path}`, {
       method, headers, body: form || (body === undefined ? undefined : JSON.stringify(body)),
     }), sessionEnv, { basePath: '/api' });
-    const set = response.headers.get('Set-Cookie');
-    if (set) cookie = set.split(';')[0];
+    applySetCookies(jar, response.headers);
     const type = response.headers.get('Content-Type') || '';
     return {
       status: response.status, headers: response.headers,
@@ -39,6 +39,11 @@ function session(sessionEnv = env) {
       response,
     };
   };
+}
+
+async function googleSignup(client, { email, name = '페스타 테스트', institution = '행정안전부' }) {
+  const r = await mockGoogleLogin(client, { email, name, institution });
+  return { status: r.profile?.status || (r.callback?.status === 302 ? 200 : 400), data: r.profile?.data || null };
 }
 const anon = session();
 const admin = session();
@@ -75,8 +80,8 @@ async function isolatedFixture(tag, storage = new MockBucket()) {
   const owner = session(localEnv);
   const other = session(localEnv);
   for (const [client, email] of [[boss, ADMIN], [owner, `${tag}@example.com`], [other, `${tag}-other@example.com`]]) {
-    const result = await post(client, '/auth/signup', {
-      email, name: '페스타 테스트', institution: '테스트 기관', password: 'Festa-test-2026!',
+    const result = await googleSignup(client, {
+      email, name: '페스타 테스트', institution: '테스트 기관',
     });
     assert.equal(result.status, 200, result.data?.message);
   }
@@ -90,8 +95,8 @@ await test('관리자·일반회원·정지 대상 회원 가입', async () => {
     [bob, 'bob@example.com', '이참여'], [carol, 'carol@example.com', '박심사'],
     [blocked, 'blocked@example.com', '정지회원'],
   ]) {
-    const result = await post(client, '/auth/signup', {
-      email, name, institution: '행정안전부', password: 'Festa-test-2026!',
+    const result = await googleSignup(client, {
+      email, name, institution: '행정안전부',
     });
     assert.equal(result.status, 200, result.data?.message);
   }
@@ -291,8 +296,8 @@ await test('삭제된 이메일로 재가입해도 과거 작품·파일을 승�
   const boss = session(isolated);
   const original = session(isolated);
   const replacement = session(isolated);
-  const register = (client, email) => post(client, '/auth/signup', {
-    email, name: '테스트 회원', institution: '행정안전부', password: 'Festa-test-2026!',
+  const register = (client, email) => googleSignup(client, {
+    email, name: '테스트 회원', institution: '행정안전부',
   });
   assert.equal((await register(boss, ADMIN)).status, 200);
   assert.equal((await register(original, 'reused@example.com')).status, 200);
@@ -354,8 +359,8 @@ await test('선택한 기관을 기록하고 기존 작품의 기관을 판별�
 await test('미첨부 업로드는 최근 20개만 보관하고 접수된 파일은 정리하지 않음', async () => {
   const isolated = { ...env, BUCKET: new MockBucket(), TOKEN_SECRET: 'festa-draft-cleanup-fixture' };
   const member = session(isolated);
-  assert.equal((await post(member, '/auth/signup', {
-    email: 'drafts@example.com', name: '첨부 시험', institution: '행정안전부', password: 'Festa-test-2026!',
+  assert.equal((await googleSignup(member, {
+    email: 'drafts@example.com', name: '첨부 시험', institution: '행정안전부',
   })).status, 200);
   const submitted = await upload(member, '접수된-파일.txt', '반드시 보존');
   assert.equal(submitted.status, 200);

@@ -1,6 +1,6 @@
 /** 운영 Festa/Camp 데이터 불변, 실행 격리, 선택 작품/첨부 공개 범위 회귀. */
 import assert from 'node:assert/strict';
-import { MockBucket } from './mock-r2.mjs';
+import { MockBucket, TEST_GOOGLE_ENV, mockGoogleLogin, applySetCookies } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
 import { REHEARSAL_KEY, rehearsalEnvironment, createRehearsal } from '../shared/festa-rehearsal.js';
 
@@ -12,15 +12,16 @@ async function test(name, fn) {
   catch (error) { failures.push(name); console.error('  FAIL  ' + name + ' — ' + error.message); }
 }
 function session(env) {
-  let cookie = '';
+  const jar = new Map();
   return async (path, body, method = body === undefined ? 'GET' : 'POST') => {
+    const cookie = [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
     const response = await handleApi(new Request(ORIGIN + '/api' + path, {
       method, headers: { Origin: ORIGIN, ...(cookie ? { Cookie: cookie } : {}),
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }), env, { basePath: '/api' });
-    const set = response.headers.get('Set-Cookie'); if (set) cookie = set.split(';')[0];
-    return { status: response.status, headers: response.headers,
+    applySetCookies(jar, response.headers);
+    return { status: response.status, headers: response.headers, response,
       body: response.headers.get('Content-Type')?.includes('application/json') ? await response.json() : await response.text() };
   };
 }
@@ -38,11 +39,16 @@ class OnceBucket extends MockBucket {
 const snapshot = (bucket) => new Map([...bucket.objects.entries()].filter(([key]) => key !== REHEARSAL_KEY)
   .map(([key, record]) => [key, { bytes: Array.from(record.bytes), httpMetadata: record.httpMetadata, customMetadata: record.customMetadata }]));
 async function setup({ count = 7, bucket = new MockBucket() } = {}) {
-  const env = { BUCKET: bucket, PBKDF2_ITERATIONS: 1000, TOKEN_SECRET: 'isolated-rehearsal-test-secret' };
+  const env = {
+    BUCKET: bucket, TOKEN_SECRET: 'isolated-rehearsal-test-secret',
+    ...TEST_GOOGLE_ENV, SIGNUP_POLICY: 'open',
+  };
   const admin = session(env); const member = session(env); const owner = session(env); const guest = session(env);
   for (const [client, email] of [[admin, 'aireader@mois.go.kr'], [member, 'member@example.test'], [owner, 'writer0@example.test']]) {
-    const response = await client('/auth/signup', { email, name: '테스트 회원', institution: '행정안전부', password: 'Rehearsal-2026!' });
-    assert.equal(response.status, 200);
+    const r = await mockGoogleLogin((p, opts = {}) => client(p, opts.body, opts.method || (opts.body ? 'POST' : 'GET')), {
+      email, name: '테스트 회원', institution: '행정안전부',
+    });
+    assert.equal(r.profile.status, 200);
   }
   await bucket.put('data/festa.json', JSON.stringify({ version: 1, phase: 'open', entries: [], scores: [], uploads: [], email: 'live@example.test' }));
   await bucket.put('data/projects.json', JSON.stringify([

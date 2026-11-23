@@ -9,7 +9,7 @@ import { chromium } from 'playwright';
 import { chromeOptions } from './chrome.mjs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
-import { startServer } from './mock-r2.mjs';
+import { startServer, browserGoogleLogin } from './mock-r2.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -22,7 +22,7 @@ const step = async (name, fn) => {
 const ok = (v, m) => { if (!v) throw new Error(m); };
 const eq = (a, b, m) => { if (a !== b) throw new Error(`${m}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`); };
 
-const { server, bucket, origin } = await startServer({ root, env: { PBKDF2_ITERATIONS: 1000 } });
+const { server, bucket, origin, setNextGoogleUser } = await startServer({ root });
 log(`\n로컬 R2 스텁 서버: ${origin}`);
 
 const browser = await chromium.launch(chromeOptions());
@@ -44,15 +44,9 @@ async function person(label) {
 }
 
 async function signup(page, email, name) {
-  await page.goto(`${origin}/#/signup`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('#signupForm', { timeout: 8000 });
-  for (const [k, v] of [
-    ['institution', '행정안전부'], ['name', name], ['email', email],
-    ['password', PASSWORD], ['confirm', PASSWORD],
-  ]) await page.fill(`#signupForm [name="${k}"]`, v);
-  await page.check('#signupForm [name="agree"]');
-  await page.locator('#signupForm button[type="submit"]').click();
-  await page.waitForURL((u) => u.hash === '#/' || u.hash === '', { timeout: 12000 });
+  await browserGoogleLogin(page, {
+    origin, setNextGoogleUser, email, name, institution: '행정안전부',
+  });
 }
 
 /** 제출 폼을 채워 보내고 상세 화면까지 갑니다. asEmail 을 주면 그 회원 이름으로. */

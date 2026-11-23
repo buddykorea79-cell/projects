@@ -11,7 +11,7 @@ import { existsSync, mkdtempSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { dirname, resolve, join } from 'path';
-import { startServer } from './mock-r2.mjs';
+import { startServer, browserGoogleLogin } from './mock-r2.mjs';
 import { readSheet } from '../assets/js/sheet.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -25,7 +25,7 @@ const step = async (name, fn) => {
 const ok = (v, m) => { if (!v) throw new Error(m); };
 const eq = (a, b, m) => { if (a !== b) throw new Error(`${m}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`); };
 
-const { server, bucket, origin } = await startServer({ root, env: { PBKDF2_ITERATIONS: 1000 } });
+const { server, bucket, origin, setNextGoogleUser } = await startServer({ root });
 log(`\n로컬 R2 스텁 서버: ${origin}`);
 
 const browser = await chromium.launch(chromeOptions());
@@ -82,16 +82,10 @@ const SUBMIT_CSV = write('submit.csv', [
 const PASSWORD = 'hunter2!hunter2';
 
 async function signup() {
-  await page.goto(`${origin}/#/signup`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('#signupForm', { timeout: 8000 });
-  await page.fill('#signupForm [name="institution"]', '행정안전부');
-  await page.fill('#signupForm [name="name"]', '관리자');
-  await page.fill('#signupForm [name="email"]', 'aireader@mois.go.kr');
-  await page.fill('#signupForm [name="password"]', PASSWORD);
-  await page.fill('#signupForm [name="confirm"]', PASSWORD);
-  await page.check('#signupForm [name="agree"]');
-  await page.locator('#signupForm button[type="submit"]').click();
-  await page.waitForURL((u) => u.hash === '#/' || u.hash === '', { timeout: 12000 });
+  await browserGoogleLogin(page, {
+    origin, setNextGoogleUser,
+    email: 'aireader@mois.go.kr', name: '관리자', institution: '행정안전부',
+  });
 }
 
 const goto = async (hash, sel) => {
@@ -364,16 +358,10 @@ log('\n== 6. 권한 ==');
 await step('일반 회원은 수강 현황을 볼 수 없습니다', async () => {
   const other = await browser.newContext();
   const p2 = await other.newPage();
-  await p2.goto(`${origin}/#/signup`, { waitUntil: 'networkidle' });
-  await p2.waitForSelector('#signupForm', { timeout: 8000 });
-  await p2.fill('#signupForm [name="institution"]', '교육부');
-  await p2.fill('#signupForm [name="name"]', '홍길동');
-  await p2.fill('#signupForm [name="email"]', 'member@x.kr');
-  await p2.fill('#signupForm [name="password"]', PASSWORD);
-  await p2.fill('#signupForm [name="confirm"]', PASSWORD);
-  await p2.check('#signupForm [name="agree"]');
-  await p2.locator('#signupForm button[type="submit"]').click();
-  await p2.waitForURL((u) => u.hash === '#/' || u.hash === '', { timeout: 12000 });
+  await browserGoogleLogin(p2, {
+    origin, setNextGoogleUser,
+    email: 'member@x.kr', name: '홍길동', institution: '교육부',
+  });
 
   await p2.goto(`${origin}/#/admin/attendance`, { waitUntil: 'networkidle' });
   await p2.waitForSelector('.notice--warn', { timeout: 8000 });

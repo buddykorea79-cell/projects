@@ -288,6 +288,18 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .btn--danger:hover { background: var(--red-tint); }
 .btn--quiet     { background: transparent; color: var(--text-black-soft); border-color: transparent; padding-inline: 10px; }
 .btn--quiet:hover { color: var(--text-black); background: rgba(0,0,0,.05); }
+.btn--google {
+  background: #ffffff;
+  color: #1f1f1f;
+  border-color: #dadce0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+  gap: 10px;
+}
+.btn--google:hover {
+  background: #f8f9fa;
+  border-color: #c6cacf;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .09);
+}
 .btn--lg  { padding: 14px 32px; min-height: 48px; font-size: 1.6rem; }
 .btn--sm  { padding: 6px 14px; min-height: 32px; font-size: 1.3rem; }
 .btn--block { width: 100%; }

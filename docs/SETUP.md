@@ -146,53 +146,42 @@ curl https://<사이트주소>/api/health
 `{"message":"R2 버킷 바인딩(BUCKET)이 설정되지 않았습니다."}` 가 나오면 A-2 의
 Variable name 이 정확히 `BUCKET` 인지, 저장 후 **재배포**했는지 확인하세요.
 
-### A-5. (선택) 환경변수로 다듬기
+### A-5. Google 로그인(OAuth 2.0) 및 환경변수 설정
 
-Settings → **Variables and Secrets**(구버전은 *Environment variables*) 에서
-조정할 수 있습니다. 전부 선택 사항입니다.
+Settings → **Variables and Secrets** 에서 아래 값을 등록하고 저장(재배포)합니다.
 
-| 이름 | 기본값 | 설명 |
-|---|---|---|
-| `ADMIN_EMAILS` | `aireader@mois.go.kr` | 이 주소로 **가입하면** 관리자가 됩니다. 쉼표로 여러 개 |
-| `TOKEN_SECRET` | 자동 생성 | 세션 쿠키 서명키. 비워두면 R2 의 `data/session-secret` 에 자동으로 만들어 씁니다 |
-| `PBKDF2_ITERATIONS` | `15000` | 비밀번호 해시 반복 횟수. 유료 플랜이면 올려도 됩니다 |
-| `MAX_UPLOAD_MB` | `100` | 파일 1개당 한도 |
-| `ALLOWED_EXT` | 내장 목록 | 쉼표 구분 확장자. 예: `pdf,png,jpg,mp4` |
-| `ALLOWED_ORIGINS` | 없음 | 다른 도메인에서도 API 를 쓸 때만. 비워두면 같은 오리진만 허용 |
+| 이름 | 필수 여부 | 타입 | 설명 |
+|---|---|---|---|
+| `GOOGLE_CLIENT_ID` | **필수** | Text 또는 Secret | Google Cloud Console 에서 발급한 OAuth 2.0 클라이언트 ID |
+| `GOOGLE_CLIENT_SECRET` | **필수** | **Secret** | Google Cloud Console 에서 발급한 OAuth 2.0 클라이언트 보안 비밀번호 |
+| `ADMIN_EMAILS` | **필수 권장** | Text | 관리자가 로그인할 Google 이메일 (쉼표로 여러 개. 예: `myadmin@gmail.com`) |
+| `TOKEN_SECRET` | **권장** | **Secret** | 세션·OAuth 쿠키 서명키 (`openssl rand -hex 32`). 비워두면 R2 에 자동 생성 |
+| `SIGNUP_POLICY` | 선택 | Text | 기본 `approval`(사전 등록은 즉시 로그인, 미등록은 관리자 승인 대기) · `allowlist`(사전 등록만 허용) · `open`(Google 로그인 즉시 허용) |
+| `ALLOWED_EMAIL_DOMAINS` | 선택 | Text | 사전 등록 없이 자동 승인할 도메인 (예: `mois.go.kr,korea.kr`) |
+| `MAX_UPLOAD_MB` | 선택 | Text | 파일 1개당 한도 (기본 `100`) |
+| `ALLOWED_EXT` | 선택 | Text | 쉼표 구분 허용 확장자 |
+| `ALLOWED_ORIGINS` | 선택 | Text | 다른 도메인에서도 API 를 쓸 때만 지정 |
 
-`TOKEN_SECRET` 을 직접 넣으면(권장) 값을 바꿀 때 모든 세션을 한 번에 끊을 수 있습니다.
+#### Google Cloud Console OAuth 클라이언트 만들기
 
-```bash
-openssl rand -hex 32
-```
+1. [Google Cloud Console](https://console.cloud.google.com/) 접속 → 새 프로젝트 생성 (예: `ai-leaders-academy`)
+2. 왼쪽 메뉴 **API 및 서비스 → OAuth 동의 화면** (또는 **Google Auth Platform → 시작하기**):
+   - 대상(User Type): **외부(External)** 선택
+   - 앱 이름: `AI 리더스 아카데미 지원센터`, 사용자 지원 이메일·개발자 연락처에 본인 이메일 입력
+   - 데이터 액세스 범위(Scopes): `openid`, `email`, `profile` (기본 포함)
+   - **중요**: 게시 상태를 **프로덕션(프로덕션으로 게시)** 으로 전환해야 테스트 사용자 100명 제한 없이 모든 교육생이 로그인할 수 있습니다 (`openid/email/profile` 기본 범위는 별도 심사 없이 즉시 게시됩니다).
+3. **클라이언트 → 클라이언트 만들기**:
+   - 애플리케이션 유형: **웹 애플리케이션**
+   - 승인된 자바스크립트 원본: `https://projects.buddykorea79.workers.dev` (커스텀 도메인 사용 시 해당 주소)
+   - 승인된 리디렉션 URI: `https://projects.buddykorea79.workers.dev/api/auth/google/callback`
+4. 발급된 **클라이언트 ID** → `GOOGLE_CLIENT_ID`, **클라이언트 보안 비밀번호** → `GOOGLE_CLIENT_SECRET` 으로 Cloudflare 에 등록합니다.
 
-`PBKDF2_ITERATIONS` 는 무료 플랜의 요청당 CPU 10ms 를 기준으로 잡은 값입니다
-(15,000회 ≈ 3.8ms). 반복 횟수는 해시 안에 함께 저장되므로, 나중에 올려도
-기존 회원의 비밀번호는 그대로 동작합니다.
+### A-6. 첫 관리자 로그인 및 교육생 등록
 
-`MAX_UPLOAD_MB` 를 100 보다 크게 잡아도 소용없습니다. 요청 본문 한도는 Workers 요금제가
-아니라 **Cloudflare 계정 요금제**를 따르며, Free·Pro 는 100MB, Business 200MB,
-Enterprise 500MB 입니다. 넘으면 413 이 납니다.
-
-<sub>출처: [Workers Platform limits](https://developers.cloudflare.com/workers/platform/limits/)</sub>
-
-### A-6. 첫 관리자 계정 만들기
-
-배포가 끝나면 **가장 먼저** 사이트에 들어가 `aireader@mois.go.kr` 로 **회원가입**하세요.
-이 주소(`ADMIN_EMAILS` 기본값)로 가입한 계정에 관리자 권한이 자동으로 붙습니다.
-비밀번호는 가입할 때 정하고, 서버가 PBKDF2 해시로만 보관합니다 —
-코드나 설정 파일 어디에도 비밀번호가 들어가지 않습니다.
-
-> 다른 사람이 먼저 그 주소로 가입해 버리는 것이 걱정되면, 배포 직후 바로 가입하거나
-> `ADMIN_EMAILS` 를 아무도 모르는 주소로 미리 바꿔두세요.
-
-가입한 뒤에는 `관리자 → 회원 관리` 에서 다른 회원을 관리자로 올릴 수 있습니다.
-
-**교육생 안내 문구 예시**
-
-> 사이트에 들어가 `회원가입`을 누르고 기관명·성명·이메일·비밀번호를 입력하면
-> 바로 이용할 수 있습니다(승인 절차 없음). 과제 제출과 강의자료 내려받기는
-> 로그인한 뒤에 가능합니다. 비밀번호를 잊으면 담당자에게 연락해 주세요.
+1. `ADMIN_EMAILS` 에 넣은 **관리자 Google 계정**으로 사이트에서 **Google 계정으로 로그인**을 누릅니다.
+2. 최초 1회 기관명·성명을 입력하면 자동으로 관리자 권한이 부여됩니다.
+3. `관리자 → 회원 관리 → ＋ 교육생 이메일 사전 등록` 에서 교육생의 Google 이메일(및 성명·기관명)을 미리 등록하면, 교육생은 승인 대기 없이 바로 로그인할 수 있습니다.
+4. 미리 등록되지 않은 교육생이 로그인을 시도하면 `승인 대기` 목록(및 텔레그램 알림)에 올라오며, 관리자가 버튼 한 번으로 승인·거절할 수 있습니다.
 
 ### A-7. 로컬에서 돌려보기
 

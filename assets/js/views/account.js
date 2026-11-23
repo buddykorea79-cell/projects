@@ -1,12 +1,12 @@
-/** 로그인 · 회원가입 · 내 계정. */
+/** Google 로그인 · 최초 프로필 설정 · 내 계정. */
 import { CONFIG } from '../config.js';
-import { store } from '../store/index.js';
 import {
-  currentUser, isSimulated, signup, login, logout, changePassword, requestReset, confirmReset,
+  currentUser, isSimulated, isGoogleEnabled, signupPolicy,
+  googleLoginUrl, demoLogin, completeProfile, logout,
 } from '../auth.js';
-import { esc, attr, fmtDate, isEmail, passwordIssue } from '../utils.js';
+import { esc, attr, fmtDate, isEmail } from '../utils.js';
 import {
-  toastOk, toastErr, fieldError, clearErrors, focusFirstError, busy, confirmModal,
+  toastOk, fieldError, clearErrors, focusFirstError, busy, confirmModal,
 } from '../ui.js';
 import { go, currentQuery } from '../router.js';
 
@@ -16,432 +16,205 @@ function nextPath() {
   return /^\/[A-Za-z0-9/_-]*$/.test(raw) ? raw : '/';
 }
 
+const GOOGLE_G_ICON = `
+  <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+    <path fill="#4285F4" d="M23.49 12.27c0-.82-.07-1.64-.22-2.43H12v4.6h6.46a5.53 5.53 0 0 1-2.4 3.63v3.01h3.88c2.27-2.09 3.55-5.17 3.55-8.81z"/>
+    <path fill="#34A853" d="M12 24c3.24 0 5.96-1.07 7.94-2.91l-3.88-3.01c-1.07.72-2.45 1.15-4.06 1.15-3.12 0-5.77-2.11-6.72-4.95H1.28v3.11A12 12 0 0 0 12 24z"/>
+    <path fill="#FBBC05" d="M5.28 14.28A7.2 7.2 0 0 1 4.9 12c0-.79.14-1.56.38-2.28V6.61H1.28A12 12 0 0 0 0 12c0 1.94.46 3.77 1.28 5.39l4-3.11z"/>
+    <path fill="#EA4335" d="M12 4.77c1.76 0 3.34.61 4.58 1.8l3.44-3.44C17.95 1.19 15.23 0 12 0A12 12 0 0 0 1.28 6.61l4 3.11C6.23 6.88 8.88 4.77 12 4.77z"/>
+  </svg>`;
+
+const ERROR_MESSAGES = {
+  pending: {
+    kind: 'info',
+    title: '가입 승인 요청이 접수되었습니다',
+    body: '담당자(관리자)가 교육생 여부를 확인한 뒤 승인하면 바로 로그인할 수 있습니다.',
+  },
+  not_invited: {
+    kind: 'warn',
+    title: '사전 등록된 교육생 이메일이 아닙니다',
+    body: '사용하실 Google 이메일 주소를 담당자에게 알려주시면 등록 후 바로 로그인할 수 있습니다.',
+  },
+  blocked: {
+    kind: 'err',
+    title: '이용이 정지된 계정입니다',
+    body: '자세한 사항은 담당자(관리자)에게 문의해 주세요.',
+  },
+  cancelled: {
+    kind: 'info',
+    title: 'Google 로그인이 취소되었습니다',
+    body: '아래 버튼을 눌러 다시 시도해 주세요.',
+  },
+  not_configured: {
+    kind: 'warn',
+    title: 'Google 로그인 설정이 아직 완료되지 않았습니다',
+    body: '관리자가 Cloudflare 환경변수(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)를 등록해야 로그인할 수 있습니다.',
+  },
+  unverified_email: {
+    kind: 'err',
+    title: '이메일 인증이 완료되지 않은 Google 계정입니다',
+    body: 'Google 계정에서 이메일 인증을 마친 뒤 다시 시도해 주세요.',
+  },
+  google_mismatch: {
+    kind: 'err',
+    title: '기존 계정 정보와 일치하지 않습니다',
+    body: '같은 이메일이 다른 Google 계정에 연결되어 있습니다. 담당자에게 문의해 주세요.',
+  },
+  invalid_state: {
+    kind: 'warn',
+    title: '로그인 요청이 만료되었습니다',
+    body: '보안을 위해 로그인 유효 시간이 지났습니다. 아래 버튼으로 다시 시도해 주세요.',
+  },
+  oauth_failed: {
+    kind: 'err',
+    title: 'Google 로그인을 완료하지 못했습니다',
+    body: '잠시 후 다시 시도해 주세요. 문제가 계속되면 담당자에게 문의하세요.',
+  },
+};
+
 const demoNotice = () => (isSimulated()
   ? `<div class="notice notice--warn" style="margin-bottom:var(--space-4)">
        <span><strong>시연용 계정입니다.</strong> 지금 저장소가 서버 없는 모드라
-       회원 정보가 이 브라우저에만 저장됩니다. 실제 운영은 Cloudflare R2 모드에서 하세요.</span>
+       회원 정보가 이 브라우저에만 저장됩니다. 실제 운영은 Cloudflare R2 + Google 로그인 모드에서 하세요.</span>
      </div>`
   : '');
 
 /* ------------------------------------------------------------- 로그인 -- */
 
 export function loginView(mount) {
-  if (currentUser()) { go(nextPath(), { replace: true }); return; }
-
-  mount.innerHTML = `
-    <section class="section">
-      <div class="wrap wrap--narrow" style="max-width:440px">
-        <div style="text-align:center;margin-bottom:var(--space-5)">
-          <h1 class="page-title">로그인</h1>
-          <p class="page-sub">${esc(CONFIG.orgName)} 과제 제출·강의자료 이용</p>
-        </div>
-
-        ${demoNotice()}
-
-        <form class="card" id="loginForm" novalidate>
-          <label class="field">
-            <span class="field__label">이메일</span>
-            <input class="input" name="email" type="email" inputmode="email"
-                   autocomplete="username" placeholder="you@example.com" />
-          </label>
-          <label class="field">
-            <span class="field__label">비밀번호</span>
-            <input class="input" name="password" type="password" autocomplete="current-password" />
-          </label>
-          <button class="btn btn--primary btn--block btn--lg" type="submit">로그인</button>
-        </form>
-
-        <p style="text-align:center;margin-top:var(--space-4);color:var(--text-black-soft);font-size:1.4rem">
-          아직 계정이 없으신가요?
-          <a href="#/signup${currentQuery().has('next') ? '?next=' + encodeURIComponent(nextPath()) : ''}">회원가입</a>
-        </p>
-        <p style="text-align:center;margin-top:var(--space-2);font-size:1.3rem;color:var(--text-black-soft)">
-          <a href="#/forgot">비밀번호를 잊으셨나요?</a>
-        </p>
-      </div>
-    </section>`;
-
-  const form = mount.querySelector('#loginForm');
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    clearErrors(form);
-
-    let ok = true;
-    if (!isEmail(form.email.value)) { fieldError(form.email, '올바른 이메일을 입력하세요.'); ok = false; }
-    if (!form.password.value) { fieldError(form.password, '비밀번호를 입력하세요.'); ok = false; }
-    if (!ok) { focusFirstError(form); return; }
-
-    const btn = form.querySelector('button[type="submit"]');
-    busy(btn, true, '확인 중…');
-    try {
-      const me = await login(form.email.value, form.password.value);
-      toastOk(`${me.name}님, 환영합니다.`);
-      go(me.mustChangePassword ? '/account' : nextPath());
-      if (me.mustChangePassword) toastErr('임시 비밀번호입니다. 새 비밀번호로 바꿔주세요.');
-    } catch (err) {
-      busy(btn, false);
-      fieldError(form.password, err.message);
-      focusFirstError(form);
-    }
-  });
-  form.email.focus();
-}
-
-/* ------------------------------------------------------ 비밀번호 찾기 -- */
-
-/**
- * 비밀번호 찾기. 받는 방법이 두 가지입니다.
- *
- * ① 관리자에게 요청 — 담당자에게 알림이 갑니다(메일 발송이 설정돼 있으면
- *    본인 메일로 초기화 링크도 함께). 계정이 있든 없든 화면이 같아 가입 여부가
- *    새지 않습니다.
- * ② 임시 비밀번호 즉시 받기 — 숫자 6자리를 이 화면에 바로 띄웁니다. 텔레그램이
- *    멈췄거나 담당자가 자리에 없을 때를 위한 길입니다. 30분만 살고, 그것으로
- *    로그인하면 곧바로 새 비밀번호를 정하게 됩니다.
- */
-export function forgotView(mount) {
-  const mailReset = Boolean(store?.mailReset);
-
-  mount.innerHTML = `
-    <section class="section">
-      <div class="wrap wrap--narrow" style="max-width:440px">
-        <div style="text-align:center;margin-bottom:var(--space-5)">
-          <h1 class="page-title">비밀번호 찾기</h1>
-          <p class="page-sub">가입할 때 쓴 이메일을 알려주세요.</p>
-        </div>
-
-        <form class="card" id="forgotForm" novalidate>
-          <label class="field">
-            <span class="field__label">이메일</span>
-            <input class="input" name="email" type="email" inputmode="email"
-                   autocomplete="username" placeholder="you@example.com" />
-          </label>
-
-          <span class="field__label" style="display:block;margin-bottom:4px">어떻게 받으시겠어요?</span>
-          <label class="check">
-            <input type="radio" name="method" value="admin" checked />
-            <span><strong>관리자에게 요청</strong>
-              <span class="check__hint">${mailReset
-    ? '등록하신 메일 주소로 초기화 링크가 갑니다. 링크에서 새 비밀번호를 직접 정하세요.'
-    : '담당자에게 알림이 갑니다. 재설정 링크나 임시 비밀번호를 직접 전달해 드립니다.'}</span>
-            </span>
-          </label>
-          <label class="check">
-            <input type="radio" name="method" value="code" />
-            <span><strong>임시 비밀번호 즉시 받기</strong>
-              <span class="check__hint">숫자 6자리를 이 화면에 바로 띄웁니다.
-                30분 동안만 쓸 수 있고, 로그인하면 곧바로 새 비밀번호를 정하게 됩니다.</span>
-            </span>
-          </label>
-
-          <button class="btn btn--primary btn--block btn--lg" type="submit" id="forgotSubmit">
-            ${mailReset ? '비밀번호 초기화' : '요청 남기기'}</button>
-        </form>
-
-        <div id="forgotDone" hidden>
-          <div class="card" style="text-align:center">
-            ${mailReset
-    ? `<h2 class="page-title" style="font-size:1.9rem">초기화 링크를 보냈습니다</h2>
-            <p style="color:var(--text-black-soft);margin-top:var(--space-2);font-size:1.5rem">
-              가입된 계정이라면 <strong id="forgotEmail"></strong> 주소로<br>
-              비밀번호 초기화 링크가 전송되었습니다.<br>
-              받은편지함(스팸함 포함)을 확인해 주세요.<br>
-              링크는 <strong>60분 동안, 한 번만</strong> 쓸 수 있습니다.
-            </p>
-            <p style="color:var(--text-black-soft);margin-top:var(--space-2);font-size:1.3rem">
-              메일이 오지 않으면 이메일 주소를 다시 확인하시거나 담당자에게 문의해 주세요.
-            </p>`
-    : `<h2 class="page-title" style="font-size:1.9rem">요청이 접수되었습니다</h2>
-            <p style="color:var(--text-black-soft);margin-top:var(--space-2);font-size:1.5rem">
-              담당자가 확인한 뒤 재설정 링크나 임시 비밀번호를 전달해 드립니다.<br>
-              링크를 받으면 그 화면에서 새 비밀번호를 직접 정하시면 됩니다.
-            </p>`}
-            <div class="row" style="justify-content:center;margin-top:var(--space-4)">
-              <a class="btn btn--outline" href="#/login">로그인 화면으로</a>
-            </div>
-          </div>
-        </div>
-
-        <div id="forgotCode" hidden>
-          <div class="code-ceremony">
-            <div class="code-ceremony__label">임시 비밀번호</div>
-            <div class="code-ceremony__code" id="tempCode"></div>
-            <div class="code-ceremony__hint">
-              <strong id="tempMin">30</strong>분 안에 로그인해 주세요.
-            </div>
-          </div>
-          <div class="card" style="margin-top:var(--space-3)">
-            <p style="font-size:1.5rem;color:var(--text-black-soft)">
-              이 번호는 <strong>지금 이 화면에서만</strong> 보여 드립니다.
-              적어 두시거나 복사해 두세요.<br>
-              이 번호로 로그인하면 곧바로 새 비밀번호를 정하는 화면이 열립니다.
-            </p>
-            <div class="row" style="justify-content:center;margin-top:var(--space-4)">
-              <button class="btn btn--outline" type="button" id="copyCode">번호 복사</button>
-              <a class="btn btn--primary" href="#/login">로그인하러 가기</a>
-            </div>
-          </div>
-        </div>
-
-        <p style="text-align:center;margin-top:var(--space-4);color:var(--text-black-soft);font-size:1.4rem">
-          <a href="#/login">← 로그인으로 돌아가기</a>
-        </p>
-      </div>
-    </section>`;
-
-  const form = mount.querySelector('#forgotForm');
-  const btn = mount.querySelector('#forgotSubmit');
-  const chosen = () => form.querySelector('[name="method"]:checked')?.value || 'admin';
-
-  // 고른 방법에 따라 버튼 문구를 바꿉니다 — 무엇이 일어날지 누르기 전에 보이도록.
-  const label = () => (chosen() === 'code'
-    ? '임시 비밀번호 받기'
-    : (mailReset ? '비밀번호 초기화' : '요청 남기기'));
-  form.querySelectorAll('[name="method"]').forEach((el) => {
-    el.addEventListener('change', () => { btn.textContent = label(); });
-  });
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    clearErrors(form);
-    if (!isEmail(form.email.value)) {
-      fieldError(form.email, '올바른 이메일을 입력하세요.');
-      focusFirstError(form);
-      return;
-    }
-
-    const method = chosen();
-    busy(btn, true, method === 'code' ? '발급 중…' : (mailReset ? '전송 중…' : '접수 중…'));
-    try {
-      const res = (await requestReset(form.email.value, method)) || {};
-
-      if (method === 'code') {
-        // 이 경로만 계정이 없으면 오류를 냅니다(아래 catch 로 갑니다) — 번호를
-        // 화면에 바로 띄우는 창구라 "접수됐습니다" 로 얼버무릴 수 없어서입니다.
-        if (!res.tempPassword) throw new Error('임시 비밀번호를 받지 못했습니다.');
-        mount.querySelector('#tempCode').textContent = res.tempPassword;
-        if (res.expiresInMin) mount.querySelector('#tempMin').textContent = String(res.expiresInMin);
-        form.hidden = true;
-        mount.querySelector('#forgotCode').hidden = false;
-        return;
-      }
-
-      // 가입 여부를 알려주지 않기 위해, 계정이 없어도 같은 화면을 보여줍니다.
-      const emailSlot = mount.querySelector('#forgotEmail');
-      if (emailSlot) emailSlot.textContent = form.email.value.trim();
-      form.hidden = true;
-      mount.querySelector('#forgotDone').hidden = false;
-    } catch (err) {
-      busy(btn, false);
-      btn.textContent = label();
-      toastErr(method === 'code'
-        ? `임시 비밀번호를 받지 못했습니다 — ${err.message}`
-        : `요청을 남기지 못했습니다 — ${err.message}`);
-    }
-  });
-
-  mount.querySelector('#copyCode').addEventListener('click', async () => {
-    const code = mount.querySelector('#tempCode').textContent;
-    try {
-      await navigator.clipboard.writeText(code);
-      toastOk('임시 비밀번호를 복사했습니다.');
-    } catch {
-      // 클립보드 권한이 없을 수 있습니다 — 그럴 땐 눈으로 옮겨 적으시면 됩니다.
-      toastErr('복사하지 못했습니다. 화면의 번호를 적어 주세요.');
-    }
-  });
-
-  form.email.focus();
-}
-
-/* --------------------------------------------------- 비밀번호 재설정 -- */
-
-/**
- * 재설정 링크(`#/reset?token=…`)가 여는 화면. 링크에 담긴 토큰이 곧 인증이라
- * 로그인 없이 열리고, 새 비밀번호는 본인이 직접 정합니다. 토큰이 만료됐거나
- * 이미 쓰였으면 서버가 거부하고, 그때는 다시 요청하도록 안내합니다.
- */
-export function resetView(mount) {
-  const token = currentQuery().get('token') || '';
-
-  if (!token) {
-    mount.innerHTML = `
-      <section class="section"><div class="wrap wrap--narrow" style="max-width:440px">
-        <div class="notice notice--warn">
-          <strong>재설정 링크가 올바르지 않습니다.</strong><br>
-          전달받은 링크 전체를 그대로 열었는지 확인하시고, 안 되면
-          <a href="#/forgot">다시 요청</a>해 주세요.
-        </div>
-      </div></section>`;
+  const me = currentUser();
+  if (me) {
+    go(me.needsProfile ? `/account?setup=1&next=${encodeURIComponent(nextPath())}` : nextPath(), { replace: true });
     return;
   }
 
-  mount.innerHTML = `
-    <section class="section">
-      <div class="wrap wrap--narrow" style="max-width:440px">
-        <div style="text-align:center;margin-bottom:var(--space-5)">
-          <h1 class="page-title">새 비밀번호 설정</h1>
-          <p class="page-sub">본인만 아는 새 비밀번호를 정해주세요.</p>
-        </div>
+  const next = nextPath();
+  const errCode = currentQuery().get('error') || '';
+  const errInfo = ERROR_MESSAGES[errCode] || null;
+  const simulated = isSimulated();
+  const googleReady = isGoogleEnabled();
+  const policy = signupPolicy();
 
-        <form class="card" id="resetForm" novalidate>
-          <label class="field">
-            <span class="field__label">새 비밀번호</span>
-            <input class="input" name="password" type="password" autocomplete="new-password" />
-            <span class="field__hint">8자 이상, 문자·숫자·특수문자를 모두 포함해야 합니다.</span>
-          </label>
-          <label class="field">
-            <span class="field__label">새 비밀번호 확인</span>
-            <input class="input" name="confirm" type="password" autocomplete="new-password" />
-          </label>
-          <button class="btn btn--primary btn--block btn--lg" type="submit">비밀번호 바꾸기</button>
-        </form>
-
-        <div id="resetDone" hidden>
-          <div class="card" style="text-align:center">
-            <h2 class="page-title" style="font-size:1.9rem">비밀번호가 바뀌었습니다</h2>
-            <p style="color:var(--text-black-soft);margin-top:var(--space-2);font-size:1.5rem">
-              새 비밀번호로 로그인해 주세요.
-            </p>
-            <div class="row" style="justify-content:center;margin-top:var(--space-4)">
-              <a class="btn btn--primary" href="#/login">로그인하러 가기</a>
-            </div>
-          </div>
-        </div>
-
-        <p style="text-align:center;margin-top:var(--space-4);color:var(--text-black-soft);font-size:1.4rem">
-          <a href="#/login">← 로그인으로 돌아가기</a>
-        </p>
-      </div>
-    </section>`;
-
-  const form = mount.querySelector('#resetForm');
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    clearErrors(form);
-
-    let ok = true;
-    const pwIssue = passwordIssue(form.password.value);
-    if (pwIssue) { fieldError(form.password, pwIssue); ok = false; }
-    if (form.password.value !== form.confirm.value) {
-      fieldError(form.confirm, '비밀번호가 서로 다릅니다.'); ok = false;
-    }
-    if (!ok) { focusFirstError(form); return; }
-
-    const btn = form.querySelector('button[type="submit"]');
-    busy(btn, true, '변경 중…');
-    try {
-      await confirmReset(token, form.password.value);
-      toastOk('비밀번호가 바뀌었습니다.');
-      form.hidden = true;
-      mount.querySelector('#resetDone').hidden = false;
-    } catch (err) {
-      busy(btn, false);
-      fieldError(form.password, err.message);
-      focusFirstError(form);
-    }
-  });
-  form.password.focus();
-}
-
-/* ----------------------------------------------------------- 회원가입 -- */
-
-export function signupView(mount) {
-  if (currentUser()) { go(nextPath(), { replace: true }); return; }
+  const policyHint = policy === 'allowlist'
+    ? '사전 등록된 교육생 Google 계정으로만 로그인할 수 있습니다.'
+    : policy === 'open'
+      ? 'Google 계정으로 로그인하면 최초 1회 기관명·성명 입력 후 바로 이용할 수 있습니다.'
+      : '사전 등록된 교육생은 즉시 로그인되며, 처음 접속하는 계정은 담당자 승인 후 이용할 수 있습니다.';
 
   mount.innerHTML = `
     <section class="section">
-      <div class="wrap wrap--narrow" style="max-width:520px">
+      <div class="wrap wrap--narrow" style="max-width:460px">
         <div style="text-align:center;margin-bottom:var(--space-5)">
-          <h1 class="page-title">회원가입</h1>
-          <p class="page-sub">가입하면 바로 이용할 수 있습니다. 승인 절차는 없습니다.</p>
+          <h1 class="page-title">로그인</h1>
+          <p class="page-sub">${esc(CONFIG.orgName)} 과제 제출 · 강의자료 이용</p>
         </div>
 
         ${demoNotice()}
 
-        <form class="card" id="signupForm" novalidate>
-          <label class="field">
-            <span class="field__label">기관명<span class="field__req">*</span></span>
-            <input class="input" name="institution" autocomplete="organization"
-                   placeholder="예) 행정안전부" />
-          </label>
-          <div class="field-row field-row--2">
-            <label class="field">
-              <span class="field__label">성명<span class="field__req">*</span></span>
-              <input class="input" name="name" autocomplete="name" placeholder="예) 홍길동" />
-            </label>
+        ${errInfo ? `
+          <div class="notice notice--${attr(errInfo.kind)}" role="alert" style="margin-bottom:var(--space-4)">
+            <div>
+              <strong>${esc(errInfo.title)}</strong><br>
+              <span>${esc(errInfo.body)}</span>
+            </div>
+          </div>` : ''}
+
+        ${simulated ? `
+          <form class="card" id="demoLoginForm" novalidate>
+            <p class="field__hint" style="margin-bottom:var(--space-3)">
+              로컬 시연 모드입니다. 테스트할 Google 이메일과 성명·기관명을 입력하세요.
+            </p>
             <label class="field">
               <span class="field__label">이메일<span class="field__req">*</span></span>
-              <input class="input" name="email" type="email" inputmode="email"
-                     autocomplete="email" placeholder="you@example.com" />
-              <span class="field__hint">로그인 아이디로 쓰입니다.</span>
+              <input class="input" name="email" type="email" inputmode="email" placeholder="you@gmail.com" />
             </label>
-          </div>
-          <label class="field">
-            <span class="field__label">비밀번호<span class="field__req">*</span></span>
-            <input class="input" name="password" type="password" autocomplete="new-password" />
-            <span class="field__hint">8자 이상, 문자·숫자·특수문자를 모두 포함. 다른 곳에서 쓰는 비밀번호는 피해주세요.</span>
-          </label>
-          <label class="field">
-            <span class="field__label">비밀번호 확인<span class="field__req">*</span></span>
-            <input class="input" name="confirm" type="password" autocomplete="new-password" />
-          </label>
-
-          <label class="check">
-            <input type="checkbox" name="agree" />
-            <span>기관명·성명·이메일이 과제 확인과 본인 인증에 쓰이는 데 동의합니다.<span class="field__req">*</span></span>
-          </label>
-
-          <button class="btn btn--primary btn--block btn--lg" type="submit">가입하고 시작하기</button>
-        </form>
+            <label class="field">
+              <span class="field__label">기관명</span>
+              <input class="input" name="institution" placeholder="예) 행정안전부" />
+            </label>
+            <label class="field">
+              <span class="field__label">성명</span>
+              <input class="input" name="name" placeholder="예) 홍길동" />
+            </label>
+            <button class="btn btn--google btn--block btn--lg" type="submit">
+              ${GOOGLE_G_ICON}
+              <span>Google 계정으로 시연 로그인</span>
+            </button>
+          </form>` : `
+          <div class="card" style="text-align:center">
+            <p style="font-size:1.5rem;color:var(--text-black-soft);margin-bottom:var(--space-4)">
+              별도 비밀번호 없이 <strong>Google 계정</strong>으로 안전하게 로그인합니다.
+            </p>
+            ${googleReady ? `
+              <a class="btn btn--google btn--block btn--lg" id="googleLoginBtn"
+                 href="${attr(googleLoginUrl(next))}">
+                ${GOOGLE_G_ICON}
+                <span>Google 계정으로 로그인</span>
+              </a>` : `
+              <div class="notice notice--warn" style="text-align:left;margin-bottom:var(--space-3)">
+                <span>Google 로그인 설정이 아직 되어 있지 않습니다. 관리자가 Cloudflare에
+                <code>GOOGLE_CLIENT_ID</code>와 <code>GOOGLE_CLIENT_SECRET</code>을 등록해 주세요.</span>
+              </div>
+              <button class="btn btn--google btn--block btn--lg" type="button" disabled>
+                ${GOOGLE_G_ICON}
+                <span>Google 계정으로 로그인 (설정 필요)</span>
+              </button>`}
+            <p class="field__hint" style="margin-top:var(--space-4);text-align:left">
+              ${esc(policyHint)}
+            </p>
+          </div>`}
 
         <p style="text-align:center;margin-top:var(--space-4);color:var(--text-black-soft);font-size:1.4rem">
-          이미 계정이 있으신가요? <a href="#/login${currentQuery().has('next') ? '?next=' + encodeURIComponent(nextPath()) : ''}">로그인</a>
+          <a href="#/">← 홈으로 돌아가기</a>
+        </p>
+        <p style="text-align:center;margin-top:var(--space-2);color:var(--text-black-mute);font-size:1.3rem">
+          <a href="./privacy/">개인정보처리방침</a> · <a href="./terms/">서비스 이용약관</a>
         </p>
       </div>
     </section>`;
 
-  const form = mount.querySelector('#signupForm');
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    clearErrors(form);
-
-    let ok = true;
-    if (!form.institution.value.trim()) { fieldError(form.institution, '기관명을 입력하세요.'); ok = false; }
-    if (!form.name.value.trim()) { fieldError(form.name, '성명을 입력하세요.'); ok = false; }
-    if (!isEmail(form.email.value)) { fieldError(form.email, '올바른 이메일을 입력하세요.'); ok = false; }
-    const pwIssue = passwordIssue(form.password.value);
-    if (pwIssue) { fieldError(form.password, pwIssue); ok = false; }
-    if (form.password.value !== form.confirm.value) {
-      fieldError(form.confirm, '비밀번호가 서로 다릅니다.'); ok = false;
-    }
-    if (!form.agree.checked) { fieldError(form.agree.closest('.check'), '동의가 필요합니다.'); ok = false; }
-    if (!ok) { focusFirstError(form); return; }
-
-    const btn = form.querySelector('button[type="submit"]');
-    busy(btn, true, '가입 중…');
-    try {
-      const me = await signup({
-        institution: form.institution.value,
-        name: form.name.value,
-        email: form.email.value,
-        password: form.password.value,
-      });
-      toastOk(`${me.name}님, 가입이 완료되었습니다.`);
-      go(nextPath());
-    } catch (err) {
-      busy(btn, false);
-      // 서버가 항목별 오류를 주면 그 자리에 표시합니다.
-      const fields = err.errors || {};
-      let shown = false;
-      for (const [key, message] of Object.entries(fields)) {
-        if (form[key]) { fieldError(form[key], message); shown = true; }
+  if (simulated) {
+    const form = mount.querySelector('#demoLoginForm');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearErrors(form);
+      if (!isEmail(form.email.value)) {
+        fieldError(form.email, '올바른 이메일을 입력하세요.');
+        focusFirstError(form);
+        return;
       }
-      if (!shown) fieldError(form.email, err.message);
-      focusFirstError(form);
-    }
-  });
-  form.institution.focus();
+      const btn = form.querySelector('button[type="submit"]');
+      busy(btn, true, '로그인 중…');
+      try {
+        const user = await demoLogin({
+          email: form.email.value,
+          name: form.name.value,
+          institution: form.institution.value,
+        });
+        toastOk(`${user.name || user.email}님, 환영합니다.`);
+        go(user.needsProfile ? `/account?setup=1&next=${encodeURIComponent(next)}` : next);
+      } catch (err) {
+        busy(btn, false);
+        fieldError(form.email, err.message);
+        focusFirstError(form);
+      }
+    });
+    form.email.focus();
+  }
+}
+
+/** 예전 북마크(#/signup, #/forgot, #/reset)는 Google 로그인 화면으로 안내합니다. */
+export function signupView() {
+  const next = currentQuery().get('next');
+  go(next ? `/login?next=${encodeURIComponent(nextPath())}` : '/login', { replace: true });
+}
+
+export function forgotView() {
+  go('/login', { replace: true });
+}
+
+export function resetView() {
+  go('/login', { replace: true });
 }
 
 /* ----------------------------------------------------------- 내 계정 -- */
@@ -450,66 +223,69 @@ export function accountView(mount) {
   const me = currentUser();
   if (!me) { go('/login?next=/account', { replace: true }); return; }
 
+  const setup = me.needsProfile || currentQuery().get('setup') === '1';
+  const next = nextPath();
+
   mount.innerHTML = `
     <section class="section">
       <div class="wrap wrap--narrow stack-4">
         <div class="page-head">
           <div>
-            <h1 class="page-title">내 계정</h1>
-            <p class="page-sub">${esc(me.institution)} · ${esc(me.name)}</p>
+            <h1 class="page-title">${me.needsProfile ? '교육생 정보 입력' : '내 계정'}</h1>
+            <p class="page-sub">${esc([me.institution, me.name].filter(Boolean).join(' · ') || me.email)}</p>
           </div>
           <button class="btn btn--quiet" data-logout>로그아웃</button>
         </div>
 
-        ${me.mustChangePassword ? `
-          <div class="notice notice--warn">
-            <strong>임시 비밀번호로 로그인했습니다.</strong> 아래에서 새 비밀번호로 바꿔주세요.
-            임시 비밀번호는 이 한 번을 위한 것이라, 바꾸기 전까지는 계속 이 안내가 뜹니다.
-          </div>` : ''}
+        ${me.needsProfile ? `
+          <div class="notice notice--info">
+            <span><strong>Google 로그인이 완료되었습니다.</strong> 과제 제출과 출결 확인에 쓰일
+            <strong>기관명</strong>과 <strong>성명</strong>을 한 번만 입력해 주세요.</span>
+          </div>
+
+          <form class="card" id="profileForm" novalidate>
+            <h2 class="page-title" style="font-size:1.8rem;margin-bottom:var(--space-3)">기본 정보 등록</h2>
+            <label class="field">
+              <span class="field__label">기관명<span class="field__req">*</span></span>
+              <input class="input" name="institution" autocomplete="organization"
+                     placeholder="예) 행정안전부" value="${attr(me.institution || '')}" />
+            </label>
+            <label class="field">
+              <span class="field__label">성명<span class="field__req">*</span></span>
+              <input class="input" name="name" autocomplete="name"
+                     placeholder="예) 홍길동" value="${attr(me.name || '')}" />
+            </label>
+            <label class="check">
+              <input type="checkbox" name="agree" />
+              <span>기관명·성명·이메일이 과제 확인과 본인 인증에 쓰이는 데 동의합니다.<span class="field__req">*</span></span>
+            </label>
+            <div class="row row--end" style="margin-top:var(--space-3)">
+              <button class="btn btn--primary btn--lg" type="submit">저장하고 시작하기</button>
+            </div>
+          </form>` : ''}
 
         <div class="card">
           <div class="kv">
+            <div class="kv__row"><div class="kv__k">로그인 방식</div><div class="kv__v"><span class="badge badge--open">Google 계정 연동</span></div></div>
             <div class="kv__row"><div class="kv__k">이메일</div><div class="kv__v">${esc(me.email)}</div></div>
             <div class="kv__row"><div class="kv__k">기관명</div><div class="kv__v">${esc(me.institution || '—')}</div></div>
-            <div class="kv__row"><div class="kv__k">성명</div><div class="kv__v">${esc(me.name)}</div></div>
+            <div class="kv__row"><div class="kv__k">성명</div><div class="kv__v">${esc(me.name || '—')}</div></div>
             <div class="kv__row"><div class="kv__k">권한</div><div class="kv__v">${
               me.role === 'admin' ? '<span class="badge badge--gold">관리자</span>' : '일반 회원'
             }</div></div>
             <div class="kv__row"><div class="kv__k">가입일</div><div class="kv__v">${esc(fmtDate(me.createdAt))}</div></div>
           </div>
-          <p class="field__hint" style="margin-top:var(--space-3)">
-            기관명·성명을 바꾸려면 담당자에게 문의하세요.
-          </p>
+          ${me.needsProfile ? '' : `
+            <p class="field__hint" style="margin-top:var(--space-3)">
+              기관명·성명을 바꾸려면 담당자에게 문의하세요. 비밀번호는 Google 계정에서 관리됩니다.
+            </p>`}
         </div>
 
-        <form class="card" id="pwForm" novalidate>
-          <h2 class="page-title" style="font-size:1.8rem;margin-bottom:var(--space-3)">비밀번호 변경</h2>
-          <label class="field">
-            <span class="field__label">${me.mustChangePassword
-    ? '임시 비밀번호 (숫자 6자리)' : '현재 비밀번호'}</span>
-            <input class="input" name="current" type="password" autocomplete="current-password"
-                   ${me.mustChangePassword ? 'inputmode="numeric"' : ''} />
-          </label>
-          <div class="field-row field-row--2">
-            <label class="field">
-              <span class="field__label">새 비밀번호</span>
-              <input class="input" name="next" type="password" autocomplete="new-password" />
-              <span class="field__hint">8자 이상, 문자·숫자·특수문자 포함</span>
-            </label>
-            <label class="field">
-              <span class="field__label">새 비밀번호 확인</span>
-              <input class="input" name="confirm" type="password" autocomplete="new-password" />
-            </label>
-          </div>
-          <div class="row row--end">
-            <button class="btn btn--primary" type="submit">변경하기</button>
-          </div>
-        </form>
-
-        <div class="row">
-          <a class="btn btn--outline" href="#/my">내 제출물 보기</a>
-          <a class="btn btn--quiet" href="#/">프로젝트 목록</a>
-        </div>
+        ${me.needsProfile ? '' : `
+          <div class="row">
+            <a class="btn btn--outline" href="#/my">내 제출물 보기</a>
+            <a class="btn btn--quiet" href="#/">프로젝트 목록</a>
+          </div>`}
       </div>
     </section>`;
 
@@ -521,32 +297,44 @@ export function accountView(mount) {
     go('/login');
   });
 
-  const form = mount.querySelector('#pwForm');
-  // 임시 비밀번호로 들어온 사람은 여기서 할 일이 하나뿐이라 커서를 옮겨 둡니다.
-  // (innerHTML 로 붙인 요소에는 autofocus 가 먹지 않습니다.)
-  if (me.mustChangePassword) form.current.focus();
+  const profileForm = mount.querySelector('#profileForm');
+  if (profileForm) {
+    profileForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      clearErrors(profileForm);
 
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    clearErrors(form);
+      let ok = true;
+      if (!profileForm.institution.value.trim()) {
+        fieldError(profileForm.institution, '기관명을 입력하세요.'); ok = false;
+      }
+      if (!profileForm.name.value.trim()) {
+        fieldError(profileForm.name, '성명을 입력하세요.'); ok = false;
+      }
+      if (!profileForm.agree.checked) {
+        fieldError(profileForm.agree.closest('.check'), '동의가 필요합니다.'); ok = false;
+      }
+      if (!ok) { focusFirstError(profileForm); return; }
 
-    let ok = true;
-    if (!form.current.value) { fieldError(form.current, '현재 비밀번호를 입력하세요.'); ok = false; }
-    const pwIssue = passwordIssue(form.next.value);
-    if (pwIssue) { fieldError(form.next, pwIssue); ok = false; }
-    if (form.next.value !== form.confirm.value) { fieldError(form.confirm, '비밀번호가 서로 다릅니다.'); ok = false; }
-    if (!ok) { focusFirstError(form); return; }
-
-    const btn = form.querySelector('button[type="submit"]');
-    busy(btn, true, '변경 중…');
-    try {
-      await changePassword(form.current.value, form.next.value);
-      toastOk('비밀번호가 바뀌었습니다.');
-      accountView(mount);
-    } catch (err) {
-      busy(btn, false);
-      fieldError(form.current, err.message);
-      focusFirstError(form);
-    }
-  });
+      const btn = profileForm.querySelector('button[type="submit"]');
+      busy(btn, true, '저장 중…');
+      try {
+        const updated = await completeProfile({
+          institution: profileForm.institution.value,
+          name: profileForm.name.value,
+        });
+        toastOk(`${updated.name}님, 등록이 완료되었습니다.`);
+        go(setup ? next : '/account', { replace: true });
+      } catch (err) {
+        busy(btn, false);
+        const fields = err.errors || {};
+        let shown = false;
+        for (const [key, message] of Object.entries(fields)) {
+          if (profileForm[key]) { fieldError(profileForm[key], message); shown = true; }
+        }
+        if (!shown) fieldError(profileForm.institution, err.message);
+        focusFirstError(profileForm);
+      }
+    });
+    profileForm.institution.focus();
+  }
 }

@@ -1,21 +1,16 @@
 /**
- * DemoAuth — 서버가 없는 저장소(브라우저 저장 · GitHub)를 위한 회원 흉내내기.
+ * DemoAuth — 서버가 없는 저장소(브라우저 저장 · GitHub)를 위한 시연용 Google 로그인 흉내.
  *
- * 화면 코드가 저장소마다 갈라지지 않도록 R2Auth 와 같은 모양을 갖췄습니다.
- * 다만 **이건 진짜 인증이 아닙니다.** 회원 정보가 이 브라우저의 localStorage 에만
- * 있고 검증도 브라우저에서 일어나므로, 마음먹으면 얼마든지 우회할 수 있습니다.
- * 화면을 둘러보거나 시연할 때만 쓰고, 실제 운영은 R2 모드로 하세요.
+ * **이건 진짜 인증이 아닙니다.** 회원 정보가 이 브라우저의 localStorage 에만
+ * 있고 검증도 브라우저에서 일어나므로, 화면 검수·시연할 때만 쓰고 실제 운영은
+ * 반드시 Cloudflare R2 + Google OAuth 모드로 하세요.
  */
 import { CONFIG } from '../config.js';
 import { normRole, normTeam, TEAM_MAX } from '../camp.js';
 
 const MEMBERS_KEY = 'ah.demo.members';
 const SESSION_KEY = 'ah.demo.session';
-const ITERATIONS = 15000;
-const TEMP_TTL_MS = 30 * 60 * 1000;      // 임시 비밀번호 수명
-const RESET_COOLDOWN_MS = 5 * 60 * 1000; // 재요청 간격
 
-const enc = new TextEncoder();
 const normEmail = (v) => String(v || '').trim().toLowerCase();
 
 function read(key, fallback) {
@@ -28,76 +23,32 @@ function write(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode */ }
 }
 
-/** 숫자 6자리 임시 비밀번호 — shared/auth.js 의 numericTempPassword 와 같은 방식. */
-function numericTempPassword(digits = 6) {
-  const max = 10 ** digits;
-  const limit = Math.floor(0xFFFFFFFF / max) * max;
-  let n;
-  do {
-    n = crypto.getRandomValues(new Uint32Array(1))[0];
-  } while (n >= limit);
-  return String(n % max).padStart(digits, '0');
-}
-
-function b64(bytes) {
-  let s = '';
-  const a = new Uint8Array(bytes);
-  for (let i = 0; i < a.length; i += 1) s += String.fromCharCode(a[i]);
-  return btoa(s);
-}
-function unb64(text) {
-  const s = atob(text);
-  const a = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i += 1) a[i] = s.charCodeAt(i);
-  return a;
-}
-
-async function derive(password, salt, iterations) {
-  const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, key, 256,
-  );
-  return b64(new Uint8Array(bits));
-}
-
-async function hash(password) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  return `pbkdf2$${ITERATIONS}$${b64(salt)}$${await derive(password, salt, ITERATIONS)}`;
-}
-
-async function verify(password, stored) {
-  const p = String(stored || '').split('$');
-  if (p.length !== 4 || p[0] !== 'pbkdf2') return false;
-  return (await derive(password, unb64(p[2]), Number(p[1]))) === p[3];
-}
-
 const adminEmails = () => new Set((CONFIG.admins || []).map((a) => normEmail(a.email)));
 
 function publicMember(m) {
   if (!m) return null;
+  const name = String(m.name || '').trim();
+  const institution = String(m.institution || '').trim();
   return {
     email: m.email,
-    name: m.name,
-    institution: m.institution || '',
+    name,
+    institution,
     role: adminEmails().has(normEmail(m.email)) ? 'admin' : normRole(m.role),
-    // 그룹장이 맡은 조 (1~8). 그룹장이 아니면 0 — assets/js/camp.js 참고.
     team: normRole(m.role) === 'leader' ? normTeam(m.team) : 0,
     status: m.status || 'active',
+    authProvider: 'google',
+    googleLinked: true,
+    needsProfile: !name || !institution,
     createdAt: m.createdAt,
     lastLoginAt: m.lastLoginAt || null,
-    mustChangePassword: Boolean(m.mustChangePassword),
-    resetRequestedAt: m.resetRequestedAt || null,
   };
 }
 
 export class DemoAuth {
-  /** @param {object|null} store 회원을 지울 때 그 사람의 제출물·표까지 정리하기 위해 씁니다. */
   constructor(store = null) {
     this.store = store;
     this.supported = true;
-    /** 화면에 "시연용" 이라고 표시하기 위한 표식입니다. */
     this.simulated = true;
-    /** R2Auth 와 모양을 맞추기 위한 필드 — 로컬은 늘 최신입니다. */
     this.synced = true;
     this._me = null;
   }
@@ -118,53 +69,47 @@ export class DemoAuth {
     return this._me;
   }
 
-  async signup({ email, password, name, institution }) {
+  async demoLogin({ email, name = '', institution = '' }) {
     const e = normEmail(email);
-    const errors = {};
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e)) errors.email = '올바른 이메일 주소를 입력하세요.';
-    if (String(password || '').length < 8) errors.password = '비밀번호는 8자 이상이어야 합니다.';
-    if (!String(name || '').trim()) errors.name = '성명을 입력하세요.';
-    if (!String(institution || '').trim()) errors.institution = '기관명을 입력하세요.';
-    if (Object.keys(errors).length) {
-      const err = new Error('입력을 확인하세요.'); err.errors = errors; throw err;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e)) {
+      throw new Error('올바른 Google 이메일 주소를 입력하세요.');
     }
-    if (this.find(e)) {
-      const err = new Error('이미 가입된 이메일입니다. 로그인해 주세요.');
-      err.errors = { email: '이미 가입된 이메일입니다.' };
-      throw err;
-    }
-
     const now = new Date().toISOString();
-    const rec = {
-      email: e,
-      name: String(name).trim(),
-      institution: String(institution).trim(),
-      passwordHash: await hash(String(password)),
-      role: adminEmails().has(e) ? 'admin' : 'member',
-      status: 'active',
-      createdAt: now,
-      lastLoginAt: now,
-    };
-    write(MEMBERS_KEY, [...this.members(), rec]);
+    const list = this.members();
+    let rec = list.find((m) => normEmail(m.email) === e);
+    if (rec) {
+      if ((rec.status || 'active') === 'blocked') throw new Error('이용이 정지된 계정입니다.');
+      if ((rec.status || 'active') === 'pending') throw new Error('가입 승인을 기다리고 있습니다.');
+      if (name && !rec.name) rec.name = String(name).trim();
+      if (institution && !rec.institution) rec.institution = String(institution).trim();
+      rec.lastLoginAt = now;
+      write(MEMBERS_KEY, list);
+    } else {
+      rec = {
+        email: e,
+        name: String(name || '').trim(),
+        institution: String(institution || '').trim(),
+        role: adminEmails().has(e) ? 'admin' : 'member',
+        status: 'active',
+        createdAt: now,
+        lastLoginAt: now,
+      };
+      write(MEMBERS_KEY, [...list, rec]);
+    }
     write(SESSION_KEY, e);
     this.setMe(publicMember(rec));
     return this._me;
   }
 
-  async login(email, password) {
-    const m = this.find(email);
-    const generic = () => new Error('이메일 또는 비밀번호가 올바르지 않습니다.');
-    if (!m) { await hash(String(password)); throw generic(); }
-    if ((m.status || 'active') !== 'active') throw new Error('이용이 정지된 계정입니다.');
-    if (!(await verify(String(password), m.passwordHash))) throw generic();
-    if (m.mustChangePassword && Number(m.tempPasswordUntil || 0) &&
-        Number(m.tempPasswordUntil) < Date.now()) {
-      throw new Error('임시 비밀번호가 만료되었습니다. 비밀번호 찾기에서 다시 받아 주세요.');
+  async completeProfile({ name, institution }) {
+    const m = this.find(this._me?.email);
+    if (!m) throw new Error('로그인이 필요합니다.');
+    if (!String(name || '').trim() || !String(institution || '').trim()) {
+      throw new Error('성명과 기관명을 모두 입력하세요.');
     }
-
-    m.lastLoginAt = new Date().toISOString();
+    m.name = String(name).trim().slice(0, 60);
+    m.institution = String(institution).trim().slice(0, 80);
     write(MEMBERS_KEY, this.members().map((x) => (normEmail(x.email) === normEmail(m.email) ? m : x)));
-    write(SESSION_KEY, normEmail(m.email));
     this.setMe(publicMember(m));
     return this._me;
   }
@@ -174,62 +119,37 @@ export class DemoAuth {
     this.setMe(null);
   }
 
-  async changePassword(current, next) {
-    const m = this.find(this._me?.email);
-    if (!m) throw new Error('로그인이 필요합니다.');
-    if (!(await verify(String(current), m.passwordHash))) throw new Error('현재 비밀번호가 올바르지 않습니다.');
-    if (String(next).length < 8) throw new Error('새 비밀번호는 8자 이상이어야 합니다.');
-    m.passwordHash = await hash(String(next));
-    m.mustChangePassword = false;
-    m.tempPasswordUntil = 0;
-    write(MEMBERS_KEY, this.members().map((x) => (normEmail(x.email) === normEmail(m.email) ? m : x)));
-    this._me = { ...this._me, mustChangePassword: false };
-  }
-
-  /**
-   * "비밀번호를 잊었습니다" 접수 — 서버 쪽(shared/r2api.js) 규칙을 흉내냅니다.
-   * 'code' 를 주면 6자리 임시 비밀번호를 그 자리에서 돌려줍니다.
-   */
-  async requestReset(email, method = 'admin') {
-    const list = this.members();
-    const m = list.find((x) => normEmail(x.email) === normEmail(email));
-
-    if (method === 'code') {
-      if (!m) throw new Error('가입되지 않은 이메일입니다.');
-      if ((m.status || 'active') !== 'active') {
-        throw new Error('이용이 정지된 계정입니다. 관리자에게 문의하세요.');
-      }
-      const issuedAt = Number(m.tempPasswordUntil || 0) - TEMP_TTL_MS;
-      const since = Date.now() - issuedAt;
-      if (issuedAt > 0 && since < RESET_COOLDOWN_MS) {
-        const wait = Math.max(1, Math.ceil((RESET_COOLDOWN_MS - since) / 60000));
-        throw new Error(`조금 전에 임시 비밀번호를 받으셨습니다. ${wait}분 후 다시 시도해 주세요.`);
-      }
-      const temp = numericTempPassword();
-      m.passwordHash = await hash(temp);
-      m.mustChangePassword = true;
-      m.tempPasswordUntil = Date.now() + TEMP_TTL_MS;
-      m.resetRequestedAt = null;
-      write(MEMBERS_KEY, list);
-      return {
-        tempPassword: temp,
-        expiresAt: m.tempPasswordUntil,
-        expiresInMin: Math.round(TEMP_TTL_MS / 60000),
-      };
-    }
-
-    if (m) {
-      const last = m.resetRequestedAt ? Date.parse(m.resetRequestedAt) : 0;
-      if (!(Number.isFinite(last) && Date.now() - last < RESET_COOLDOWN_MS)) {
-        m.resetRequestedAt = new Date().toISOString();
-        write(MEMBERS_KEY, list);
-      }
-    }
-    // 계정이 없어도 성공한 것처럼 끝냅니다(가입 여부를 알려주지 않기 위해).
-    return {};
-  }
-
   async listMembers() { return this.members().map(publicMember); }
+
+  async inviteMembers(members) {
+    const list = this.members();
+    const now = new Date().toISOString();
+    let added = 0;
+    let activated = 0;
+    let skipped = 0;
+    for (const item of members || []) {
+      const e = normEmail(typeof item === 'string' ? item : item?.email);
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e)) continue;
+      const existing = list.find((m) => normEmail(m.email) === e);
+      if (existing) {
+        if ((existing.status || 'active') === 'pending') { existing.status = 'active'; activated += 1; }
+        else skipped += 1;
+        continue;
+      }
+      list.push({
+        email: e,
+        name: typeof item === 'object' ? String(item?.name || '').trim() : '',
+        institution: typeof item === 'object' ? String(item?.institution || '').trim() : '',
+        role: adminEmails().has(e) ? 'admin' : 'member',
+        status: 'active',
+        createdAt: now,
+        lastLoginAt: null,
+      });
+      added += 1;
+    }
+    write(MEMBERS_KEY, list);
+    return { ok: true, added, activated, skipped, total: added + activated + skipped };
+  }
 
   async patchMember(email, changes) {
     if (normEmail(email) === normEmail(this._me?.email)) {
@@ -238,7 +158,6 @@ export class DemoAuth {
     const list = this.members();
     const m = list.find((x) => normEmail(x.email) === normEmail(email));
     if (!m) throw new Error('해당 회원을 찾을 수 없습니다.');
-    // 권한은 회원·그룹장·관리자 셋입니다 (서버와 같은 규칙 — shared/r2api.js).
     if (['admin', 'member', 'leader'].includes(changes.role)) {
       m.role = changes.role;
       if (changes.role !== 'leader') m.team = 0;
@@ -250,19 +169,16 @@ export class DemoAuth {
       }
       m.team = team;
     }
-    // 조 없는 그룹장은 아무 조도 못 보는 빈 권한이라, 조가 없으면 회원으로 둡니다.
     if (normRole(m.role) === 'leader' && !normTeam(m.team)) m.role = 'member';
     if (normRole(m.role) !== 'leader') m.team = 0;
 
-    if (changes.status === 'active' || changes.status === 'blocked') m.status = changes.status;
+    if (['active', 'blocked', 'pending'].includes(changes.status)) m.status = changes.status;
+    if (typeof changes.name === 'string' && changes.name.trim()) m.name = changes.name.trim();
+    if (typeof changes.institution === 'string') m.institution = changes.institution.trim();
     write(MEMBERS_KEY, list);
     return publicMember(m);
   }
 
-  /**
-   * 회원 삭제 — R2 모드의 서버 규칙을 그대로 흉내냅니다.
-   * 이용 정지된 일반 회원만, 자기 자신은 제외.
-   */
   async deleteMember(email, { purgeSubmissions = false } = {}) {
     const e = normEmail(email);
     if (e === normEmail(this._me?.email)) throw new Error('자기 계정은 삭제할 수 없습니다.');
@@ -273,8 +189,9 @@ export class DemoAuth {
     if (adminEmails().has(e) || m.role === 'admin') {
       throw new Error('관리자 계정은 삭제할 수 없습니다. 관리자 권한을 먼저 해제하세요.');
     }
-    if ((m.status || 'active') !== 'blocked') {
-      throw new Error('이용 정지된 회원만 삭제할 수 있습니다. 먼저 이용을 정지하세요.');
+    const st = m.status || 'active';
+    if (st !== 'blocked' && st !== 'pending') {
+      throw new Error('이용 정지 또는 승인 대기 중인 회원만 삭제할 수 있습니다. 먼저 이용을 정지하세요.');
     }
 
     let removedSubmissions = 0;
@@ -283,24 +200,10 @@ export class DemoAuth {
       for (const s of subs) await this.store.deleteSubmission(s.id);
       removedSubmissions = subs.length;
     }
-    // 계정이 없어졌으니 그 사람이 넣은 표도 남겨둘 이유가 없습니다.
     await this.store?.dropVoter?.(e);
 
     write(MEMBERS_KEY, list.filter((x) => normEmail(x.email) !== e));
     if (read(SESSION_KEY, null) === e) write(SESSION_KEY, null);
     return { ok: true, removedSubmissions };
-  }
-
-  async resetPassword(email) {
-    const list = this.members();
-    const m = list.find((x) => normEmail(x.email) === normEmail(email));
-    if (!m) throw new Error('해당 회원을 찾을 수 없습니다.');
-    const temp = numericTempPassword();
-    m.passwordHash = await hash(temp);
-    m.mustChangePassword = true;
-    m.tempPasswordUntil = Date.now() + TEMP_TTL_MS;
-    m.resetRequestedAt = null;
-    write(MEMBERS_KEY, list);
-    return temp;
   }
 }

@@ -2,12 +2,12 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { chromeOptions } from './chrome.mjs';
-import { startServer } from './mock-r2.mjs';
+import { startServer, contextGoogleLogin } from './mock-r2.mjs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const { server, origin, bucket } = await startServer({ root, env: { PBKDF2_ITERATIONS: 1000 } });
+const { server, origin, bucket, setNextGoogleUser } = await startServer({ root });
 const browser = await chromium.launch(chromeOptions());
 const failures = [], errors = [];
 async function step(name, run) {
@@ -24,7 +24,7 @@ async function get(context, path) {
 }
 async function signup(email, name) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  await post(context, '/auth/signup', { email, name, institution: '행정안전부', password: 'Rehearsal-browser-2026!' });
+  await contextGoogleLogin(context, { origin, setNextGoogleUser, email, name, institution: '행정안전부' });
   return context;
 }
 async function action(page, path, trigger) {

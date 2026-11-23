@@ -7,8 +7,9 @@ const FAQ = [
   {
     id: 'signup',
     q: '어떻게 시작하나요?',
-    a: '먼저 회원가입을 하세요. 기관명·성명·이메일과 비밀번호만 정하면 되고, 승인 절차 없이 '
-     + '바로 이용할 수 있습니다. 이후에는 로그인만 하면 과제 제출과 강의자료 열람이 모두 됩니다.',
+    a: '별도 회원가입이나 비밀번호 설정 없이 [Google 계정으로 로그인]을 누르세요. '
+     + '사전 등록된 교육생은 즉시 로그인되며, 처음 접속하는 계정은 담당자 승인 후 이용할 수 있습니다. '
+     + '최초 1회 기관명·성명만 입력하면 과제 제출과 강의자료 열람이 모두 가능합니다.',
   },
   {
     id: 'submit',
@@ -78,10 +79,9 @@ const FAQ = [
   },
   {
     id: 'password',
-    q: '비밀번호를 잊었어요.',
-    a: '로그인 화면의 [비밀번호를 잊으셨나요?] 를 눌러 이메일을 남겨주세요. '
-     + '메일이 자동으로 가지는 않고, 담당자 화면에 요청이 뜨면 임시 비밀번호를 발급해 '
-     + '직접 전달해 드립니다. 받으신 뒤 [내 계정] 에서 새 비밀번호로 바꾸세요.',
+    q: '비밀번호를 따로 만들어야 하나요?',
+    a: '아니요. 이 사이트는 비밀번호를 저장하지 않고 Google 계정(OAuth 2.0)으로만 로그인합니다. '
+     + 'Google 계정에 로그인할 수 없다면 Google 계정 복구를 이용하시거나, 다른 Google 계정을 쓰셔야 할 경우 담당자에게 새 이메일 등록을 요청해 주세요.',
   },
   {
     id: 'files',
@@ -92,9 +92,8 @@ const FAQ = [
   {
     id: 'privacy',
     q: '입력한 개인정보는 어떻게 다뤄지나요?',
-    a: '기관명·성명·이메일은 과제 확인과 본인 인증에만 씁니다. 비밀번호는 원문이 저장되지 않고 '
-     + '해시로만 보관됩니다. 제출물을 공개로 설정한 프로젝트에서도 이메일 주소는 본인과 관리자에게만 '
-     + '보입니다. 과정이 끝나면 관리자가 일괄 삭제할 수 있습니다.',
+    a: '기관명·성명·Google 이메일은 과제 확인과 본인 인증에만 씁니다. 사이트에는 비밀번호가 전혀 저장되지 않습니다. '
+     + '제출물을 공개로 설정한 프로젝트에서도 이메일 주소는 본인과 관리자에게만 보입니다. 과정이 끝나면 관리자가 일괄 삭제할 수 있습니다.',
   },
 ];
 
@@ -131,33 +130,24 @@ export function guideView(mount) {
         <div class="card" id="admin">
           <h2 class="page-title" style="font-size:2rem;margin-bottom:var(--space-3)">계정과 권한</h2>
 
-          <h3 style="font-size:1.6rem;margin-bottom:8px">비밀번호</h3>
+          <h3 style="font-size:1.6rem;margin-bottom:8px">Google 로그인 (OAuth 2.0 + PKCE)</h3>
           <p style="color:var(--text-black-soft);line-height:1.8;margin-bottom:var(--space-4)">
-            가입할 때 각자 정합니다. 서버가 <code>PBKDF2</code> 로 해시해서 보관하므로
-            원문은 어디에도 남지 않고, 코드나 설정 파일에도 들어가지 않습니다.
-            바꾸려면 <a href="#/account">내 계정</a> 에서 하시면 됩니다.
+            이 사이트는 비밀번호를 직접 저장하지 않고 <strong>Google 계정 인증</strong>만 사용합니다.
+            Google 이 이메일 소유권을 검증한 계정으로만 로그인할 수 있으며, 세션은 자바스크립트로
+            읽을 수 없는 <code>HttpOnly</code> 서명 쿠키로 발급됩니다.
           </p>
 
-          <h3 style="font-size:1.6rem;margin-bottom:8px">관리자</h3>
+          <h3 style="font-size:1.6rem;margin-bottom:8px">관리자 및 교육생 승인</h3>
           <p style="color:var(--text-black-soft);line-height:1.8;margin-bottom:var(--space-4)">
-            정해진 이메일로 가입하면 자동으로 관리자가 됩니다. R2 모드에서는 Cloudflare 의
-            <code>ADMIN_EMAILS</code> 환경변수로 지정하고, 설정하지 않으면 서버 기본값이 쓰입니다.
-            이미 가입한 회원을 관리자로 올리는 것은 <a href="#/admin/members">회원 관리</a> 에서 됩니다.
-          </p>
-
-          <h3 style="font-size:1.6rem;margin-bottom:8px">비밀번호를 잊은 회원</h3>
-          <p style="color:var(--text-black-soft);line-height:1.8">
-            메일을 보낼 수단이 없어 스스로 재설정할 수는 없습니다. 관리자가
-            <a href="#/admin/members">회원 관리</a> 에서 <strong>비밀번호 초기화</strong> 를 누르면
-            임시 비밀번호가 화면에 뜹니다. 그 값을 본인에게 직접 전달하세요.
+            Cloudflare 의 <code>ADMIN_EMAILS</code> 환경변수에 지정된 Google 이메일로 로그인하면
+            자동으로 관리자가 됩니다. 관리자는 <a href="#/admin/members">회원 관리</a> 에서
+            교육생 이메일을 미리 등록하거나, 처음 로그인한 계정의 승인 요청을 수락·거절할 수 있습니다.
           </p>
 
           <div class="notice notice--info" style="margin-top:var(--space-4)">
-            <strong>어디까지 안전한가.</strong> 비밀번호 확인과 권한 검사는 모두 서버(Worker)에서
-            일어나고, 세션은 자바스크립트로 읽을 수 없는 HttpOnly 쿠키로 오갑니다.
-            제출물도 서버가 소유해서, 다른 회원의 제출물을 고치거나 지울 수 없습니다.
-            다만 <strong>이메일 인증이 없어</strong> 오타가 난 주소로도 가입이 되고,
-            서버 없는 시연 모드(브라우저 저장·GitHub)에서는 회원 기능이 흉내일 뿐입니다.
+            <strong>어디까지 안전한가.</strong> 인증·권한 검사와 세션 무효화는 모두 서버(Worker)에서
+            이뤄집니다. 로그아웃하거나 이용 정지 시 서버의 세션 세대가 즉시 올라가 기존 쿠키가 무효화되며,
+            제출물과 강의자료도 로그인·승인된 회원에게만 제공됩니다.
           </div>
         </div>
 

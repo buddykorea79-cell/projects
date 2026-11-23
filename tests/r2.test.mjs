@@ -5,13 +5,12 @@
  * 제대로 동작하는지 봅니다. 메모리 R2 스텁 위에서 실제 shared/r2api.js 와
  * 실제 assets/js/store/r2.js 를 함께 돌립니다.
  */
-import { MockBucket } from './mock-r2.mjs';
+import { MockBucket, TEST_GOOGLE_ENV, mockGoogleLogin, applySetCookies } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
 import { R2Store } from '../assets/js/store/r2.js';
 
 const ORIGIN = 'https://site.test';
 const ADMIN = 'aireader@mois.go.kr';
-const PASSWORD = 'hunter2!hunter2';
 
 const fails = [];
 const t = async (name, fn) => {
@@ -23,21 +22,18 @@ const eq = (a, b, m) => {
 };
 
 const bucket = new MockBucket();
-const env = { BUCKET: bucket, PBKDF2_ITERATIONS: 1000 };
+const env = { BUCKET: bucket, ...TEST_GOOGLE_ENV, SIGNUP_POLICY: 'open' };
 
-/* 브라우저처럼 쿠키를 들고 다니는 fetch 로 바꿔 끼웁니다. */
-let cookie = '';
+/* 브라우저처럼 여러 쿠키를 들고 다니는 fetch 로 바꿔 끼웁니다. */
+const jar = new Map();
+const cookieHeader = () => [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
 globalThis.fetch = async (input, init = {}) => {
   const raw = typeof input === 'string' ? input : input.url;
   const url = raw.startsWith('http') ? raw : `${ORIGIN}${raw}`;
   const headers = { Origin: ORIGIN, ...(init.headers || {}) };
-  if (cookie) headers.Cookie = cookie;
+  if (jar.size) headers.Cookie = cookieHeader();
   const res = await handleApi(new Request(url, { ...init, headers }), env, { basePath: '/api' });
-  const set = res.headers.get('Set-Cookie');
-  if (set) {
-    const pair = set.split(';')[0];
-    cookie = pair.endsWith('=') ? '' : pair;
-  }
+  applySetCookies(jar, res.headers);
   return res;
 };
 globalThis.window = { dispatchEvent() {} };
@@ -45,7 +41,7 @@ globalThis.window = { dispatchEvent() {} };
 const api = (path, init = {}) => handleApi(
   new Request(`${ORIGIN}/api${path}`, {
     ...init,
-    headers: { Origin: ORIGIN, ...(cookie ? { Cookie: cookie } : {}), ...(init.headers || {}) },
+    headers: { Origin: ORIGIN, ...(jar.size ? { Cookie: cookieHeader() } : {}), ...(init.headers || {}) },
   }), env, { basePath: '/api' },
 );
 
@@ -53,13 +49,20 @@ const store = new R2Store({ apiBase: '/api' });
 
 console.log('\n== 준비 ==');
 
-await t('관리자로 가입하고 저장소 초기화', async () => {
+await t('관리자로 Google 로그인하고 저장소 초기화', async () => {
   await store.init();
-  await store.auth.signup({
-    email: ADMIN, password: PASSWORD, name: '관리자', institution: '행정안전부',
-  });
+  const res = await mockGoogleLogin(async (path, opts = {}) => {
+    const r = await fetch(`/api${path}`, {
+      method: opts.method || 'GET',
+      headers: opts.body ? { 'Content-Type': 'application/json' } : {},
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    const data = (r.headers.get('Content-Type') || '').includes('json') ? await r.json().catch(() => null) : null;
+    return { status: r.status, data, res: r };
+  }, { email: ADMIN, name: '관리자', institution: '행정안전부' });
+  eq(res.profile.status, 200, 'profile');
+  await store.init();
   eq(store.auth.isAdmin(), true, 'admin');
-  await store.init();
   eq(store.maxUploadMB, 100, '업로드 한도');
 });
 
@@ -152,7 +155,7 @@ await t('용량 초과 거부', async () => {
   const res = await handleApi(
     new Request(`${ORIGIN}/api/upload?name=big.pdf`, {
       method: 'POST',
-      headers: { Origin: ORIGIN, Cookie: cookie },
+      headers: { Origin: ORIGIN, Cookie: cookieHeader() },
       body: new Uint8Array(2 * 1024 * 1024),
     }), { ...env, MAX_UPLOAD_MB: 1 }, { basePath: '/api' });
   eq(res.status, 413, 'status');

@@ -388,34 +388,78 @@ export function findMember(list, email) {
   return list.find((m) => normEmail(m.email) === e) || null;
 }
 
+export function findMemberByGoogleSub(list, sub) {
+  const s = String(sub || '').trim();
+  if (!s) return null;
+  return list.find((m) => String(m.googleSub || '') === s) || null;
+}
+
 /**
- * 세션 세대. 비밀번호 변경·초기화·이용 정지 때 올려서, 그 전에 발급된 토큰을
+ * 신규 Google 계정 가입 정책.
+ *   - 'approval'  (기본) 사전 등록 이메일·허용 도메인·관리자는 즉시 승인,
+ *                 그 외는 'pending'(승인 대기)으로 저장해 관리자가 승인
+ *   - 'allowlist' 사전 등록 이메일·허용 도메인·관리자만 로그인 허용 (미등록자는 거절)
+ *   - 'open'      Google 이메일 인증된 사용자면 즉시 활성화
+ */
+export function signupPolicyOf(env) {
+  const raw = String(env?.SIGNUP_POLICY || 'approval').trim().toLowerCase();
+  if (raw === 'allowlist' || raw === 'open' || raw === 'approval') return raw;
+  return 'approval';
+}
+
+export function allowedDomainsOf(env) {
+  return String(env?.ALLOWED_EMAIL_DOMAINS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase().replace(/^@/, ''))
+    .filter(Boolean);
+}
+
+export function isDomainAllowed(email, env) {
+  const domains = allowedDomainsOf(env);
+  if (!domains.length) return false;
+  const domain = normEmail(email).split('@')[1] || '';
+  return Boolean(domain && domains.includes(domain));
+}
+
+/**
+ * 세션 세대. 로그아웃·이용 정지·권한 변경 때 올려서, 그 전에 발급된 토큰을
  * 만료 시각과 무관하게 무효로 만듭니다. (토큰 안에 같은 값이 들어갑니다.)
  */
 export const epochOf = (member) => Number(member?.sessionEpoch || 0);
 
 export function bumpEpoch(member) {
-  member.sessionEpoch = Date.now();
+  const now = Date.now();
+  const prev = epochOf(member);
+  member.sessionEpoch = now > prev ? now : prev + 1;
   return member;
 }
 
-/** 브라우저로 내보내도 되는 필드만 남깁니다. 해시는 절대 포함하지 않습니다. */
+/** 브라우저로 내보내도 되는 필드만 남깁니다. 해시나 Google 내부 sub 는 포함하지 않습니다. */
 export function publicMember(m) {
   if (!m) return null;
+  const name = String(m.name || '').trim();
+  const institution = String(m.institution || '').trim();
   return {
     email: m.email,
-    name: m.name,
-    institution: m.institution || '',
+    name,
+    institution,
     role: m.role || 'member',
     // 그룹장이 맡은 조 (1~8). 그룹장이 아니면 0 입니다 — shared/camp.js 참고.
     team: Number(m.team || 0) || 0,
     status: m.status || 'active',
+    authProvider: m.authProvider || (m.googleSub ? 'google' : 'legacy'),
+    googleLinked: Boolean(m.googleSub),
+    needsProfile: !name || !institution,
     createdAt: m.createdAt,
     lastLoginAt: m.lastLoginAt || null,
-    mustChangePassword: Boolean(m.mustChangePassword),
-    // 본인이 "비밀번호를 잊었다"고 알린 시각. 관리자 화면에서 처리 대기로 보입니다.
-    resetRequestedAt: m.resetRequestedAt || null,
   };
+}
+
+export function validateProfile({ name, institution }) {
+  const errors = {};
+  if (!String(name || '').trim()) errors.name = '성명을 입력하세요.';
+  if (!String(institution || '').trim()) errors.institution = '기관명을 입력하세요.';
+  return errors;
 }
 
 /* ------------------------------------------------------ 시도 제한 -- */

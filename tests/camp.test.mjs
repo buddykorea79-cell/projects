@@ -4,7 +4,7 @@
  * 메모리 R2 스텁 위에서 실제 shared/r2api.js 와 shared/camp.js 를 돌립니다
  * (브라우저·네트워크 없음). 화면 쪽 동작은 camp-browser.test.mjs 가 봅니다.
  */
-import { MockBucket } from './mock-r2.mjs';
+import { MockBucket, TEST_GOOGLE_ENV, mockGoogleLogin, applySetCookies } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
 import * as server from '../shared/camp.js';
 import * as client from '../assets/js/camp.js';
@@ -23,38 +23,33 @@ const eq = (a, b, m) => {
 const ok = (v, m) => { if (!v) throw new Error(m); };
 
 const bucket = new MockBucket();
-const env = { BUCKET: bucket, PBKDF2_ITERATIONS: 1000 };
+const env = { BUCKET: bucket, ...TEST_GOOGLE_ENV, SIGNUP_POLICY: 'open' };
 
 function session() {
-  let cookie = '';
+  const jar = new Map();
   return async (path, { method = 'GET', body, headers = {} } = {}) => {
     const init = { method, headers: { Origin: ORIGIN, ...headers } };
-    if (cookie) init.headers.Cookie = cookie;
+    if (jar.size) init.headers.Cookie = [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
     if (body !== undefined) {
       init.headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(body);
     }
     const res = await handleApi(new Request(`${ORIGIN}/api${path}`, init), env, { basePath: '/api' });
-    const set = res.headers.get('Set-Cookie');
-    if (set) {
-      const pair = set.split(';')[0];
-      cookie = pair.endsWith('=') ? '' : pair;
-    }
+    applySetCookies(jar, res.headers);
     let data = null;
     if ((res.headers.get('Content-Type') || '').includes('json')) {
       data = await res.json().catch(() => null);
     }
-    return { status: res.status, data };
+    return { status: res.status, data, res };
   };
 }
 
-const signup = (c, email, extra = {}) => c('/auth/signup', {
-  method: 'POST',
-  body: {
-    email, password: 'hunter2!hunter2', name: email.split('@')[0],
-    institution: '한국디자인진흥원', ...extra,
-  },
-});
+const signup = async (c, email, extra = {}) => {
+  const r = await mockGoogleLogin(c, {
+    email, name: extra.name || email.split('@')[0], institution: extra.institution || '한국디자인진흥원',
+  });
+  return { status: r.profile?.status || (r.callback?.status === 302 ? 200 : 400), data: r.profile?.data || null };
+};
 
 async function putProjects(admin, list) {
   const cur = await admin('/data/projects');

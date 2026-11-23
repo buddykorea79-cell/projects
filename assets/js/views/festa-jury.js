@@ -262,7 +262,7 @@ export async function festaJurorView(mount, { invite, memberMode = false, runId 
   const memberBase = runId ? `/festa/rehearsal/${encodeURIComponent(runId)}/jury` : '/festa/jury';
   const returnPath = runId ? `/festa/rehearsal/${encodeURIComponent(runId)}/final` : '/festa/jury/final';
   const showMemberLogin = (note = '') => {
-    root.innerHTML = `<section class="card wrap--narrow fj-unlock" data-testid="member-final-login"><p class="fj-note">${runId ? '연습 전용 · ' : ''}말하는 대로, 바이브 코딩 페스타</p><h2 class="page-title">2차 본선 회원 평가</h2><p class="page-sub">회원 로그인 후 개인 코드 없이 평가에 참여할 수 있습니다.</p>${note ? `<p class="notice notice--info">${esc(note)}</p>` : ''}<div class="fj-actions" style="margin-top:var(--space-4)"><a class="btn btn--primary" data-testid="member-final-login-link" href="#/login?next=${attr(encodeURIComponent(returnPath))}">로그인하고 평가하기</a><a class="btn btn--outline" href="#/signup?next=${attr(encodeURIComponent(returnPath))}">회원가입</a></div></section>`;
+    root.innerHTML = `<section class="card wrap--narrow fj-unlock" data-testid="member-final-login"><p class="fj-note">${runId ? '연습 전용 · ' : ''}말하는 대로, 바이브 코딩 페스타</p><h2 class="page-title">2차 본선 회원 평가</h2><p class="page-sub">Google 계정으로 로그인하면 개인 코드 없이 평가에 참여할 수 있습니다.</p>${note ? `<p class="notice notice--info">${esc(note)}</p>` : ''}<div class="fj-actions" style="margin-top:var(--space-4)"><a class="btn btn--primary" data-testid="member-final-login-link" href="#/login?next=${attr(encodeURIComponent(returnPath))}">Google 로그인하고 평가하기</a></div></section>`;
   };
   if (memberMode && !currentUser()) { showMemberLogin(); return; }
   const token = String(invite || '');

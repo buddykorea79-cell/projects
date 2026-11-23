@@ -1,6 +1,6 @@
 /** 최종 시상 규칙·완전동점·검토 후 공개·공개 응답 비밀정보 차단 회귀. */
 import assert from 'node:assert/strict';
-import { MockBucket } from './mock-r2.mjs';
+import { MockBucket, TEST_GOOGLE_ENV, mockGoogleLogin, applySetCookies } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
 import { calculateAwards, publicAwards } from '../shared/festa-awards.js';
 
@@ -31,22 +31,30 @@ function fixture() {
   };
 }
 function session(env) {
-  let cookie = '';
+  const jar = new Map();
   return async (path, body, method = body === undefined ? 'GET' : 'POST') => {
+    const cookie = [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
     const response = await handleApi(new Request(`${ORIGIN}/api${path}`, {
       method, headers: { Origin: ORIGIN, ...(cookie ? { Cookie: cookie } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }), env, { basePath: '/api' });
-    const set = response.headers.get('Set-Cookie'); if (set) cookie = set.split(';')[0];
-    return { status: response.status, body: await response.json(), headers: response.headers };
+    applySetCookies(jar, response.headers);
+    const ct = response.headers.get('Content-Type') || '';
+    return { status: response.status, body: ct.includes('json') ? await response.json() : null, headers: response.headers, response };
   };
 }
 async function setup(state = fixture()) {
   const bucket = new MockBucket();
-  const env = { BUCKET: bucket, PBKDF2_ITERATIONS: 1000, TOKEN_SECRET: 'awards-test-session-secret' };
+  const env = {
+    BUCKET: bucket, TOKEN_SECRET: 'awards-test-session-secret',
+    ...TEST_GOOGLE_ENV, SIGNUP_POLICY: 'open',
+  };
   const admin = session(env); const member = session(env); const guest = session(env);
   for (const [client, email] of [[admin, ADMIN], [member, 'member@example.com']]) {
-    assert.equal((await client('/auth/signup', { email, password: 'Awards-2026!', name: '회원', institution: '행정안전부' })).status, 200);
+    const r = await mockGoogleLogin((p, opts = {}) => client(p, opts.body, opts.method || (opts.body ? 'POST' : 'GET')), {
+      email, name: '회원', institution: '행정안전부',
+    });
+    assert.equal(r.profile.status, 200);
   }
   await bucket.put('data/festa.json', JSON.stringify(state));
   return { bucket, env, admin, member, guest };

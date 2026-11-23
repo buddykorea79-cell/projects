@@ -8,7 +8,7 @@ import { chromium } from 'playwright';
 import { chromeOptions } from './chrome.mjs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
-import { startServer } from './mock-r2.mjs';
+import { startServer, browserGoogleLogin } from './mock-r2.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -19,10 +19,7 @@ const step = async (name, fn) => {
   catch (e) { log(`  FAIL  ${name} — ${e.message}`); fails.push(name); }
 };
 
-const { server, bucket, origin } = await startServer({
-  root,
-  env: { PBKDF2_ITERATIONS: 1000 },   // 테스트 속도용
-});
+const { server, bucket, origin, setNextGoogleUser } = await startServer({ root });
 log(`\n로컬 R2 스텁 서버: ${origin}`);
 
 const browser = await chromium.launch(chromeOptions());
@@ -36,9 +33,7 @@ async function person(label) {
   page.on('console', (m) => {
     const text = m.text();
     const fromFonts = /fonts\.(googleapis|gstatic)/.test(m.location()?.url || '');
-    // /api 가 401(비로그인)·403(권한없음)·409(중복가입)를 주는 것은 설계된 동작입니다.
-    // 브라우저가 남기는 네트워크 로그일 뿐 자바스크립트 오류가 아닙니다.
-    const expectedHttp = /Failed to load resource.*(401|403|409|Unauthorized|Forbidden|Conflict)/.test(text);
+    const expectedHttp = /Failed to load resource.*(401|403|409|410|Unauthorized|Forbidden|Conflict)/.test(text);
     if (m.type() === 'error' && !fromFonts && !expectedHttp) {
       consoleErrors.push(`[${label}] ${text}`);
     }
@@ -46,19 +41,10 @@ async function person(label) {
   return page;
 }
 
-const PASSWORD = 'hunter2!hunter2';
-
 async function signup(page, { email, name, institution }) {
-  await page.goto(`${origin}/#/signup`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('#signupForm', { timeout: 8000 });
-  await page.fill('#signupForm [name="institution"]', institution);
-  await page.fill('#signupForm [name="name"]', name);
-  await page.fill('#signupForm [name="email"]', email);
-  await page.fill('#signupForm [name="password"]', PASSWORD);
-  await page.fill('#signupForm [name="confirm"]', PASSWORD);
-  await page.check('#signupForm [name="agree"]');
-  await page.locator('#signupForm button[type="submit"]').click();
-  await page.waitForURL((u) => u.hash === '#/' || u.hash === '', { timeout: 12000 });
+  await browserGoogleLogin(page, {
+    origin, setNextGoogleUser, email, name, institution,
+  });
 }
 
 const admin = await person('관리자');
@@ -92,31 +78,26 @@ await step('비로그인 상태에서는 회원 전용 메뉴가 숨겨짐', asy
   if (!visible.some((t) => t.includes('이용안내'))) throw new Error('이용안내는 보여야 함');
 });
 
-log('\n== 2. 가입 ==');
+log('\n== 2. Google 로그인 및 최초 프로필 등록 ==');
 
-await step('관리자 이메일로 가입하면 관리자 권한', async () => {
+await step('관리자 Google 이메일로 로그인하면 관리자 권한 + 프로필 설정 완료', async () => {
   await signup(admin, { email: 'aireader@mois.go.kr', name: '관리자', institution: '행정안전부' });
   await admin.waitForSelector('.gnav__actions a[href="#/admin"]', { timeout: 8000 });
 });
 
-await step('회원 명부가 R2 에 저장되고 해시로만 보관됨', () => {
+await step('회원 명부가 R2 에 저장되고 비밀번호 없이 Google sub 만 보관됨', () => {
   const raw = new TextDecoder().decode(bucket.objects.get('data/members.json').bytes);
   if (!raw.includes('aireader@mois.go.kr')) throw new Error('명부에 없음');
-  if (!raw.includes('pbkdf2$sha256$')) throw new Error('해시 형식이 아님');
-  if (raw.includes(PASSWORD)) throw new Error('비밀번호 원문이 저장됨');
+  if (!raw.includes('"googleSub"')) throw new Error('googleSub 없음');
+  if (raw.includes('passwordHash')) throw new Error('비밀번호 해시가 저장됨');
 });
 
-await step('같은 이메일로 재가입하면 안내', async () => {
+await step('예전 #/signup · #/forgot 경로는 Google 로그인 화면으로 리다이렉트', async () => {
   const other = await person('중복');
   await other.goto(`${origin}/#/signup`, { waitUntil: 'networkidle' });
-  await other.fill('#signupForm [name="institution"]', 'X');
-  await other.fill('#signupForm [name="name"]', 'Y');
-  await other.fill('#signupForm [name="email"]', 'aireader@mois.go.kr');
-  await other.fill('#signupForm [name="password"]', PASSWORD);
-  await other.fill('#signupForm [name="confirm"]', PASSWORD);
-  await other.check('#signupForm [name="agree"]');
-  await other.locator('#signupForm button[type="submit"]').click();
-  await other.waitForSelector('.field__err', { timeout: 8000 });
+  await other.waitForSelector('#googleLoginBtn', { timeout: 8000 });
+  await other.goto(`${origin}/#/forgot`, { waitUntil: 'networkidle' });
+  await other.waitForSelector('#googleLoginBtn', { timeout: 8000 });
   await other.context().close();
 });
 
@@ -561,131 +542,40 @@ await step('대시보드 회원 수는 이용중 인원만 셈', async () => {
   if (!/2\s*회원/.test(stats)) throw new Error(stats);
 });
 
-log('\n== 8. 계정 ==');
+log('\n== 8. 계정 · 사전 등록 ==');
 
-await step('내 계정에서 비밀번호 변경', async () => {
+await step('내 계정 화면에 Google 계정 연동 표시가 보이고 비밀번호 폼은 없음', async () => {
   await alice.goto(`${origin}/#/account`, { waitUntil: 'networkidle' });
-  await alice.waitForSelector('#pwForm', { timeout: 8000 });
-  await alice.fill('#pwForm [name="current"]', PASSWORD);
-  await alice.fill('#pwForm [name="next"]', 'brand-new-pass1');
-  await alice.fill('#pwForm [name="confirm"]', 'brand-new-pass1');
-  await alice.locator('#pwForm button[type="submit"]').click();
-  await alice.waitForSelector('.toast--ok', { timeout: 10000 });
+  await alice.waitForSelector('.kv', { timeout: 8000 });
+  const text = await alice.locator('#main').innerText();
+  if (!text.includes('Google 계정 연동')) throw new Error(text);
+  if (await alice.locator('#pwForm').count()) throw new Error('비밀번호 폼이 남아 있음');
 });
 
-await step('새 비밀번호로 다시 로그인됨', async () => {
-  const again = await person('앨리스2');
-  await again.goto(`${origin}/#/login`, { waitUntil: 'networkidle' });
-  await again.fill('#loginForm [name="email"]', 'alice@example.com');
-  await again.fill('#loginForm [name="password"]', 'brand-new-pass1');
-  await again.locator('#loginForm button[type="submit"]').click();
-  await again.waitForSelector('.tile, .empty', { timeout: 12000 });
-  await again.goto(`${origin}/#/my`, { waitUntil: 'networkidle' });
-  await again.waitForSelector('.table tbody tr, .empty h3', { timeout: 10000 });
-  await again.context().close();
-});
-
-await step('로그아웃하면 다시 로그인 벽', async () => {
+await step('로그아웃하면 다시 Google 로그인 벽', async () => {
   await alice.goto(`${origin}/#/`, { waitUntil: 'networkidle' });
   await alice.locator('.gnav__actions [data-logout]').click();
-  await alice.waitForSelector('.empty h3, #loginForm', { timeout: 10000 });
+  await alice.waitForSelector('#googleLoginBtn, .empty h3', { timeout: 10000 });
 });
 
-log('\n== 8-2. 임시 비밀번호 6자리 ==');
+await step('관리자가 교육생 이메일을 사전 등록하면 프로필 입력 없이 바로 홈 진입', async () => {
+  await admin.goto(`${origin}/#/admin/members`, { waitUntil: 'networkidle' });
+  await admin.locator('#toggleInvite').click();
+  await admin.fill('#inviteCard [name="lines"]', 'charlie@example.com, 찰리, 한국서부발전');
+  await admin.locator('#inviteCard button[type="submit"]').click();
+  await admin.waitForSelector('.toast--ok', { timeout: 10000 });
 
-/**
- * 헤르메스(텔레그램)가 멈췄을 때를 위한 길. 서버 규칙은 auth.test.mjs 가 보고,
- * 여기서는 **화면만으로** 잊은 사람이 끝까지 갈 수 있는지 밟아 봅니다.
- */
-const charlie = await person('찰리');
-const CHARLIE = 'charlie@example.com';
-let code = '';
-
-await step('가입하고 로그아웃', async () => {
-  await signup(charlie, { email: CHARLIE, name: '찰리', institution: '한국디자인진흥원' });
-  await charlie.locator('.gnav__actions [data-logout]').click();
-  await charlie.waitForSelector('.empty h3, #loginForm', { timeout: 10000 });
+  const charlie = await person('찰리');
+  await browserGoogleLogin(charlie, {
+    origin, setNextGoogleUser,
+    email: 'charlie@example.com', name: 'Charlie Google',
+    completeProfile: false,
+  });
+  await charlie.waitForURL((u) => u.hash === '#/' || u.hash === '', { timeout: 12000 });
+  const header = await charlie.locator('#gnavActions').innerText();
+  if (!header.includes('찰리님')) throw new Error(`사전 등록 성명 미반영: ${header}`);
+  await charlie.context().close();
 });
-
-await step('비밀번호 찾기에 방법 두 가지가 있음', async () => {
-  await charlie.goto(`${origin}/#/forgot`, { waitUntil: 'networkidle' });
-  await charlie.waitForSelector('#forgotForm', { timeout: 8000 });
-  const values = await charlie.locator('#forgotForm [name="method"]').evaluateAll(
-    (els) => els.map((e) => ({ value: e.value, checked: e.checked })));
-  if (values.length !== 2) throw new Error(`선택지 ${values.length}개`);
-  if (values[0].value !== 'admin' || !values[0].checked) throw new Error('기본값이 관리자 요청이 아님');
-  if (values[1].value !== 'code') throw new Error('code 선택지 없음');
-});
-
-await step('방법을 고르면 버튼 문구가 따라 바뀜', async () => {
-  await charlie.check('#forgotForm [name="method"][value="code"]');
-  const label = (await charlie.locator('#forgotSubmit').innerText()).trim();
-  if (label !== '임시 비밀번호 받기') throw new Error(`버튼: ${label}`);
-});
-
-await step('숫자 6자리를 화면에 바로 보여줌', async () => {
-  await charlie.fill('#forgotForm [name="email"]', CHARLIE);
-  await charlie.locator('#forgotSubmit').click();
-  await charlie.waitForSelector('#forgotCode:not([hidden])', { timeout: 10000 });
-  code = (await charlie.locator('#tempCode').innerText()).trim();
-  if (!/^\d{6}$/.test(code)) throw new Error(`번호: ${code}`);
-  const hint = await charlie.locator('#forgotCode').innerText();
-  if (!hint.includes('30분')) throw new Error(hint.replace(/\s+/g, ' '));
-});
-
-await step('그 번호로 로그인하면 새 비밀번호를 정하라고 데려감', async () => {
-  await charlie.goto(`${origin}/#/login`, { waitUntil: 'networkidle' });
-  await charlie.fill('#loginForm [name="email"]', CHARLIE);
-  await charlie.fill('#loginForm [name="password"]', code);
-  await charlie.locator('#loginForm button[type="submit"]').click();
-  await charlie.waitForSelector('#pwForm', { timeout: 12000 });
-  if (!charlie.url().includes('#/account')) throw new Error(charlie.url());
-
-  const warn = (await charlie.locator('.notice--warn').first().innerText()).replace(/\s+/g, ' ');
-  if (!warn.includes('임시 비밀번호로 로그인했습니다')) throw new Error(warn);
-  const label = await charlie.locator('#pwForm .field__label').first().innerText();
-  if (!label.includes('숫자 6자리')) throw new Error(`라벨: ${label}`);
-});
-
-await step('규칙에 맞지 않는 새 비밀번호는 화면에서 막힘', async () => {
-  await charlie.fill('#pwForm [name="current"]', code);
-  await charlie.fill('#pwForm [name="next"]', 'abcdefgh');
-  await charlie.fill('#pwForm [name="confirm"]', 'abcdefgh');
-  await charlie.locator('#pwForm button[type="submit"]').click();
-  await charlie.waitForSelector('#pwForm .field__err', { timeout: 5000 });
-});
-
-await step('새 비밀번호를 정하면 임시 번호는 죽고 새 것으로 들어감', async () => {
-  await charlie.fill('#pwForm [name="current"]', code);
-  await charlie.fill('#pwForm [name="next"]', 'charlie-new9!');
-  await charlie.fill('#pwForm [name="confirm"]', 'charlie-new9!');
-  await charlie.locator('#pwForm button[type="submit"]').click();
-  await charlie.waitForSelector('.toast--ok', { timeout: 12000 });
-
-  const again = await person('찰리2');
-  await again.goto(`${origin}/#/login`, { waitUntil: 'networkidle' });
-  await again.fill('#loginForm [name="email"]', CHARLIE);
-  await again.fill('#loginForm [name="password"]', code);
-  await again.locator('#loginForm button[type="submit"]').click();
-  await again.waitForSelector('#loginForm .field__err', { timeout: 8000 });
-
-  await again.fill('#loginForm [name="password"]', 'charlie-new9!');
-  await again.locator('#loginForm button[type="submit"]').click();
-  await again.waitForSelector('.tile, .empty', { timeout: 12000 });
-  await again.context().close();
-});
-
-await step('관리자에게 요청하는 길은 그대로 접수 안내', async () => {
-  const anon = await person('익명');
-  await anon.goto(`${origin}/#/forgot`, { waitUntil: 'networkidle' });
-  await anon.waitForSelector('#forgotForm', { timeout: 8000 });
-  await anon.fill('#forgotForm [name="email"]', 'nobody-here@example.com');
-  await anon.locator('#forgotSubmit').click();
-  await anon.waitForSelector('#forgotDone:not([hidden])', { timeout: 10000 });
-  await anon.context().close();
-});
-
-await charlie.context().close();
 
 log('\n== 9. 콘솔 오류 ==');
 await step('실행 중 자바스크립트 오류 없음', () => {

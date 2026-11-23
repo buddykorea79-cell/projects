@@ -5,10 +5,10 @@ import { chromeOptions } from './chrome.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { startServer } from './mock-r2.mjs';
+import { startServer, browserGoogleLogin } from './mock-r2.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const { server, bucket, origin } = await startServer({ root, env: { PBKDF2_ITERATIONS: 1000 } });
+const { server, bucket, origin, setNextGoogleUser } = await startServer({ root });
 const failures = [];
 const errors = [];
 let browser;
@@ -38,14 +38,9 @@ async function person() {
   return page;
 }
 async function register(page, email) {
-  await page.goto(`${origin}/#/signup`);
-  await page.locator('#signupForm').waitFor();
-  for (const [name, value] of Object.entries({ email, institution: '행정안전부', name: '운영 테스트', password: 'Awards-2026!', confirm: 'Awards-2026!' })) {
-    await page.locator(`#signupForm [name="${name}"]`).fill(value);
-  }
-  await page.locator('#signupForm [name="agree"]').check();
-  await page.locator('#signupForm button[type="submit"]').click();
-  await page.waitForURL((url) => url.hash === '#/' || url.hash === '');
+  await browserGoogleLogin(page, {
+    origin, setNextGoogleUser, email, name: '운영 테스트', institution: '행정안전부',
+  });
 }
 async function publicPage(page) {
   const url = `${origin}/#/festa/awards`;

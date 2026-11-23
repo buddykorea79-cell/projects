@@ -4,15 +4,15 @@ import { chromium } from 'playwright';
 import { chromeOptions } from './chrome.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { startServer } from './mock-r2.mjs';
+import { startServer, browserGoogleLogin } from './mock-r2.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ADMIN = 'aireader@mois.go.kr';
 const SECOND_ADMIN = 'second-admin@example.com';
 const PASSWORD = 'Practice-test-2026!';
 const PRACTICE = '/#/admin/festa/practice';
-const { server, bucket, origin } = await startServer({ root, env: {
-  PBKDF2_ITERATIONS: 1000, ADMIN_EMAILS: `${ADMIN},${SECOND_ADMIN}`,
+const { server, bucket, origin, setNextGoogleUser } = await startServer({ root, env: {
+  ADMIN_EMAILS: `${ADMIN},${SECOND_ADMIN}`,
 } });
 const failures = [];
 const pageErrors = [];
@@ -30,14 +30,9 @@ async function person() {
   return page;
 }
 async function register(page, email, name) {
-  await page.goto(`${origin}/#/signup`);
-  await page.locator('#signupForm').waitFor();
-  for (const [key, value] of Object.entries({
-    email, name, institution: '연습 테스트', password: PASSWORD, confirm: PASSWORD,
-  })) await page.locator(`#signupForm [name="${key}"]`).fill(value);
-  await page.locator('#signupForm [name="agree"]').check();
-  await page.locator('#signupForm button[type="submit"]').click();
-  await page.waitForURL((url) => url.hash === '#/' || url.hash === '');
+  await browserGoogleLogin(page, {
+    origin, setNextGoogleUser, email, name, institution: '연습 테스트',
+  });
 }
 async function selectSample(page, index) {
   const id = `sample-${String(index).padStart(2, '0')}`;

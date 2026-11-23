@@ -5,7 +5,7 @@
  * 브라우저 없이 Node 에서 그대로 돕니다. sheet.js 는 DecompressionStream 과
  * Blob.arrayBuffer 만 쓰는데 Node 18+ 에 둘 다 들어 있습니다.
  */
-import { MockBucket } from './mock-r2.mjs';
+import { MockBucket, TEST_GOOGLE_ENV, mockGoogleLogin, applySetCookies } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
 import {
   readSheet, buildXlsx, buildCsv, parseDelimited, decodeText, colName, colIndex,
@@ -410,28 +410,24 @@ await t('내보낸 엑셀을 다시 읽으면 같은 내용입니다', async () 
 console.log('\n== 저장소 권한 (roster · attendance) ==');
 
 const bucket = new MockBucket();
-const env = { BUCKET: bucket, PBKDF2_ITERATIONS: 1000 };
+const env = { BUCKET: bucket, ...TEST_GOOGLE_ENV, SIGNUP_POLICY: 'open' };
 
 function client() {
-  let cookie = '';
+  const jar = new Map();
   return async (path, { method = 'GET', body, headers = {} } = {}) => {
     const init = { method, headers: { Origin: ORIGIN, ...headers } };
-    if (cookie) init.headers.Cookie = cookie;
+    if (jar.size) init.headers.Cookie = [...jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
     if (body !== undefined) {
       init.headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(body);
     }
     const res = await handleApi(new Request(`${ORIGIN}/api${path}`, init), env, { basePath: '/api' });
-    const set = res.headers.get('Set-Cookie');
-    if (set) {
-      const pair = set.split(';')[0];
-      cookie = pair.endsWith('=') ? '' : pair;
-    }
+    applySetCookies(jar, res.headers);
     let data = null;
     if ((res.headers.get('Content-Type') || '').includes('json')) {
       data = await res.json().catch(() => null);
     }
-    return { status: res.status, data };
+    return { status: res.status, data, res };
   };
 }
 
@@ -439,16 +435,10 @@ const admin = client();
 const member = client();
 
 await t('계정 준비 — 관리자와 일반 회원', async () => {
-  const a = await admin('/auth/signup', {
-    method: 'POST',
-    body: { institution: '행정안전부', name: '관리자', email: ADMIN, password: 'Admin!2345' },
-  });
-  eq(a.status, 200, `관리자 가입: ${JSON.stringify(a.data)}`);
-  const m = await member('/auth/signup', {
-    method: 'POST',
-    body: { institution: '교육부', name: '홍길동', email: 'hong@x.kr', password: 'Member!2345' },
-  });
-  eq(m.status, 200, '회원 가입');
+  const a = await mockGoogleLogin(admin, { institution: '행정안전부', name: '관리자', email: ADMIN });
+  eq(a.profile.status, 200, `관리자 가입: ${JSON.stringify(a.profile.data)}`);
+  const m = await mockGoogleLogin(member, { institution: '교육부', name: '홍길동', email: 'hong@x.kr' });
+  eq(m.profile.status, 200, '회원 가입');
 });
 
 await t('일반 회원은 명단·출결을 읽을 수 없습니다', async () => {

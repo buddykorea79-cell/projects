@@ -56,8 +56,7 @@ export async function homeView(mount) {
               </button>
               <a class="btn btn--outline btn--lg" href="#/materials">강의자료</a>`
     : `
-              <a class="btn btn--primary btn--lg" href="#/login">로그인 하기</a>
-              <a class="btn btn--outline btn--lg" href="#/signup">회원가입</a>`}
+              <a class="btn btn--primary btn--lg" href="#/login">Google 계정으로 로그인</a>`}
           </div>
         </div>
         <div class="hero__art" aria-hidden="true">
@@ -88,8 +87,8 @@ export async function homeView(mount) {
           <div class="steps">
             <div class="step">
               <div class="step__n">1</div>
-              <h3>회원가입</h3>
-              <p>기관명·성명·이메일로 한 번 가입하면 다음부터는 로그인만 하면 됩니다.</p>
+              <h3>Google 로그인</h3>
+              <p>Google 계정으로 로그인하고 처음 한 번만 기관명·성명을 입력하면 바로 이용할 수 있습니다.</p>
             </div>
             <div class="step">
               <div class="step__n">2</div>
@@ -134,10 +133,9 @@ export async function homeView(mount) {
   if (!signed) {
     grid.innerHTML = emptyState({
       title: '로그인이 필요합니다',
-      body: '과제 제출과 강의자료는 회원만 이용할 수 있습니다. 가입은 승인 절차 없이 바로 됩니다.',
+      body: '과제 제출과 강의자료는 Google 계정으로 로그인한 교육생만 이용할 수 있습니다.',
       action: `<div class="row" style="justify-content:center">
-          <a class="btn btn--primary" href="#/login">로그인 하기</a>
-          <a class="btn btn--outline" href="#/signup">회원가입</a>
+          <a class="btn btn--primary" href="#/login">Google 계정으로 로그인</a>
         </div>`,
     });
     return;

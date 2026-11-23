@@ -55,8 +55,9 @@ export class R2Store {
       if (!res.ok) throw await this.httpError(res);
       const info = await res.json();
       this.maxUploadMB = info.maxUploadMB ?? null;
-      // 재설정 링크 메일 발송이 서버에 설정돼 있는지 — 비밀번호 찾기 화면 문구용.
-      this.mailReset = Boolean(info.mailReset);
+      this.authMode = info.authMode || 'google';
+      this.googleEnabled = Boolean(info.googleEnabled);
+      this.signupPolicy = info.signupPolicy || 'approval';
       this.auth.setMe(info.me || null);
       this.auth.synced = true;   // 방금 서버에 확인했습니다
       this.ready = true;
@@ -498,18 +499,10 @@ class R2Auth {
     return this._me;
   }
 
-  async signup(payload) {
-    const { me } = await this.store.post('/auth/signup', payload);
-    this.setMe(me);
-    this.synced = true;
-    return me;
-  }
-
-  async login(email, password) {
-    const { me } = await this.store.post('/auth/login', { email, password });
-    this.setMe(me);
-    this.synced = true;
-    return me;
+  googleLoginUrl(next = '/') {
+    const safeNext = /^\/[A-Za-z0-9/_-]*$/.test(String(next || '')) ? next : '/';
+    const qs = safeNext && safeNext !== '/' ? `?next=${encodeURIComponent(safeNext)}` : '';
+    return `${this.store.base}/auth/google/start${qs}`;
   }
 
   async logout() {
@@ -518,14 +511,20 @@ class R2Auth {
     this.synced = true;
   }
 
-  async changePassword(current, next) {
-    await this.store.post('/auth/password', { current, next });
-    if (this._me) this._me = { ...this._me, mustChangePassword: false };
+  async completeProfile({ name, institution }) {
+    const { me } = await this.store.post('/auth/profile', { name, institution });
+    this.setMe(me);
+    this.synced = true;
+    return me;
   }
 
   async listMembers() {
     const { data } = await this.store.json('/auth/members', { cache: 'no-store' });
     return Array.isArray(data) ? data : [];
+  }
+
+  async inviteMembers(members) {
+    return this.store.post('/auth/members/invite', { members });
   }
 
   async patchMember(email, changes) {
@@ -538,7 +537,7 @@ class R2Auth {
   }
 
   /**
-   * 회원 삭제 — 서버가 "이용 정지된 일반 회원"인지 다시 확인합니다.
+   * 회원 삭제 — 서버가 "이용 정지 또는 승인 대기 일반 회원"인지 다시 확인합니다.
    * @param {{purgeSubmissions?: boolean}} opts 제출물·첨부까지 함께 지울지
    */
   async deleteMember(email, { purgeSubmissions = false } = {}) {
@@ -547,31 +546,6 @@ class R2Auth {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, purgeSubmissions }),
     });
-  }
-
-  /**
-   * "비밀번호를 잊었습니다" 접수.
-   *
-   * @param {string} email
-   * @param {'admin'|'code'} method 'admin' 은 관리자에게 넘깁니다 — 계정이 있든
-   *   없든 응답이 같아 가입 여부가 새지 않습니다. 'code' 는 6자리 임시
-   *   비밀번호를 그 자리에서 받아 옵니다(없는 계정이면 오류).
-   * @returns {Promise<{tempPassword?: string, expiresAt?: number, expiresInMin?: number}>}
-   */
-  async requestReset(email, method = 'admin') {
-    const body = await this.store.post('/auth/forgot',
-      method === 'code' ? { email, method: 'code' } : { email });
-    return body || {};
-  }
-
-  /** 재설정 링크(토큰)로 새 비밀번호 설정 — 로그인 없이 호출됩니다. */
-  async confirmReset(token, password) {
-    await this.store.post('/auth/reset/confirm', { token, password });
-  }
-
-  async resetPassword(email) {
-    const { tempPassword } = await this.store.post('/auth/members/reset', { email });
-    return tempPassword;
   }
 }
 

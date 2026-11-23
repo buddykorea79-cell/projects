@@ -1,7 +1,7 @@
 /** 앱 진입점 — 저장소 초기화, 로그인 가드, 라우팅, 전역 크롬(헤더/푸터/Frap). */
 import { CONFIG, STORAGE_LABEL } from './config.js';
 import { initStore, currentMode, submissionOpen, store } from './store/index.js';
-import { currentUser, isAdmin, isSignedIn, logout } from './auth.js';
+import { currentUser, isAdmin, isSignedIn, needsProfile, logout } from './auth.js';
 import { $, esc, attr } from './utils.js';
 import { toastErr, toastOk, emptyState } from './ui.js';
 import * as R from './router.js';
@@ -39,12 +39,12 @@ const PUBLIC_PATHS = new Set(['/', '/login', '/signup', '/forgot', '/reset', '/g
 
 function renderAuthButtons() {
   const me = currentUser();
+  const label = me ? (me.name || me.email) : '';
   const html = me
-    ? `<a class="btn btn--darkline btn--sm" href="#/account">${esc(me.name)}님</a>
+    ? `<a class="btn btn--darkline btn--sm" href="#/account">${esc(label)}님</a>
        ${me.role === 'admin' ? '<a class="btn btn--darkline btn--sm" href="#/admin">관리자</a>' : ''}
        <button class="btn btn--dark btn--sm" data-logout>로그아웃</button>`
-    : `<a class="btn btn--darkline btn--sm" href="#/login">로그인</a>
-       <a class="btn btn--dark btn--sm" href="#/signup">회원가입</a>`;
+    : `<a class="btn btn--dark btn--sm" href="#/login">Google 로그인</a>`;
 
   ['#gnavActions', '#gnavDrawerActions'].forEach((sel) => {
     const el = $(sel);
@@ -128,24 +128,23 @@ async function updateFrap(path) {
 /* ----------------------------------------------------------- 라우팅 -- */
 
 function signInWall(path) {
-  let body = '과제 제출과 강의자료는 회원만 이용할 수 있습니다.';
-  if (path === '/festa') body = '로그인하면 페스타에 작품을 접수하고 내 접수증을 확인할 수 있습니다.';
+  let body = '과제 제출과 강의자료는 Google 계정으로 로그인한 교육생만 이용할 수 있습니다.';
+  if (path === '/festa') body = 'Google 계정으로 로그인하면 페스타에 작품을 접수하고 내 접수증을 확인할 수 있습니다.';
   if (path === '/festa/jury/final' || path.startsWith('/festa/rehearsal/')) {
-    body = path.endsWith('/final') ? '로그인하면 회원 누구나 본선 작품을 평가할 수 있습니다.' : '로그인하면 이 테스트 회차의 발표를 볼 수 있습니다.';
+    body = path.endsWith('/final') ? 'Google 계정으로 로그인하면 회원 누구나 본선 작품을 평가할 수 있습니다.' : '로그인하면 이 테스트 회차의 발표를 볼 수 있습니다.';
   }
   main.innerHTML = `<section class="section"><div class="wrap wrap--narrow">
     ${emptyState({
     title: '로그인이 필요합니다',
     body,
     action: `<div class="row" style="justify-content:center">
-        <a class="btn btn--primary" href="#/login?next=${attr(encodeURIComponent(path))}">로그인</a>
-        <a class="btn btn--outline" href="#/signup?next=${attr(encodeURIComponent(path))}">회원가입</a>
+        <a class="btn btn--primary" href="#/login?next=${attr(encodeURIComponent(path))}">Google 계정으로 로그인</a>
       </div>`,
   })}
   </div></section>`;
 }
 
-/** 각 화면 핸들러를 로그인 가드 + 공통 에러 처리로 감쌉니다. */
+/** 각 화면 핸들러를 로그인 가드 + 프로필 완료 가드 + 공통 에러 처리로 감쌉니다. */
 const view = (fn, { admin = false, publicPage = false } = {}) => async (params, query) => {
   const path = R.currentPath();
   // 테스트 주소의 회차가 유효해야 격리된 API 경로를 구성할 수 있습니다.
@@ -162,6 +161,11 @@ const view = (fn, { admin = false, publicPage = false } = {}) => async (params, 
     renderAuthButtons();
     renderNavLinks();
     if (!isSignedIn()) { signInWall(path); return; }
+  }
+  // 최초 Google 로그인 뒤 기관명·성명이 비어 있으면 먼저 입력 화면으로 보냅니다.
+  if (isSignedIn() && needsProfile() && !publicPage && !PUBLIC_PATHS.has(path) && path !== '/account') {
+    R.go(`/account?setup=1&next=${encodeURIComponent(path)}`, { replace: true });
+    return;
   }
   if (admin && !isAdmin()) {
     main.innerHTML = `<section class="section"><div class="wrap wrap--narrow">

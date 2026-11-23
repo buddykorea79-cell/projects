@@ -11,31 +11,32 @@
  * 본인 제출물만 고치거나 지울 수 있습니다(관리자는 전부).
  *
  * 바인딩 / 환경변수
- *   BUCKET               (필수) R2 버킷 바인딩
- *   ADMIN_EMAILS         (선택) 관리자 이메일. 쉼표 구분. 미설정 시 아래 기본값
- *   ALLOWED_ORIGINS      (선택) 쉼표 구분. 비우면 같은 오리진만 허용
- *   MAX_UPLOAD_MB        (선택) 기본 100
- *   ALLOWED_EXT          (선택) 쉼표 구분
- *   PBKDF2_ITERATIONS    (선택) 기본 15000 (무료 플랜 CPU 10ms 기준)
- *   TOKEN_SECRET         (선택) 세션 서명 키. 없으면 R2 에 자동 생성
+ *   BUCKET                 (필수) R2 버킷 바인딩
+ *   GOOGLE_CLIENT_ID       (필수) Google OAuth 2.0 클라이언트 ID
+ *   GOOGLE_CLIENT_SECRET   (필수) Google OAuth 2.0 클라이언트 보안 비밀번호
+ *   ADMIN_EMAILS           (권장) 관리자 Google 이메일. 쉼표 구분. 미설정 시 아래 기본값
+ *   SIGNUP_POLICY          (선택) 'approval'(기본·관리자 승인) | 'allowlist'(사전등록만) | 'open'
+ *   ALLOWED_EMAIL_DOMAINS  (선택) 자동 승인할 이메일 도메인. 쉼표 구분 (예: mois.go.kr,korea.kr)
+ *   ALLOWED_ORIGINS        (선택) 쉼표 구분. 비우면 같은 오리진만 허용
+ *   MAX_UPLOAD_MB          (선택) 기본 100
+ *   ALLOWED_EXT            (선택) 쉼표 구분
+ *   TOKEN_SECRET           (권장) 세션·OAuth 서명 키. 없으면 R2 에 자동 생성
  *   TELEGRAM_BOT_TOKEN       (선택) Hermes 알림용 봇 토큰 — shared/telegram.js
  *   TELEGRAM_CHAT_ID         (선택) 알림을 받을 채팅 ID
  *   TELEGRAM_WEBHOOK_SECRET  (선택) 텔레그램 웹훅 검증용 시크릿
- *   EMAIL_WEBHOOK_URL        (선택) 재설정 링크 메일 발송용 Apps Script URL — shared/email.js
- *   EMAIL_WEBHOOK_SECRET     (선택) 위 웹앱과 맞춰 둔 비밀 문자열
  *
  * 경로 (basePath 기본 '/api')
  *   GET    /health
- *   POST   /auth/signup | /auth/login | /auth/logout | /auth/password
- *   GET    /auth/me
- *   GET    /auth/members            (관리자)
- *   PATCH  /auth/members            (관리자) 역할·차단
- *   DELETE /auth/members            (관리자) 정지된 회원 삭제
- *   POST   /auth/members/reset      (관리자) 임시 비밀번호 발급
- *   POST   /auth/forgot             (공개) 비밀번호 찾기 — method:'code' 면
- *                                   6자리 임시 비밀번호를 그 자리에서 돌려줌
- *   POST   /auth/reset/confirm      (공개) 재설정 링크(토큰)로 새 비밀번호 설정
- *   POST   /telegram/webhook        (텔레그램) 재설정 버튼 콜백 — Hermes
+ *   GET    /auth/google/start       Google OAuth 시작 (PKCE + state + nonce)
+ *   GET    /auth/google/callback    Google OAuth 콜백 · 세션 발급
+ *   POST   /auth/logout             로그아웃 (서버 세션 세대 무효화 + 쿠키 삭제)
+ *   GET    /auth/me                 현재 세션 회원 정보
+ *   POST   /auth/profile            최초 로그인 시 성명·기관명 등록
+ *   GET    /auth/members            (관리자) 회원 목록
+ *   POST   /auth/members/invite     (관리자) 교육생 이메일 사전 등록 (일괄 지원)
+ *   PATCH  /auth/members            (관리자) 역할·조·상태(승인/정지)·이름/기관 변경
+ *   DELETE /auth/members            (관리자) 정지 또는 승인 대기 회원 삭제
+ *   POST   /telegram/webhook        (텔레그램) 가입 승인/거절 버튼 콜백 — Hermes
  *   GET    /data/projects|materials (로그인)   PUT (관리자)
  *   GET    /data/roster|attendance  (관리자)   PUT (관리자) — 수강 현황
  *   GET    /submissions             (로그인, 권한에 따라 필터)
@@ -63,19 +64,18 @@
  */
 import {
   SESSION_COOKIE, SESSION_TTL_MS,
-  hashPassword, verifyPassword, issueTempPassword,
-  newResetToken, resetPasswordWithToken, clearResetToken, validatePassword,
   signSession, readSession, cookieValue, sessionCookie, clearCookie,
-  readMembers, updateMembers, findMember, publicMember,
-  lockState, registerFailure, clearFailures, epochOf, bumpEpoch,
-  validateSignup, normEmail, RESET_REQUEST_COOLDOWN_MS,
-  tempPasswordExpired, TEMP_PASSWORD_TTL_MS,
+  readMembers, updateMembers, findMember, findMemberByGoogleSub, publicMember,
+  epochOf, bumpEpoch, normEmail, signupPolicyOf, isDomainAllowed, validateProfile,
 } from './auth.js';
 import {
-  notifySignup, notifySubmission, notifyResetRequest, notifyInstantReset,
-  handleTelegramWebhook,
+  OAUTH_COOKIE, googleConfigured, sanitizeNext,
+  oauthCookie, clearOAuthCookie, createOAuthChallenge, verifyOAuthChallenge,
+  buildGoogleAuthUrl, exchangeGoogleCode,
+} from './google.js';
+import {
+  notifySignup, notifySubmission, notifyApprovalRequest, handleTelegramWebhook,
 } from './telegram.js';
-import { sendResetEmail } from './email.js';
 import { handleFesta, FestaError, reply as festaReply } from './festa.js';
 import { handleJury } from './festa-jury.js';
 import { handleRehearsal } from './festa-rehearsal.js';
@@ -116,7 +116,7 @@ const SAFE_INLINE = new Set([
   'application/pdf',
 ]);
 
-export async function handleApi(request, env, { basePath = '/api', waitUntil } = {}) {
+export async function handleApi(request, env, { basePath = '/api', waitUntil, googleEndpoints } = {}) {
   const url = new URL(request.url);
   const path = url.pathname.startsWith(basePath)
     ? url.pathname.slice(basePath.length) || '/'
@@ -131,20 +131,28 @@ export async function handleApi(request, env, { basePath = '/api', waitUntil } =
   if (!originAllowed(origin, url, env)) {
     return json({ message: '허용되지 않은 출처입니다.' }, 403, cors);
   }
+  // 상태 변경 요청의 교차 출처(CSRF) 방어. 텔레그램 웹훅은 서버 간 호출이라 제외합니다.
+  if (path !== '/telegram/webhook' && !['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
+    const fetchSite = (request.headers.get('Sec-Fetch-Site') || '').toLowerCase();
+    if (fetchSite === 'cross-site' && !originList(env).includes(origin)) {
+      return json({ message: '허용되지 않은 출처입니다.' }, 403, cors);
+    }
+  }
   if (!env.BUCKET) {
     return json({ message: 'R2 버킷 바인딩(BUCKET)이 설정되지 않았습니다.' }, 500, cors);
   }
 
   try {
-    return await route(request, env, url, path, cors, waitUntil);
+    return await route(request, env, url, path, cors, waitUntil, basePath, googleEndpoints);
   } catch (e) {
     if (e instanceof FestaError) return festaReply({ message: e.message }, e.status, cors);
     return json({ message: `서버 오류: ${e.message}` }, 500, cors);
   }
 }
 
-async function route(request, env, url, path, cors, waitUntil) {
+async function route(request, env, url, path, cors, waitUntil, basePath, googleEndpoints) {
   const method = request.method;
+  const noStore = { ...cors, 'Cache-Control': 'no-store' };
 
   if (path === '/health' && method === 'GET') {
     const me = await currentMember(request, env);
@@ -152,45 +160,62 @@ async function route(request, env, url, path, cors, waitUntil) {
       ok: true,
       mode: 'r2',
       members: true,
+      authMode: 'google',
+      googleEnabled: googleConfigured(env),
+      signupPolicy: signupPolicyOf(env),
       maxUploadMB: maxUploadMB(env),
-      // 재설정 링크 메일 발송이 설정돼 있는지 — 비밀번호 찾기 화면의 문구가 달라집니다.
-      mailReset: Boolean(env.EMAIL_WEBHOOK_URL && env.EMAIL_WEBHOOK_SECRET),
       signedIn: Boolean(me),
       me: publicMember(me),
-    }, 200, cors);
+    }, 200, noStore);
   }
 
   /* ------------------------------------------------------------ 인증 -- */
 
-  if (path === '/auth/signup' && method === 'POST') return signup(request, env, url, cors, waitUntil);
-  if (path === '/auth/login' && method === 'POST') return login(request, env, url, cors);
+  if (path === '/auth/google/start' && method === 'GET') {
+    return googleStart(request, env, url, basePath, googleEndpoints);
+  }
+  if (path === '/auth/google/callback' && method === 'GET') {
+    return googleCallback(request, env, url, basePath, waitUntil, googleEndpoints);
+  }
   if (path === '/auth/logout' && method === 'POST') {
-    return json({ ok: true }, 200, { ...cors, 'Set-Cookie': clearCookie(url) });
+    return logout(request, env, url, noStore);
   }
   if (path === '/auth/me' && method === 'GET') {
     const me = await currentMember(request, env);
-    if (!me) return json({ message: '로그인이 필요합니다.' }, 401, cors);
-    return json({ me: publicMember(me) }, 200, cors);
+    if (!me) return json({ message: '로그인이 필요합니다.' }, 401, noStore);
+    return json({ me: publicMember(me) }, 200, noStore);
   }
-  if (path === '/auth/password' && method === 'POST') return changePassword(request, env, url, cors);
-  if (path === '/auth/forgot' && method === 'POST') return requestReset(request, env, cors, waitUntil);
-  if (path === '/auth/reset/confirm' && method === 'POST') return confirmReset(request, env, cors);
+  if (path === '/auth/profile' && method === 'POST') {
+    return completeProfile(request, env, noStore);
+  }
+
+  // 기존 비밀번호 기반 인증 경로는 보안상 완전히 비활성화합니다.
+  if (
+    path === '/auth/signup' || path === '/auth/login' || path === '/auth/password'
+    || path === '/auth/forgot' || path === '/auth/reset/confirm' || path === '/auth/members/reset'
+  ) {
+    return json(
+      { message: '이 사이트는 Google 로그인 전용입니다. Google 계정으로 로그인해 주세요.' },
+      410,
+      noStore,
+    );
+  }
 
   if (path === '/auth/members') {
     const admin = await requireAdmin(request, env);
-    if (admin.error) return json({ message: admin.error }, admin.status, cors);
+    if (admin.error) return json({ message: admin.error }, admin.status, noStore);
     if (method === 'GET') {
       const { list } = await readMembers(env);
-      return json({ data: list.map(publicMember) }, 200, cors);
+      return json({ data: list.map(publicMember) }, 200, noStore);
     }
-    if (method === 'PATCH') return patchMember(request, env, admin.member, cors);
-    if (method === 'DELETE') return removeMember(request, env, admin.member, cors);
-    return json({ message: '허용되지 않은 메서드입니다.' }, 405, cors);
+    if (method === 'PATCH') return patchMember(request, env, admin.member, noStore);
+    if (method === 'DELETE') return removeMember(request, env, admin.member, noStore);
+    return json({ message: '허용되지 않은 메서드입니다.' }, 405, noStore);
   }
-  if (path === '/auth/members/reset' && method === 'POST') {
+  if (path === '/auth/members/invite' && method === 'POST') {
     const admin = await requireAdmin(request, env);
-    if (admin.error) return json({ message: admin.error }, admin.status, cors);
-    return resetMemberPassword(request, env, cors);
+    if (admin.error) return json({ message: admin.error }, admin.status, noStore);
+    return inviteMembers(request, env, noStore);
   }
 
   /* --------------------------------------------------------- 텔레그램 -- */
@@ -373,103 +398,210 @@ async function requireAdmin(request, env) {
 
 /* ========================================================= 회원 처리 == */
 
-async function signup(request, env, url, cors, waitUntil) {
-  const body = await request.json().catch(() => null);
-  if (!body) return json({ message: '잘못된 요청 형식입니다.' }, 400, cors);
-
-  const errors = validateSignup(body);
-  if (Object.keys(errors).length) return json({ message: '입력을 확인하세요.', errors }, 400, cors);
-
-  const email = normEmail(body.email);
-  const passwordHash = await hashPassword(String(body.password), env);
-  let created = null;
-
-  const result = await updateMembers(env, (list) => {
-    if (findMember(list, email)) return null;      // 이미 가입됨 → 저장하지 않음
-    created = {
-      email,
-      name: String(body.name).trim().slice(0, 60),
-      institution: String(body.institution).trim().slice(0, 80),
-      passwordHash,
-      role: adminEmails(env).has(email) ? 'admin' : 'member',
-      status: 'active',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      lastLoginAt: null,
-      failedAttempts: 0,
-      lockedUntil: 0,
-    };
-    list.push(created);
-    return list;
+function redirectWithCookies(location, cookies = []) {
+  const headers = new Headers({
+    Location: location,
+    'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer',
   });
-
-  if (!result.ok) {
-    return json({ message: '이미 가입된 이메일입니다. 로그인해 주세요.', errors: { email: '이미 가입된 이메일입니다.' } }, 409, cors);
+  for (const c of cookies) {
+    if (c) headers.append('Set-Cookie', c);
   }
-
-  notifySignup(env, waitUntil, created);
-
-  const token = await issueToken(created, env);
-  return json({ me: publicMember(withRole(created, env)) }, 200,
-    { ...cors, 'Set-Cookie': sessionCookie(token, url) });
+  return new Response(null, { status: 302, headers });
 }
 
-async function login(request, env, url, cors) {
-  const body = await request.json().catch(() => null);
-  const email = normEmail(body?.email);
-  const password = String(body?.password ?? '');
+function loginErrorRedirect(url, code, cookies = []) {
+  return redirectWithCookies(`${url.origin}/#/login?error=${encodeURIComponent(code)}`, cookies);
+}
 
-  const { list } = await readMembers(env);
-  const member = findMember(list, email);
-
-  // 계정이 없어도 같은 문구를 돌려줍니다 — 어떤 이메일이 가입돼 있는지 새지 않도록.
-  const generic = { message: '이메일 또는 비밀번호가 올바르지 않습니다.' };
-  if (!member) {
-    // 존재 여부에 따라 응답 시간이 달라지지 않게 해시 계산을 한 번 돌립니다.
-    await verifyPassword(password, 'pbkdf2$sha256$15000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
-    return json(generic, 401, cors);
+/** Google OAuth 2.0 시작: PKCE · state · nonce 쿠키를 발급하고 Google 로 보냅니다. */
+async function googleStart(request, env, url, basePath, googleEndpoints) {
+  if (!googleConfigured(env)) {
+    return loginErrorRedirect(url, 'not_configured');
   }
 
-  if ((member.status || 'active') !== 'active') {
-    return json({ message: '이용이 정지된 계정입니다. 관리자에게 문의하세요.' }, 403, cors);
-  }
-
-  const lock = lockState(member);
-  if (lock.locked) {
-    return json({
-      message: `로그인 시도가 많아 잠시 잠겼습니다. ${Math.ceil(lock.retryAfterSec / 60)}분 후 다시 시도하세요.`,
-    }, 429, cors);
-  }
-
-  const ok = await verifyPassword(password, member.passwordHash);
-  if (!ok) {
-    await updateMembers(env, (l) => {
-      const m = findMember(l, email);
-      if (m) registerFailure(m);
-      return l;
-    });
-    return json(generic, 401, cors);
-  }
-
-  // 6자리 임시 비밀번호는 30분만 삽니다. 번호는 맞았지만 시간이 지났다면
-  // 들여보내지 않고 다시 받으라고 알려줍니다. 맞힌 사람에게만 보이는 문구라
-  // 계정이 있는지 새어나가지 않습니다.
-  if (tempPasswordExpired(member)) {
-    return json({
-      message: '임시 비밀번호가 만료되었습니다. 비밀번호 찾기에서 다시 받아 주세요.',
-    }, 401, cors);
-  }
-
-  await updateMembers(env, (l) => {
-    const m = findMember(l, email);
-    if (m) { clearFailures(m); m.lastLoginAt = new Date().toISOString(); }
-    return l;
+  const next = sanitizeNext(url.searchParams.get('next'));
+  const challenge = await createOAuthChallenge(next, env);
+  const redirectUri = `${url.origin}${String(basePath || '').replace(/\/$/, '')}/auth/google/callback`;
+  const authUrl = buildGoogleAuthUrl({
+    clientId: env.GOOGLE_CLIENT_ID,
+    redirectUri,
+    state: challenge.state,
+    codeChallenge: challenge.codeChallenge,
+    nonce: challenge.nonce,
+    ...(googleEndpoints?.authUrl ? { authUrl: googleEndpoints.authUrl } : {}),
   });
 
-  const withRoles = withRole(member, env);
+  return redirectWithCookies(authUrl, [oauthCookie(challenge.cookieToken, url, basePath)]);
+}
+
+/** Google OAuth 2.0 콜백: 토큰 교환·검증 후 회원 상태에 따라 세션을 발급합니다. */
+async function googleCallback(request, env, url, basePath, waitUntil, googleEndpoints) {
+  const clearState = clearOAuthCookie(url, basePath);
+  if (!googleConfigured(env)) {
+    return loginErrorRedirect(url, 'not_configured', [clearState]);
+  }
+
+  const errParam = url.searchParams.get('error');
+  if (errParam) {
+    return loginErrorRedirect(url, errParam === 'access_denied' ? 'cancelled' : 'oauth_failed', [clearState]);
+  }
+
+  const code = String(url.searchParams.get('code') || '');
+  const state = String(url.searchParams.get('state') || '');
+  const stateToken = cookieValue(request.headers.get('Cookie'), OAUTH_COOKIE);
+  const verified = await verifyOAuthChallenge(stateToken, state, env);
+  if (!code || !verified) {
+    return loginErrorRedirect(url, 'invalid_state', [clearState]);
+  }
+
+  const redirectUri = `${url.origin}${String(basePath || '').replace(/\/$/, '')}/auth/google/callback`;
+  const exchanged = await exchangeGoogleCode({
+    code,
+    codeVerifier: verified.codeVerifier,
+    redirectUri,
+    clientId: env.GOOGLE_CLIENT_ID,
+    clientSecret: env.GOOGLE_CLIENT_SECRET,
+    expectedNonce: verified.nonce,
+    ...(googleEndpoints?.tokenUrl ? { tokenUrl: googleEndpoints.tokenUrl } : {}),
+  });
+
+  if (!exchanged.ok) {
+    return loginErrorRedirect(url, exchanged.error || 'oauth_failed', [clearState]);
+  }
+
+  const { sub, email, name } = exchanged.profile;
+  const isAdminEmail = adminEmails(env).has(email);
+  const domainAllowed = isDomainAllowed(email, env);
+  const policy = signupPolicyOf(env);
+  const now = new Date().toISOString();
+
+  let outcome = null; // 'active' | 'pending' | 'blocked' | 'not_invited' | 'google_mismatch'
+  let memberRecord = null;
+  let newlyCreatedActive = false;
+  let newlyCreatedPending = false;
+
+  await updateMembers(env, (list) => {
+    const bySub = findMemberByGoogleSub(list, sub);
+    const byEmail = findMember(list, email);
+
+    // 같은 이메일 계정이 이미 다른 Google sub 에 묶여 있으면 탈취 위험으로 거부합니다.
+    if (byEmail && byEmail.googleSub && byEmail.googleSub !== sub) {
+      outcome = 'google_mismatch';
+      return null;
+    }
+
+    const existing = bySub || byEmail;
+    if (existing) {
+      // Google 계정 이메일이 바뀐 경우에도 다른 회원과 겹치지 않으면 최신 이메일로 맞춥니다.
+      if (bySub && normEmail(bySub.email) !== email && byEmail && byEmail !== bySub) {
+        outcome = 'google_mismatch';
+        return null;
+      }
+
+      const status = existing.status || 'active';
+      if (status === 'blocked') {
+        outcome = 'blocked';
+        return null;
+      }
+      if (status === 'pending' && !isAdminEmail && !domainAllowed) {
+        existing.googleSub = sub;
+        existing.authProvider = 'google';
+        if (!existing.name && name) existing.name = name;
+        existing.updatedAt = now;
+        memberRecord = existing;
+        outcome = 'pending';
+        return list;
+      }
+
+      // 기존 active 회원(또는 사전 등록 회원, 레거시 마이그레이션 회원)을 Google 에 연결합니다.
+      existing.email = email;
+      existing.googleSub = sub;
+      existing.authProvider = 'google';
+      if (isAdminEmail) existing.role = 'admin';
+      existing.status = 'active';
+      if (!String(existing.name || '').trim() && name) existing.name = name;
+      existing.lastLoginAt = now;
+      existing.updatedAt = now;
+      // 더 이상 쓰지 않는 예전 비밀번호·초기화 필드를 정리합니다.
+      delete existing.passwordHash;
+      delete existing.mustChangePassword;
+      delete existing.tempPasswordUntil;
+      delete existing.resetTokenHash;
+      delete existing.resetTokenExpiresAt;
+      delete existing.resetRequestedAt;
+      delete existing.failedAttempts;
+      delete existing.lockedUntil;
+      memberRecord = existing;
+      outcome = 'active';
+      return list;
+    }
+
+    // 신규 Google 사용자
+    if (isAdminEmail || domainAllowed || policy === 'open') {
+      const created = {
+        email,
+        name: name || '',
+        institution: '',
+        googleSub: sub,
+        authProvider: 'google',
+        role: isAdminEmail ? 'admin' : 'member',
+        status: 'active',
+        createdAt: now,
+        updatedAt: now,
+        lastLoginAt: now,
+      };
+      list.push(created);
+      memberRecord = created;
+      newlyCreatedActive = true;
+      outcome = 'active';
+      return list;
+    }
+
+    if (policy === 'approval') {
+      const created = {
+        email,
+        name: name || '',
+        institution: '',
+        googleSub: sub,
+        authProvider: 'google',
+        role: 'member',
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now,
+        lastLoginAt: null,
+      };
+      list.push(created);
+      memberRecord = created;
+      newlyCreatedPending = true;
+      outcome = 'pending';
+      return list;
+    }
+
+    outcome = 'not_invited';
+    return null;
+  });
+
+  if (outcome !== 'active' || !memberRecord) {
+    if (newlyCreatedPending && memberRecord) {
+      notifyApprovalRequest(env, waitUntil, memberRecord);
+    }
+    return loginErrorRedirect(url, outcome || 'oauth_failed', [clearState]);
+  }
+
+  if (newlyCreatedActive) {
+    notifySignup(env, waitUntil, memberRecord);
+  }
+
+  const withRoles = withRole(memberRecord, env);
   const token = await issueToken(withRoles, env);
-  return json({ me: publicMember(withRoles) }, 200,
-    { ...cors, 'Set-Cookie': sessionCookie(token, url) });
+  const pub = publicMember(withRoles);
+
+  const target = pub.needsProfile
+    ? `${url.origin}/#/account?setup=1${verified.next !== '/' ? `&next=${encodeURIComponent(verified.next)}` : ''}`
+    : `${url.origin}/#${verified.next}`;
+
+  return redirectWithCookies(target, [clearState, sessionCookie(token, url)]);
 }
 
 function issueToken(member, env) {
@@ -482,41 +614,138 @@ function issueToken(member, env) {
   }, env);
 }
 
-async function changePassword(request, env, url, cors) {
+/** 로그아웃: 쿠키를 비우고 서버 세션 세대도 올려 탈취된 쿠키를 즉시 무효화합니다. */
+async function logout(request, env, url, cors) {
+  const me = await currentMember(request, env);
+  if (me) {
+    await updateMembers(env, (list) => {
+      const m = findMember(list, me.email);
+      if (!m) return null;
+      bumpEpoch(m);
+      m.updatedAt = new Date().toISOString();
+      return list;
+    });
+  }
+  return json({ ok: true }, 200, { ...cors, 'Set-Cookie': clearCookie(url) });
+}
+
+/**
+ * 최초 Google 로그인 후 성명·기관명 등록 (본인).
+ * 이미 기관명·성명이 모두 등록된 계정은 임의 변경을 막아 사칭을 방지합니다
+ * (변경이 필요하면 관리자가 회원 관리에서 수정합니다).
+ */
+async function completeProfile(request, env, cors) {
   const got = await requireMember(request, env);
   if (got.error) return json({ message: got.error }, got.status, cors);
 
   const body = await request.json().catch(() => null);
-  const current = String(body?.current ?? '');
-  const next = String(body?.next ?? '');
+  if (!body) return json({ message: '잘못된 요청 형식입니다.' }, 400, cors);
 
-  const pwIssue = validatePassword(next);
-  if (pwIssue) {
-    return json({ message: pwIssue }, 400, cors);
-  }
-  if (!(await verifyPassword(current, got.member.passwordHash))) {
-    return json({ message: '현재 비밀번호가 올바르지 않습니다.' }, 401, cors);
+  const errors = validateProfile(body);
+  if (Object.keys(errors).length) {
+    return json({ message: '성명과 기관명을 모두 입력하세요.', errors }, 400, cors);
   }
 
-  const hash = await hashPassword(next, env);
+  const name = String(body.name).trim().slice(0, 60);
+  const institution = String(body.institution).trim().slice(0, 80);
+
   let updated = null;
-  await updateMembers(env, (l) => {
-    const m = findMember(l, got.member.email);
-    if (m) {
-      m.passwordHash = hash;
-      m.mustChangePassword = false;
-      m.tempPasswordUntil = 0; // 임시 비밀번호는 여기서 수명을 다합니다
-      m.updatedAt = new Date().toISOString();
-      clearResetToken(m);     // 나가 있던 재설정 링크가 있었다면 무효화합니다
-      bumpEpoch(m);           // 다른 기기에 남아 있던 세션을 끊습니다
-      updated = m;
+  let alreadyComplete = false;
+  await updateMembers(env, (list) => {
+    const m = findMember(list, got.member.email);
+    if (!m) return null;
+    if (String(m.name || '').trim() && String(m.institution || '').trim()) {
+      alreadyComplete = true;
+      return null;
     }
-    return l;
+    m.name = name;
+    m.institution = institution;
+    m.updatedAt = new Date().toISOString();
+    updated = m;
+    return list;
   });
 
-  // 세대를 올렸으니 지금 쓰고 있는 브라우저에는 새 쿠키를 내려 줍니다.
-  const token = await issueToken(withRole(updated || got.member, env), env);
-  return json({ ok: true }, 200, { ...cors, 'Set-Cookie': sessionCookie(token, url) });
+  if (alreadyComplete) {
+    return json({ message: '이미 프로필이 등록되어 있습니다. 변경이 필요하면 담당자에게 문의하세요.' }, 409, cors);
+  }
+  if (!updated) return json({ message: '회원 정보를 찾을 수 없습니다.' }, 404, cors);
+
+  return json({ me: publicMember(withRole(updated, env)) }, 200, cors);
+}
+
+/**
+ * 교육생 이메일 사전 등록 (관리자).
+ * 미리 등록해 두면 해당 Google 계정으로 로그인할 때 승인 대기 없이 바로 이용합니다.
+ * 이미 pending 상태인 이메일을 등록하면 즉시 승인(active)으로 전환합니다.
+ */
+async function inviteMembers(request, env, cors) {
+  const body = await request.json().catch(() => null);
+  const rawList = Array.isArray(body?.members) ? body.members : [];
+  if (!rawList.length) return json({ message: '등록할 이메일을 입력하세요.' }, 400, cors);
+  if (rawList.length > 500) return json({ message: '한 번에 최대 500명까지 등록할 수 있습니다.' }, 400, cors);
+
+  const cleaned = [];
+  const seen = new Set();
+  for (const item of rawList) {
+    const email = normEmail(typeof item === 'string' ? item : item?.email);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) || seen.has(email)) continue;
+    seen.add(email);
+    const name = typeof item === 'object' ? String(item?.name || '').trim().slice(0, 60) : '';
+    const institution = typeof item === 'object' ? String(item?.institution || '').trim().slice(0, 80) : '';
+    const rawRole = typeof item === 'object' ? item?.role : 'member';
+    const role = ['admin', 'member', 'leader'].includes(rawRole) ? rawRole : 'member';
+    const team = role === 'leader' ? normTeam(item?.team) : 0;
+    cleaned.push({ email, name, institution, role: (role === 'leader' && !team) ? 'member' : role, team });
+  }
+
+  if (!cleaned.length) {
+    return json({ message: '올바른 이메일 주소가 없습니다.' }, 400, cors);
+  }
+
+  let added = 0;
+  let activated = 0;
+  let skipped = 0;
+  const now = new Date().toISOString();
+
+  await updateMembers(env, (list) => {
+    for (const item of cleaned) {
+      const existing = findMember(list, item.email);
+      if (existing) {
+        let changed = false;
+        if ((existing.status || 'active') === 'pending') {
+          existing.status = 'active';
+          bumpEpoch(existing);
+          activated += 1;
+          changed = true;
+        } else {
+          skipped += 1;
+        }
+        if (item.name && !String(existing.name || '').trim()) { existing.name = item.name; changed = true; }
+        if (item.institution && !String(existing.institution || '').trim()) { existing.institution = item.institution; changed = true; }
+        if (changed) existing.updatedAt = now;
+        continue;
+      }
+
+      list.push({
+        email: item.email,
+        name: item.name,
+        institution: item.institution,
+        googleSub: null,
+        authProvider: 'google',
+        role: adminEmails(env).has(item.email) ? 'admin' : item.role,
+        team: item.team,
+        status: 'active',
+        invitedAt: now,
+        createdAt: now,
+        updatedAt: now,
+        lastLoginAt: null,
+      });
+      added += 1;
+    }
+    return list;
+  });
+
+  return json({ ok: true, added, activated, skipped, total: cleaned.length }, 200, cors);
 }
 
 /**
@@ -553,10 +782,16 @@ async function patchMember(request, env, admin, cors) {
     if (normRole(m.role) === 'leader' && !normTeam(m.team)) m.role = 'member';
     if (normRole(m.role) !== 'leader') m.team = 0;
 
-    if (body.status === 'active' || body.status === 'blocked') {
-      // 정지를 풀었을 때 예전 토큰이 되살아나지 않도록 세대를 올립니다.
+    if (body.status === 'active' || body.status === 'blocked' || body.status === 'pending') {
+      // 상태를 바꾸면(정지·해제·승인) 예전 토큰이 되살아나지 않도록 세대를 올립니다.
       if (m.status !== body.status) bumpEpoch(m);
       m.status = body.status;
+    }
+    if (typeof body.name === 'string' && body.name.trim()) {
+      m.name = body.name.trim().slice(0, 60);
+    }
+    if (typeof body.institution === 'string') {
+      m.institution = body.institution.trim().slice(0, 80);
     }
     m.updatedAt = new Date().toISOString();
     updated = m;
@@ -569,13 +804,12 @@ async function patchMember(request, env, admin, cors) {
 /**
  * 회원 삭제 (관리자).
  *
- * 실수로 지우는 사고를 막기 위해 **이용 정지된 계정만** 지울 수 있습니다.
- * 자기 자신과 관리자 계정은 대상이 아닙니다 — 관리자를 지우려면 먼저 권한을
- * 해제하고 이용을 정지시켜야 합니다.
+ * 실수로 지우는 사고를 막기 위해 **이용 정지(blocked) 또는 승인 대기(pending) 계정만**
+ * 지울 수 있습니다. 자기 자신과 관리자 계정은 대상이 아닙니다 — 관리자를 지우려면
+ * 먼저 권한을 해제하고 이용을 정지시켜야 합니다.
  *
- * 제출물은 기본적으로 남깁니다. 프로젝트의 기록이라 계정을 지웠다고 해서
- * 함께 사라지면 곤란하기 때문입니다. `purgeSubmissions` 를 주면 제출물과
- * 첨부 원본까지 함께 지웁니다. 그 사람이 넣은 표는 언제나 함께 지웁니다.
+ * 제출물은 기본적으로 남깁니다. `purgeSubmissions` 를 주면 제출물과 첨부 원본까지
+ * 함께 지웁니다. 그 사람이 넣은 표·점수는 언제나 함께 지웁니다.
  */
 async function removeMember(request, env, admin, cors) {
   const body = await request.json().catch(() => null);
@@ -592,8 +826,9 @@ async function removeMember(request, env, admin, cors) {
   if (withRole(target, env).role === 'admin') {
     return json({ message: '관리자 계정은 삭제할 수 없습니다. 관리자 권한을 먼저 해제하세요.' }, 400, cors);
   }
-  if ((target.status || 'active') !== 'blocked') {
-    return json({ message: '이용 정지된 회원만 삭제할 수 있습니다. 먼저 이용을 정지하세요.' }, 400, cors);
+  const targetStatus = target.status || 'active';
+  if (targetStatus !== 'blocked' && targetStatus !== 'pending') {
+    return json({ message: '이용 정지 또는 승인 대기 중인 회원만 삭제할 수 있습니다. 먼저 이용을 정지하세요.' }, 400, cors);
   }
 
   const result = await updateMembers(env, (l) => (
@@ -633,137 +868,6 @@ async function removeMember(request, env, admin, cors) {
   }
 
   return json({ ok: true, removedSubmissions }, 200, cors);
-}
-
-/**
- * "비밀번호를 잊었습니다" 접수. 방법이 두 가지입니다.
- *
- * ── 기본(method 없음 · 관리자에게 요청) ──────────────────────────────
- * 메일을 보낼 수단이 없으므로, 본인이 남긴 요청을 관리자 화면에 대기 목록으로
- * 띄웁니다. 텔레그램(Hermes)을 설정했다면 신청자가 스스로 새 비밀번호를 정할 수
- * 있는 1회용 링크가 알림에 함께 나가고, 관리자가 그 링크를 본인에게 전달합니다.
- * 응답은 계정이 있든 없든 **항상 같습니다.** 그러지 않으면 이 창구가
- * "이 이메일이 가입돼 있는지" 확인하는 도구가 됩니다.
- *
- * ── method:'code' (임시 비밀번호 즉시 발급) ──────────────────────────
- * 텔레그램이 멈춰 있거나 관리자가 자리에 없을 때를 위한 길입니다.
- * 6자리 숫자를 그 자리에서 화면에 돌려줍니다 — instantTempPassword 참고.
- */
-async function requestReset(request, env, cors, waitUntil) {
-  const body = await request.json().catch(() => null);
-  const email = normEmail(body?.email);
-
-  if (String(body?.method || '') === 'code') {
-    if (!email) return json({ message: '이메일을 입력해 주세요.' }, 400, cors);
-    return instantTempPassword(email, env, cors, waitUntil);
-  }
-
-  if (email) {
-    // updateMembers 의 mutate 는 동기 함수라, 토큰 해시를 먼저 계산해 두고
-    // 요청 접수와 한 번의 쓰기로 저장합니다.
-    const fresh = await newResetToken();
-    const result = await updateMembers(env, (l) => {
-      const m = findMember(l, email);
-      if (!m) return null;
-      const last = m.resetRequestedAt ? Date.parse(m.resetRequestedAt) : 0;
-      // 연타해도 대기 목록이 도배되지 않게 합니다.
-      if (Number.isFinite(last) && Date.now() - last < RESET_REQUEST_COOLDOWN_MS) return null;
-      m.resetRequestedAt = new Date().toISOString();
-      fresh.apply(m);
-      return l;
-    });
-    // 실제로 접수됐을 때만(계정이 있고 쿨다운에 걸리지 않았을 때만) 알립니다.
-    // 응답은 아래에서 항상 { ok: true } 로 같으므로, 알림 여부가 계정 존재를 흘리지 않습니다.
-    if (result.ok) {
-      const m = findMember(result.list, email);
-      if (m) {
-        const resetUrl = `${new URL(request.url).origin}/#/reset?token=${fresh.token}`;
-        notifyResetRequest(env, waitUntil, m, resetUrl);
-        // 메일 발송이 설정돼 있으면(EMAIL_WEBHOOK_*) 신청자 본인에게도 링크를 보냅니다.
-        sendResetEmail(env, waitUntil, m, resetUrl);
-      }
-    }
-  }
-  return json({ ok: true }, 200, cors);
-}
-
-/**
- * 비밀번호 찾기 — 6자리 임시 비밀번호를 그 자리에서 돌려줍니다.
- *
- * 관리자를 거치지 않는 길이라, 대신 다음 넷으로 좁혀 둡니다 —
- *   ① 6자리는 30분만 살고(TEMP_PASSWORD_TTL_MS),
- *   ② 그것으로는 로그인만 되고 곧바로 새 비밀번호를 정해야 하며,
- *   ③ 5분 안에 다시 요청하면 거절하고(RESET_REQUEST_COOLDOWN_MS),
- *   ④ 발급 사실이 관리자에게 텔레그램으로 남습니다.
- * 무차별 대입은 로그인 8회 실패 잠금(MAX_FAILED·LOCK_MS)이 막습니다.
- *
- * 관리자 경로와 달리 없는 계정에는 없다고 답합니다. 번호를 화면에 바로 띄우는
- * 창구라 "요청이 접수됐습니다" 로 얼버무릴 수 없고, 오타를 낸 사람을 30분
- * 기다리게 하는 편이 더 나쁩니다. 이메일만 알면 남의 계정 비밀번호를 갈아
- * 끼울 수 있다는 뜻이기도 하니, 이 방법은 관리자 경로가 막혔을 때의
- * 예비 수단으로 두세요(README '비밀번호 찾기' 참고).
- */
-async function instantTempPassword(email, env, cors, waitUntil) {
-  const { list } = await readMembers(env);
-  const member = findMember(list, email);
-  if (!member) return json({ message: '가입되지 않은 이메일입니다.' }, 404, cors);
-  if ((member.status || 'active') !== 'active') {
-    return json({ message: '이용이 정지된 계정입니다. 관리자에게 문의하세요.' }, 403, cors);
-  }
-
-  // 연타로 계속 새 번호를 뽑지 못하게 합니다. 발급 시각은 따로 두지 않고
-  // 만료 시각에서 되짚습니다(만료 = 발급 + TTL).
-  const issuedAt = Number(member.tempPasswordUntil || 0) - TEMP_PASSWORD_TTL_MS;
-  const since = Date.now() - issuedAt;
-  if (issuedAt > 0 && since < RESET_REQUEST_COOLDOWN_MS) {
-    const wait = Math.max(1, Math.ceil((RESET_REQUEST_COOLDOWN_MS - since) / 60000));
-    return json({
-      message: `조금 전에 임시 비밀번호를 받으셨습니다. ${wait}분 후 다시 시도해 주세요.`,
-    }, 429, cors);
-  }
-
-  const result = await issueTempPassword(email, env);
-  if (!result.ok) return json({ message: '가입되지 않은 이메일입니다.' }, 404, cors);
-
-  // 번호 자체는 알림에 담지 않습니다 — 화면에서 이미 본인에게 갔고,
-  // 채팅 기록에 비밀번호를 남길 이유가 없습니다.
-  notifyInstantReset(env, waitUntil, member);
-
-  return json({
-    ok: true,
-    tempPassword: result.tempPassword,
-    expiresAt: result.expiresAt,
-    expiresInMin: Math.round(TEMP_PASSWORD_TTL_MS / 60000),
-  }, 200, cors);
-}
-
-/**
- * 재설정 링크로 새 비밀번호 설정 (공개 — 링크에 담긴 토큰이 곧 인증입니다).
- * 토큰은 무작위 256비트라 추측할 수 없고, 유효 시간이 지나거나 한 번 쓰면
- * 폐기됩니다. 새 비밀번호는 가입과 같은 정책(8자 이상, 문자·숫자·특수문자)을
- * 지나고, 저장은 언제나 PBKDF2 해시로만 합니다.
- */
-async function confirmReset(request, env, cors) {
-  const body = await request.json().catch(() => null);
-  const token = String(body?.token ?? '');
-  const password = String(body?.password ?? '');
-  if (!token) return json({ message: '재설정 링크가 올바르지 않습니다.' }, 400, cors);
-
-  const result = await resetPasswordWithToken(token, password, env);
-  if (!result.ok) return json({ message: result.message }, 400, cors);
-  return json({ ok: true }, 200, cors);
-}
-
-async function resetMemberPassword(request, env, cors) {
-  const body = await request.json().catch(() => null);
-  const email = normEmail(body?.email);
-  if (!email) return json({ message: '대상 이메일이 필요합니다.' }, 400, cors);
-
-  const result = await issueTempPassword(email, env);
-  if (!result.ok) return json({ message: '해당 회원을 찾을 수 없습니다.' }, 404, cors);
-
-  // 메일을 보낼 수단이 없으므로 관리자가 직접 전달합니다.
-  return json({ tempPassword: result.tempPassword }, 200, cors);
 }
 
 /* ====================================================== 색인 읽기/쓰기 == */
