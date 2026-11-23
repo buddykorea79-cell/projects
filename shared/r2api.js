@@ -936,7 +936,7 @@ async function requestAccountLink(request, env, cors, waitUntil) {
 }
 
 /**
- * 기존 비-구글 계정 연계 승인 또는 거절 (관리자).
+ * 기존 비-구글 계정 연계 승인 · 이메일 수정 · 거절 (관리자).
  */
 async function handleMemberLink(request, env, cors) {
   const body = await readJsonBody(request);
@@ -963,6 +963,25 @@ async function handleMemberLink(request, env, cors) {
 
   const legacyEmail = normEmail(body?.legacyEmail || target.linkRequestedEmail || '');
   if (!legacyEmail) return json({ message: '연계할 기존 이메일이 없습니다.' }, 400, cors);
+  if (!isValidEmail(legacyEmail)) {
+    return json({ message: '올바른 기존 이메일 주소를 입력하세요.' }, 400, cors);
+  }
+  if (legacyEmail === email) {
+    return json({ message: '현재 Google 이메일과 다른 기존 이메일을 입력하세요.' }, 400, cors);
+  }
+
+  if (action === 'update') {
+    let updated = null;
+    await updateMembers(env, (l) => {
+      const m = findMember(l, email);
+      if (!m) return null;
+      m.linkRequestedEmail = legacyEmail;
+      m.updatedAt = new Date().toISOString();
+      updated = m;
+      return l;
+    });
+    return json({ ok: true, member: publicMember(withRole(updated, env)) }, 200, cors);
+  }
 
   const merged = await mergeLegacyAccount(env, { googleEmail: email, legacyEmail });
   if (!merged.ok) return json({ message: merged.message }, merged.status || 400, cors);

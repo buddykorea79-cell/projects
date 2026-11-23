@@ -136,6 +136,17 @@ export class DemoAuth {
       return { ok: true, member: publicMember(target) };
     }
     const oldEmail = normEmail(legacyEmail || target.linkRequestedEmail || '');
+    if (!oldEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(oldEmail)) {
+      throw new Error('올바른 기존 이메일 주소를 입력하세요.');
+    }
+    if (oldEmail === normEmail(email)) {
+      throw new Error('현재 Google 이메일과 다른 기존 이메일을 입력하세요.');
+    }
+    if (action === 'update') {
+      target.linkRequestedEmail = oldEmail;
+      write(MEMBERS_KEY, list);
+      return { ok: true, member: publicMember(target) };
+    }
     const legacy = list.find((x) => normEmail(x.email) === oldEmail);
     if (!legacy) throw new Error(`기존 회원(${oldEmail})을 찾을 수 없습니다.`);
     target.status = 'active';

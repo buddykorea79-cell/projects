@@ -317,6 +317,59 @@ await t('기존 비-구글 회원 연계(방식 A): 온보딩 연계 신청 → 
   }
 });
 
+await t('잘못된 기존 이메일로 연계 요청 시 관리자가 이메일 수정(update) 또는 수정 후 연계 승인 가능', async () => {
+  const mObj = await bucket.get('data/members.json');
+  const mList = JSON.parse(await mObj.text());
+  mList.push({
+    email: 'typo.real@mois.go.kr',
+    name: '김오타',
+    institution: '행정안전부',
+    role: 'member',
+    status: 'active',
+    createdAt: '2026-08-05T00:00:00Z',
+    updatedAt: '2026-08-05T00:00:00Z',
+  });
+  await bucket.put('data/members.json', JSON.stringify(mList, null, 2));
+
+  const typoUser = client();
+  await mockGoogleLogin(typoUser, { email: 'kim.ota@gmail.com', name: '김오타', completeProfile: false });
+  eq((await typoUser('/auth/onboard', {
+    method: 'POST',
+    body: { name: '김오타', institution: '행정안전부', legacyEmail: 'typo.wrong@mois.go.kr' },
+  })).status, 200, '잘못된 기존 이메일로 온보딩 요청');
+
+  // 1) 잘못된 형식이나 자기 이메일로 수정 시 400 차단
+  eq((await admin('/auth/members/link', {
+    method: 'POST',
+    body: { email: 'kim.ota@gmail.com', legacyEmail: 'not-an-email', action: 'update' },
+  })).status, 400, '잘못된 이메일 형식 거부');
+  eq((await admin('/auth/members/link', {
+    method: 'POST',
+    body: { email: 'kim.ota@gmail.com', legacyEmail: 'kim.ota@gmail.com', action: 'update' },
+  })).status, 400, '동일 이메일 수정 거부');
+
+  // 2) 관리자가 연계 요청 이메일만 올바른 주소로 수정 저장
+  const updated = await admin('/auth/members/link', {
+    method: 'POST',
+    body: { email: 'kim.ota@gmail.com', legacyEmail: 'typo.real@mois.go.kr', action: 'update' },
+  });
+  eq(updated.status, 200, '이메일 수정 저장');
+  eq(updated.data.member.linkRequestedEmail, 'typo.real@mois.go.kr', '수정된 연계 이메일 반영');
+  eq(updated.data.member.status, 'pending', 'update 만 했을 때는 아직 pending 유지');
+
+  // 3) 수정된 이메일로 바로 승인 + 연계 완료
+  const approved = await admin('/auth/members/link', {
+    method: 'POST',
+    body: { email: 'kim.ota@gmail.com', legacyEmail: 'typo.real@mois.go.kr', action: 'approve' },
+  });
+  eq(approved.status, 200, '수정된 이메일로 연계 승인');
+  eq(approved.data.member.status, 'active', '승인 완료');
+  eq(approved.data.member.linkRequestedEmail, null, '요청 이메일 정리');
+  if (!(approved.data.member.linkedFromEmails || []).includes('typo.real@mois.go.kr')) {
+    throw new Error('linkedFromEmails 누락');
+  }
+});
+
 const alice = client();
 await t('관리자가 이메일을 사전 등록하면 승인 대기 없이 즉시 로그인', async () => {
   const inv = await admin('/auth/members/invite', {

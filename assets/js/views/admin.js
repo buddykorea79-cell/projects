@@ -6,8 +6,8 @@ import {
 import { CONFIG, STORAGE_LABEL } from '../config.js';
 import { currentUser, isAdmin, isSimulated } from '../auth.js';
 import {
-  esc, attr, fmtDate, fmtBytes, toLocalInput, fromLocalInput, csvCell,
-  downloadBlob, isPastDue, debounce, firstUrl, normEmail,
+  esc, attr, $, fmtDate, fmtBytes, toLocalInput, fromLocalInput, csvCell,
+  downloadBlob, isPastDue, debounce, firstUrl, normEmail, isEmail,
 } from '../utils.js';
 import {
   spinner, emptyState, toastOk, toastErr, confirmModal, FilePicker,
@@ -1381,9 +1381,12 @@ export async function membersView(mount) {
                   <span class="badge badge--gold">연계 요청</span>
                   <code>${esc(legacyEmail)}</code>
                   ${legacyMatch
-                    ? `<span style="color:var(--green-accent)">(기존: ${esc([legacyMatch.name, legacyMatch.institution].filter(Boolean).join(' · ') || '정보 없음')})</span>`
+                    ? (legacyMatch.googleLinked
+                      ? '<span style="color:var(--red)">(이미 Google 연동됨)</span>'
+                      : `<span style="color:var(--green-accent)">(기존: ${esc([legacyMatch.name, legacyMatch.institution].filter(Boolean).join(' · ') || '정보 없음')})</span>`)
                     : '<span style="color:var(--red)">(기존 명부에 없음)</span>'}
                 </div>` : '';
+              const canLinkDirect = Boolean(legacyEmail && legacyMatch && !legacyMatch.googleLinked);
               return `
               <tr class="${st === 'blocked' ? 'is-blocked' : ''}">
                 <td>${esc(m.institution || '—')}</td>
@@ -1410,14 +1413,21 @@ export async function membersView(mount) {
                 <td style="white-space:nowrap">
                   ${self ? '<span style="color:var(--text-black-mute);font-size:1.3rem">본인</span>'
                     : st === 'pending' ? `
-                      ${legacyEmail && legacyMatch ? `
+                      ${canLinkDirect ? `
                         <button class="btn btn--primary btn--sm" data-link-approve="${attr(m.email)}" data-legacy="${attr(legacyEmail)}">승인 + 연계</button>
+                        <button class="btn btn--outline btn--sm" data-link-edit="${attr(m.email)}">이메일 수정</button>
+                        <button class="btn btn--outline btn--sm" data-approve="${attr(m.email)}">신규 승인</button>`
+                        : legacyEmail ? `
+                        <button class="btn btn--primary btn--sm" data-link-edit="${attr(m.email)}">이메일 수정·연계</button>
                         <button class="btn btn--outline btn--sm" data-approve="${attr(m.email)}">신규 승인</button>` : `
                         <button class="btn btn--primary btn--sm" data-approve="${attr(m.email)}">승인</button>`}
                       <button class="btn btn--danger btn--sm" data-remove="${attr(m.email)}">거절</button>`
                     : `
                       ${legacyEmail ? `
-                        ${legacyMatch ? `<button class="btn btn--primary btn--sm" data-link-approve="${attr(m.email)}" data-legacy="${attr(legacyEmail)}">연계 승인</button>` : ''}
+                        ${canLinkDirect ? `
+                          <button class="btn btn--primary btn--sm" data-link-approve="${attr(m.email)}" data-legacy="${attr(legacyEmail)}">연계 승인</button>
+                          <button class="btn btn--outline btn--sm" data-link-edit="${attr(m.email)}">이메일 수정</button>`
+                          : `<button class="btn btn--primary btn--sm" data-link-edit="${attr(m.email)}">이메일 수정·연계</button>`}
                         <button class="btn btn--quiet btn--sm" data-link-reject="${attr(m.email)}">연계 거절</button>` : ''}
                       <button class="btn btn--quiet btn--sm" data-status="${attr(m.email)}"
                               data-next="${st === 'blocked' ? 'active' : 'blocked'}"
@@ -1451,6 +1461,30 @@ export async function membersView(mount) {
           toastOk(moved
             ? `연계를 완료했습니다 (제출물·게시글·페스타 ${moved}건 이관).`
             : `${legacy} → ${email} 연계를 완료했습니다.`);
+          await load();
+        } catch (e) { toastErr(e.message); }
+      });
+    });
+
+    rowsEl.querySelectorAll('[data-link-edit]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const email = btn.dataset.linkEdit;
+        const target = all.find((x) => normEmail(x.email) === normEmail(email));
+        if (!target) return;
+        const picked = await openLinkEditModal({ target, allMembers: all, subCount });
+        if (!picked) return;
+        try {
+          if (picked.mode === 'update') {
+            await store.auth.resolveMemberLink(email, { legacyEmail: picked.legacyEmail, action: 'update' });
+            toastOk(`연계 요청 이메일을 ${picked.legacyEmail}(으)로 수정했습니다.`);
+          } else {
+            const res = await store.auth.resolveMemberLink(email, { legacyEmail: picked.legacyEmail, action: 'approve' });
+            const mig = res?.migrated || {};
+            const moved = (mig.submissions || 0) + (mig.posts || 0) + (mig.festa || 0);
+            toastOk(moved
+              ? `연계를 완료했습니다 (제출물·게시글·페스타 ${moved}건 이관).`
+              : `${picked.legacyEmail} → ${email} 연계를 완료했습니다.`);
+          }
           await load();
         } catch (e) { toastErr(e.message); }
       });
@@ -1610,4 +1644,163 @@ export async function membersView(mount) {
   });
 
   await load();
+}
+
+/**
+ * 잘못 입력된 기존 연계 이메일을 수정하거나 기존 명부에서 골라 바로 연계하는 모달.
+ * @returns {Promise<{mode:'approve'|'update', legacyEmail:string}|null>}
+ */
+function openLinkEditModal({ target, allMembers, subCount }) {
+  const targetEmail = normEmail(target.email);
+  const targetName = String(target.name || '').trim().toLowerCase();
+  const targetInst = String(target.institution || '').trim().toLowerCase();
+  const byEmail = new Map(allMembers.map((m) => [normEmail(m.email), m]));
+  const isPending = (target.status || 'active') === 'pending';
+
+  // 연계 가능한 기존 비-구글 회원 후보 (동일 성명 → 동일 기관 → 이름순)
+  const candidates = allMembers
+    .filter((m) => !m.googleLinked && normEmail(m.email) !== targetEmail)
+    .sort((a, b) => {
+      const score = (m) => {
+        const n = String(m.name || '').trim().toLowerCase();
+        const i = String(m.institution || '').trim().toLowerCase();
+        if (targetName && n === targetName && targetInst && i === targetInst) return 0;
+        if (targetName && n === targetName) return 1;
+        if (targetInst && i === targetInst) return 2;
+        return 3;
+      };
+      const diff = score(a) - score(b);
+      if (diff !== 0) return diff;
+      return String(a.name || a.email).localeCompare(String(b.name || b.email), 'ko');
+    });
+
+  return new Promise((resolve) => {
+    const root = $('#modalRoot');
+    const prevFocus = document.activeElement;
+
+    root.innerHTML = `
+      <div class="modal-scrim" data-scrim>
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mdLinkTitle" style="max-width:520px">
+          <h2 id="mdLinkTitle">기존 계정 연계 이메일 수정</h2>
+          <p style="color:var(--text-black-soft);font-size:1.4rem;line-height:1.6">
+            대상 Google 계정: <strong>${esc(target.name || '—')}</strong>
+            ${target.institution ? `(${esc(target.institution)})` : ''} · <code>${esc(target.email)}</code>
+          </p>
+
+          ${candidates.length ? `
+          <label class="field" style="margin-top:var(--space-3)">
+            <span class="field__label">기존 회원 명부에서 선택 (미연동 계정 ${candidates.length}명)</span>
+            <select class="select" data-pick>
+              <option value="">— 명부에서 기존 회원 선택 —</option>
+              ${candidates.map((c) => {
+                const sameName = targetName && String(c.name || '').trim().toLowerCase() === targetName;
+                const subs = subCount.get(normEmail(c.email)) || 0;
+                const label = `${sameName ? '[동일 성명] ' : ''}${c.name || '이름 없음'} · ${c.institution || '소속 없음'} · ${c.email}${subs ? ` (제출 ${subs}건)` : ''}`;
+                return `<option value="${attr(c.email)}" ${normEmail(c.email) === normEmail(target.linkRequestedEmail) ? 'selected' : ''}>${esc(label)}</option>`;
+              }).join('')}
+            </select>
+          </label>` : ''}
+
+          <label class="field" style="margin-top:var(--space-3)">
+            <span class="field__label">연계할 기존 이메일<span class="field__req">*</span></span>
+            <input class="input" type="email" data-legacy-input autocomplete="off"
+                   value="${attr(target.linkRequestedEmail || '')}"
+                   placeholder="예: hong@mois.go.kr" />
+            <span class="field__hint" data-match-info style="display:block;margin-top:6px"></span>
+          </label>
+
+          <p style="color:var(--text-black-soft);font-size:1.3rem;line-height:1.5;margin-top:var(--space-2)">
+            연계를 승인하면 해당 기존 계정의 제출물·소통방·투표·페스타·권한이
+            Google 계정으로 모두 이관되고 기존 중복 계정은 정리됩니다.
+          </p>
+
+          <div class="modal__actions" style="flex-wrap:wrap">
+            <button type="button" class="btn btn--quiet" data-cancel>취소</button>
+            <button type="button" class="btn btn--outline" data-save-only>이메일만 저장</button>
+            <button type="button" class="btn btn--primary" data-approve-link>
+              ${isPending ? '수정 후 승인 + 연계' : '수정 후 연계 승인'}
+            </button>
+          </div>
+        </div>
+      </div>`;
+
+    const scrim = root.querySelector('[data-scrim]');
+    const pickEl = root.querySelector('[data-pick]');
+    const inputEl = root.querySelector('[data-legacy-input]');
+    const infoEl = root.querySelector('[data-match-info]');
+    const saveBtn = root.querySelector('[data-save-only]');
+    const approveBtn = root.querySelector('[data-approve-link]');
+
+    const close = (val) => {
+      document.removeEventListener('keydown', onKey);
+      root.innerHTML = '';
+      if (prevFocus?.focus) prevFocus.focus();
+      resolve(val);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') close(null); };
+
+    const sync = () => {
+      const val = normEmail(inputEl.value);
+      if (pickEl) {
+        pickEl.value = candidates.some((c) => normEmail(c.email) === val) ? val : '';
+      }
+      const validFormat = Boolean(val && isEmail(val) && val !== targetEmail);
+      const match = val ? byEmail.get(val) : null;
+      const canMerge = Boolean(validFormat && match && !match.googleLinked);
+
+      saveBtn.disabled = !validFormat;
+      approveBtn.disabled = !canMerge;
+
+      if (!val) {
+        infoEl.style.color = 'var(--text-black-soft)';
+        infoEl.textContent = '기존에 가입했던 이메일을 입력하거나 위 명부에서 선택하세요.';
+      } else if (val === targetEmail) {
+        infoEl.style.color = 'var(--red)';
+        infoEl.textContent = '현재 Google 이메일과 같은 주소는 연계할 수 없습니다.';
+      } else if (!isEmail(val)) {
+        infoEl.style.color = 'var(--red)';
+        infoEl.textContent = '올바른 이메일 형식을 입력하세요.';
+      } else if (!match) {
+        infoEl.style.color = 'var(--red)';
+        infoEl.textContent = '기존 명부에 해당 이메일이 없습니다. 철자를 확인하거나 위 목록에서 선택하세요.';
+      } else if (match.googleLinked) {
+        infoEl.style.color = 'var(--red)';
+        infoEl.textContent = '이미 Google 계정이 연동된 회원이라 병합할 수 없습니다.';
+      } else {
+        const subs = subCount.get(val) || 0;
+        infoEl.style.color = 'var(--green-accent)';
+        infoEl.textContent = `기존 회원 확인: ${[match.name, match.institution].filter(Boolean).join(' · ') || '정보 없음'}`
+          + (subs ? ` · 제출물 ${subs}건` : '');
+      }
+    };
+
+    if (pickEl) {
+      pickEl.addEventListener('change', () => {
+        if (pickEl.value) {
+          inputEl.value = pickEl.value;
+          sync();
+        }
+      });
+    }
+    inputEl.addEventListener('input', sync);
+
+    saveBtn.addEventListener('click', () => {
+      const val = normEmail(inputEl.value);
+      if (!val || !isEmail(val) || val === targetEmail) return;
+      close({ mode: 'update', legacyEmail: val });
+    });
+    approveBtn.addEventListener('click', () => {
+      const val = normEmail(inputEl.value);
+      const match = byEmail.get(val);
+      if (!val || !isEmail(val) || val === targetEmail || !match || match.googleLinked) return;
+      close({ mode: 'approve', legacyEmail: val });
+    });
+    root.querySelector('[data-cancel]').addEventListener('click', () => close(null));
+    scrim.addEventListener('click', (e) => { if (e.target === scrim) close(null); });
+    document.addEventListener('keydown', onKey);
+
+    sync();
+    inputEl.focus();
+    inputEl.select();
+  });
 }
