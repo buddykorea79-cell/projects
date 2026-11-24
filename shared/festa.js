@@ -6,6 +6,7 @@ const FILE_PREFIX = 'festa/uploads/';
 export const FESTA_FILE_BYTES = 30 * 1024 * 1024;
 export const FESTA_FILE_COUNT = 10;
 export const FESTA_ENTRY_COUNT = 2;
+export const FESTA_CONTACT_EMAIL_COUNT = 5;
 export const FESTA_DEFAULT_DEADLINE = '2027-12-07';
 export const FESTA_FILE_EXTENSIONS = new Set([
   'jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf', 'ppt', 'pptx', 'doc', 'docx',
@@ -83,10 +84,66 @@ export function judgeCanScore(judge, entry) {
   return Boolean(judge?.id && validEmail(email) && email !== normEmail(entry?.author?.email));
 }
 
-function contactEmail(state, env) {
-  const saved = normEmail(state.email);
-  const configured = normEmail(env.FESTA_EMAIL);
-  return validEmail(saved) ? saved : (validEmail(configured) ? configured : '');
+function parseStoredContactEmails(raw) {
+  const items = Array.isArray(raw) ? raw
+    : (typeof raw === 'string' && !/[\u0000-\u001f\u007f]/.test(raw) ? raw.split(/[,;]/) : []);
+  const seen = new Set();
+  const emails = [];
+  for (const item of items) {
+    if (typeof item !== 'string' || /[\u0000-\u001f\u007f]/.test(item)) continue;
+    const email = normEmail(item);
+    if (!validEmail(email) || seen.has(email)) continue;
+    seen.add(email);
+    emails.push(email);
+    if (emails.length >= FESTA_CONTACT_EMAIL_COUNT) break;
+  }
+  return emails;
+}
+
+function contactEmails(state, env) {
+  const fromArray = parseStoredContactEmails(state.emails);
+  if (fromArray.length) return fromArray;
+  const fromLegacy = parseStoredContactEmails(state.email);
+  if (fromLegacy.length) return fromLegacy;
+  return parseStoredContactEmails(env.FESTA_EMAIL);
+}
+
+function parseSubmittedContactEmails(body) {
+  let raw;
+  if (body.emails !== undefined) {
+    if (!Array.isArray(body.emails) || !body.emails.length) {
+      fail(400, '파일을 받을 이메일 주소를 1개 이상 입력하세요.');
+    }
+    raw = body.emails;
+  } else if (typeof body.email === 'string') {
+    if (/[\u0000-\u001f\u007f]/.test(body.email)) {
+      fail(400, '올바른 이메일 주소를 입력하세요.');
+    }
+    raw = body.email.split(/[,;]/);
+  } else {
+    fail(400, '파일을 받을 이메일 주소를 1개 이상 입력하세요.');
+  }
+  if (raw.length > FESTA_CONTACT_EMAIL_COUNT) {
+    fail(400, `수신 이메일은 최대 ${FESTA_CONTACT_EMAIL_COUNT}개까지 등록할 수 있습니다.`);
+  }
+  const seen = new Set();
+  const emails = [];
+  for (const item of raw) {
+    if (typeof item !== 'string' || /[\u0000-\u001f\u007f]/.test(item)) {
+      fail(400, '올바른 이메일 주소를 입력하세요.');
+    }
+    const email = normEmail(item);
+    if (!validEmail(email)) {
+      fail(400, '올바른 이메일 주소를 입력하세요.');
+    }
+    if (seen.has(email)) {
+      fail(400, '중복된 이메일 주소가 있습니다.');
+    }
+    seen.add(email);
+    emails.push(email);
+  }
+  if (!emails.length) fail(400, '파일을 받을 이메일 주소를 1개 이상 입력하세요.');
+  return emails;
 }
 
 function validDeadline(value) {
@@ -219,6 +276,7 @@ async function overview(env, member, cors) {
   const existing = state.entries.filter((entry) => ownerOf(entry) === normEmail(member.email));
   const own = existing.filter((entry) => isMine(entry, member));
   const myEntries = own.map((entry) => entryView(entry, member));
+  const emails = contactEmails(state, env);
   return reply({
     phase: state.phase,
     deadline: deadlineOf(state), deadlinePassed: deadlinePassed(state),
@@ -228,7 +286,8 @@ async function overview(env, member, cors) {
     entries: isAdmin(member) ? state.entries.map((entry) => entryView(entry, member)) : [],
     awardsPublished: Boolean(state.awardsPublication),
     finalStatus: state.juryPanels?.final?.status || 'draft',
-    email: contactEmail(state, env),
+    email: emails.join(', '),
+    emails,
   }, 200, cors);
 }
 
@@ -362,11 +421,13 @@ async function setPhase(request, env, member, cors) {
 async function setContact(request, env, member, cors) {
   requireAdmin(member);
   const body = await jsonBody(request);
-  if (typeof body.email !== 'string') fail(400, '파일을 받을 이메일 주소 하나를 입력하세요.');
-  const email = normEmail(body.email);
-  if (!validEmail(email)) fail(400, '파일을 받을 이메일 주소 하나를 입력하세요.');
-  await updateState(env, (state) => { state.email = email; });
-  return reply({ email }, 200, cors);
+  const emails = parseSubmittedContactEmails(body);
+  const email = emails.join(', ');
+  await updateState(env, (state) => {
+    state.emails = emails;
+    state.email = email;
+  });
+  return reply({ email, emails }, 200, cors);
 }
 
 async function setDeadline(request, env, member, cors) {

@@ -260,12 +260,16 @@ try {
     assert.ok((await list.innerText()).includes('문서 정리 웹앱'));
     assert.ok((await list.innerText()).includes('현장 점검표 개정판'));
     await admin.getByTestId('festa-contact-email').fill('submissions@example.com');
+    await admin.getByTestId('festa-contact-add').click();
+    await admin.getByTestId('festa-contact-email-2').fill('backup@example.com');
     const [contactResponse] = await Promise.all([
       admin.waitForResponse((r) => r.url().endsWith('/api/festa/contact')),
       admin.getByTestId('festa-contact-save').click(),
     ]);
     assert.equal(contactResponse.status(), 200);
-    assert.equal((await state(admin)).email, 'submissions@example.com');
+    assert.equal((await state(admin)).email, 'submissions@example.com, backup@example.com');
+    assert.deepEqual((await state(admin)).emails, ['submissions@example.com', 'backup@example.com']);
+    await admin.locator('a[href="mailto:submissions@example.com,backup@example.com"]').waitFor();
     await phase(admin, 'closed');
   });
   await step('마감된 접수 화면에서는 수정·신규 제출 동작이 사라짐', async () => {

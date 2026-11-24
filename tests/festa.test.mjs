@@ -120,14 +120,54 @@ await test('최초 접수 상태와 빈 내 작품', async () => {
   assert.equal(state.deadlinePassed, false);
   assert.deepEqual(state.entries, []);
   assert.equal(state.email, 'festa@example.com');
+  assert.deepEqual(state.emails, ['festa@example.com']);
 });
-await test('문의 이메일은 관리자만 변경하며 유효한 단일 주소만 저장', async () => {
+await test('문의 이메일은 관리자만 변경하며 1~5개의 유효한 중복 없는 주소를 저장', async () => {
   assert.equal((await post(alice, '/festa/contact', { email: 'help@example.com' })).status, 403);
-  for (const email of ['', 'not-email', 'a@example.com,b@example.com', 'a@example.com\r\nBcc: x@example.com']) {
-    rejected(await post(admin, '/festa/contact', { email }), `invalid email ${email}`);
+  assert.equal((await post(alice, '/festa/contact', { emails: ['help@example.com'] })).status, 403);
+  for (const payload of [
+    { email: '' },
+    { email: 'not-email' },
+    { email: 'a@example.com,' },
+    { email: 'a@example.com, not-email' },
+    { email: 'a@example.com, A@example.com' },
+    { email: 'a@example.com\r\nBcc: x@example.com' },
+    { emails: [] },
+    { emails: [''] },
+    { emails: ['a@example.com', 'A@example.com'] },
+    { emails: ['a@example.com\r\nBcc: x@example.com'] },
+    { emails: ['a1@example.com', 'a2@example.com', 'a3@example.com', 'a4@example.com', 'a5@example.com', 'a6@example.com'] },
+  ]) {
+    rejected(await post(admin, '/festa/contact', payload), `invalid contact ${JSON.stringify(payload)}`);
   }
+  const two = await post(admin, '/festa/contact', { emails: ['first@example.com', 'Second@example.com'] });
+  assert.equal(two.status, 200);
+  assert.equal(two.data.email, 'first@example.com, second@example.com');
+  assert.deepEqual(two.data.emails, ['first@example.com', 'second@example.com']);
+  const stateTwo = await get(alice);
+  assert.equal(stateTwo.email, 'first@example.com, second@example.com');
+  assert.deepEqual(stateTwo.emails, ['first@example.com', 'second@example.com']);
+  const semi = await post(admin, '/festa/contact', { email: 'a@example.com; b@example.com' });
+  assert.equal(semi.status, 200);
+  assert.deepEqual((await get(alice)).emails, ['a@example.com', 'b@example.com']);
   assert.equal((await post(admin, '/festa/contact', { email: 'help@example.com' })).status, 200);
   assert.equal((await get(alice)).email, 'help@example.com');
+  assert.deepEqual((await get(alice)).emails, ['help@example.com']);
+});
+await test('기존 단일 email 저장본과 다중 FESTA_EMAIL 환경변수를 호환 읽기', async () => {
+  const { localEnv, owner } = await isolatedFixture('legacy-contact');
+  const multiEnv = { ...localEnv, FESTA_EMAIL: 'ops1@example.com, ops2@example.com' };
+  const member = session(multiEnv);
+  assert.equal((await googleSignup(member, { email: 'legacy-member@example.com', name: '호환', institution: '행정안전부' })).status, 200);
+  const fromEnv = await get(member);
+  assert.deepEqual(fromEnv.emails, ['ops1@example.com', 'ops2@example.com']);
+  assert.equal(fromEnv.email, 'ops1@example.com, ops2@example.com');
+  await localEnv.BUCKET.put('data/festa.json', JSON.stringify({
+    version: 1, phase: 'open', deadline: '2027-12-07', email: 'legacy@example.com', entries: [], scores: [], uploads: [],
+  }));
+  const fromLegacy = await get(owner);
+  assert.deepEqual(fromLegacy.emails, ['legacy@example.com']);
+  assert.equal(fromLegacy.email, 'legacy@example.com');
 });
 await test('일반회원은 마감 권한이 없고 관리자는 단계를 건너뛸 수 없음', async () => {
   assert.equal((await post(alice, '/festa/phase', { phase: 'closed' })).status, 403);

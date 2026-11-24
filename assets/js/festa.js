@@ -25,7 +25,7 @@ export const festa = {
   saveEntry: (entry) => server().post('/festa/entry', entry),
   phase: (phase) => server().post('/festa/phase', { phase }),
   deadline: (deadline) => server().post('/festa/deadline', { deadline }),
-  contact: (email) => server().post('/festa/contact', { email }),
+  contact: (emails) => server().post('/festa/contact', Array.isArray(emails) ? { emails } : { email: emails }),
   async upload(file) {
     const body = new FormData();
     body.append('file', file);

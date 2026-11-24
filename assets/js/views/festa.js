@@ -8,6 +8,7 @@ const TITLE = '말하는 대로, 바이브 코딩 페스타';
 const FILE_LIMIT = 30 * 1024 * 1024;
 const MAX_FILES = 10;
 const MAX_ENTRIES = 2;
+const MAX_CONTACT_EMAILS = 5;
 const DEFAULT_DEADLINE = '2027-12-07';
 const FILE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf', 'ppt', 'pptx', 'doc', 'docx', 'xls', 'xlsx', 'hwp', 'hwpx', 'zip', 'txt', 'md', 'csv', 'mp4', 'mov', 'webm'];
 const PHASES = {
@@ -103,15 +104,48 @@ async function attachments(files = []) {
   return `<ul class="filelist" aria-label="첨부 파일 목록">${rows.join('')}</ul>`;
 }
 
-function mailHelp(email) {
-  const value = String(email || '').trim();
-  const at = value.lastIndexOf('@');
-  const domain = value.slice(at + 1);
-  const valid = isEmail(value) && /^[\p{L}\p{N}.-]+$/u.test(domain);
-  const recipient = valid ? `${encodeURIComponent(value.slice(0, at))}@${domain}` : '';
-  return valid
-    ? `30MB를 초과하는 파일은 <a href="mailto:${attr(recipient)}">${esc(value)}</a>로 보내 주세요. 이메일 제목에 작품명과 제출자명을 적어 주세요. 이메일로 보낸 파일은 온라인 접수증에 자동으로 표시되지 않습니다.`
-    : '30MB를 초과하는 파일은 이메일로 제출해 주세요. 받을 이메일 주소는 운영자에게 문의해 주세요. 이메일 제목에 작품명과 제출자명을 적어 주세요. 이메일로 보낸 파일은 온라인 접수증에 자동으로 표시되지 않습니다.';
+function validMailAddress(value) {
+  const address = String(value || '').trim();
+  const at = address.lastIndexOf('@');
+  if (at <= 0) return null;
+  const domain = address.slice(at + 1);
+  if (!isEmail(address) || /[\u0000-\u001f\u007f,;<>]/.test(address) || !/^[\p{L}\p{N}.-]+$/u.test(domain)) {
+    return null;
+  }
+  return { address, recipient: `${encodeURIComponent(address.slice(0, at))}@${domain}` };
+}
+
+function contactEmailsOf(source) {
+  const raw = Array.isArray(source) ? source
+    : Array.isArray(source?.emails) ? source.emails
+    : typeof source === 'string' ? source.split(/[,;]/)
+    : typeof source?.email === 'string' ? source.email.split(/[,;]/)
+    : [];
+  const seen = new Set();
+  const list = [];
+  for (const item of raw) {
+    const parsed = validMailAddress(item);
+    if (!parsed) continue;
+    const key = parsed.address.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push(parsed.address);
+    if (list.length >= MAX_CONTACT_EMAILS) break;
+  }
+  return list;
+}
+
+function mailHelp(contact) {
+  const items = contactEmailsOf(contact).map(validMailAddress).filter(Boolean);
+  if (!items.length) {
+    return '30MB를 초과하는 파일은 이메일로 제출해 주세요. 받을 이메일 주소는 운영자에게 문의해 주세요. 이메일 제목에 작품명과 제출자명을 적어 주세요. 이메일로 보낸 파일은 온라인 접수증에 자동으로 표시되지 않습니다.';
+  }
+  if (items.length === 1) {
+    return `30MB를 초과하는 파일은 <a href="mailto:${attr(items[0].recipient)}">${esc(items[0].address)}</a>로 보내 주세요. 이메일 제목에 작품명과 제출자명을 적어 주세요. 이메일로 보낸 파일은 온라인 접수증에 자동으로 표시되지 않습니다.`;
+  }
+  const links = items.map((item) => `<a href="mailto:${attr(item.recipient)}">${esc(item.address)}</a>`).join(', ');
+  const allHref = `mailto:${items.map((item) => item.recipient).join(',')}`;
+  return `30MB를 초과하는 파일은 ${links}(<a href="${attr(allHref)}">모두에게 메일 보내기</a>)로 보내 주세요. 이메일 제목에 작품명과 제출자명을 적어 주세요. 이메일로 보낸 파일은 온라인 접수증에 자동으로 표시되지 않습니다.`;
 }
 
 function rubricHtml() {
@@ -332,7 +366,7 @@ export async function festaView(mount) {
       const key = entry?.id || 'new';
       const draft = drafts.get(key) || null;
       activeKey = key;
-      host.innerHTML = editorHtml(entry, state.email, myEntries.length, draft);
+      host.innerHTML = editorHtml(entry, contactEmailsOf(state), myEntries.length, draft);
       activeEditor = bindEditor(host, state, entry, async (savedId) => {
         await refresh();
         drafts.delete(key);
@@ -381,6 +415,7 @@ export async function festaAdminView(mount) {
   const refresh = async () => {
     const state = await festa.get();
     const entries = Array.isArray(state.entries) ? state.entries : [];
+    const savedContacts = contactEmailsOf(state);
     const cards = await Promise.all(entries.map(adminEntry));
     if (!root.isConnected) return;
     stopDeadline?.();
@@ -392,11 +427,11 @@ export async function festaAdminView(mount) {
       <div class="row" style="margin-top:var(--space-3)">${state.phase === 'open' ? '<button class="btn btn--primary" data-phase="closed">접수 마감</button>' : ''}<a class="btn btn--outline" href="#/admin/festa/jury">심사위원·평가 대상 관리</a><a class="btn btn--outline" href="#/admin/festa/awards">수상작 확정·발표</a></div>
       <p data-phase-status role="status" aria-live="polite"></p>
     </section><section class="card" aria-labelledby="festaContactTitle"><h2 id="festaContactTitle" class="page-title" style="font-size:2.2rem">대용량 파일 수신 안내</h2>
-      <p class="page-sub">30MB를 초과하는 파일을 받을 이메일입니다. 저장하면 회원의 제출 안내에 표시됩니다.</p>
-      <form data-testid="festa-contact-form" style="margin-top:var(--space-3)"><div class="row"><label class="field grow"><span class="field__label">대용량 파일 수신 이메일</span><input class="input" type="email" name="email" required maxlength="254" value="${attr(state.email || '')}" data-testid="festa-contact-email" placeholder="운영자 이메일" /></label><button type="submit" class="btn btn--primary" data-testid="festa-contact-save">수신 이메일 저장</button></div><p data-contact-status role="status" aria-live="polite" class="field__hint">${state.email ? '' : '아직 수신 이메일이 설정되지 않았습니다. 회원에게 운영자 문의 안내가 표시됩니다.'}</p></form>
+      <p class="page-sub">30MB를 초과하는 파일을 받을 이메일입니다. 여러 명이 함께 수신하려면 수신 이메일을 추가하세요(최대 5명). 저장하면 회원의 제출 안내에 표시됩니다.</p>
+      <form data-testid="festa-contact-form" class="stack" style="margin-top:var(--space-3)"><div class="stack" data-contact-list></div><div class="row"><button type="button" class="btn btn--outline" data-testid="festa-contact-add"><span aria-hidden="true">＋</span> 수신 이메일 추가</button><button type="submit" class="btn btn--primary" data-testid="festa-contact-save">수신 이메일 저장</button></div><p data-contact-status role="status" aria-live="polite" class="field__hint">${savedContacts.length ? '' : '아직 수신 이메일이 설정되지 않았습니다. 회원에게 운영자 문의 안내가 표시됩니다.'}</p></form>
     </section>${rubricHtml()}
     <section aria-labelledby="festaAdminListTitle" class="festa-stack"><div class="festa-entry-head"><h2 id="festaAdminListTitle" class="page-title" style="font-size:2.2rem">전체 접수 현황 · ${entries.length}건</h2><button type="button" class="btn btn--quiet btn--sm" data-festa-refresh>현황 새로고침</button></div>
-      <p class="notice notice--info">${mailHelp(state.email)}</p>
+      <p class="notice notice--info">${mailHelp(savedContacts)}</p>
       <div class="festa-stack" data-testid="festa-admin-list">${cards.length ? cards.join('') : emptyState({ title: '아직 접수된 작품이 없습니다', body: '회원이 작품을 제출하면 접수 정보와 첨부 파일이 이곳에 표시됩니다.' })}</div>
     </section>`;
     root.querySelector('[data-festa-refresh]').addEventListener('click', async (event) => {
@@ -427,29 +462,81 @@ export async function festaAdminView(mount) {
       } finally { button.disabled = false; input.disabled = false; deadlineForm.removeAttribute('aria-busy'); }
     });
     const contactForm = root.querySelector('[data-testid="festa-contact-form"]');
+    const contactList = contactForm.querySelector('[data-contact-list]');
+    const addContactButton = contactForm.querySelector('[data-testid="festa-contact-add"]');
+    const saveContactButton = contactForm.querySelector('[data-testid="festa-contact-save"]');
+    const contactStatus = contactForm.querySelector('[data-contact-status]');
+    let contactValues = savedContacts.length ? [...savedContacts] : [''];
+    let contactBusy = false;
+    const readContactInputs = () => [...contactList.querySelectorAll('[data-contact-input]')].map((input) => input.value);
+    const syncContactControls = () => {
+      contactList.querySelectorAll('[data-contact-input], [data-contact-remove]').forEach((el) => { el.disabled = contactBusy; });
+      addContactButton.disabled = contactBusy || contactValues.length >= MAX_CONTACT_EMAILS;
+      saveContactButton.disabled = contactBusy;
+    };
+    const renderContacts = (focusIndex = null) => {
+      const multi = contactValues.length > 1;
+      contactList.innerHTML = contactValues.map((value, index) => `
+        <div class="row" data-contact-row>
+          <label class="field grow">
+            <span class="field__label">${multi ? `대용량 파일 수신 이메일 ${index + 1}` : '대용량 파일 수신 이메일'}</span>
+            <input class="input" type="email" name="email" ${index === 0 ? 'required data-testid="festa-contact-email"' : `data-testid="festa-contact-email-${index + 1}"`} maxlength="254" value="${attr(value)}" data-contact-input placeholder="운영자 이메일" />
+          </label>
+          ${multi ? `<button type="button" class="btn btn--quiet btn--sm" data-contact-remove="${index}" aria-label="수신 이메일 ${index + 1} 삭제">삭제</button>` : ''}
+        </div>`).join('');
+      contactList.querySelectorAll('[data-contact-remove]').forEach((button) => button.addEventListener('click', () => {
+        if (contactBusy) return;
+        contactValues = readContactInputs();
+        const index = Number(button.dataset.contactRemove);
+        if (contactValues.length <= 1) return;
+        contactValues.splice(index, 1);
+        renderContacts(Math.min(index, contactValues.length - 1));
+      }));
+      syncContactControls();
+      if (focusIndex !== null) contactList.querySelectorAll('[data-contact-input]')[focusIndex]?.focus();
+    };
+    renderContacts();
+    addContactButton.addEventListener('click', () => {
+      if (contactBusy) return;
+      contactValues = readContactInputs();
+      if (contactValues.length >= MAX_CONTACT_EMAILS) return;
+      contactValues.push('');
+      renderContacts(contactValues.length - 1);
+    });
     contactForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const email = contactForm.elements.email.value.trim();
-      const button = contactForm.querySelector('[data-testid="festa-contact-save"]');
-      const status = contactForm.querySelector('[data-contact-status]');
-      if (button.disabled || !contactForm.reportValidity()) return;
-      if (!isEmail(email)) { status.textContent = '올바른 이메일 주소를 입력해 주세요.'; return; }
-      button.disabled = true;
-      contactForm.elements.email.disabled = true;
+      if (contactBusy || !contactForm.reportValidity()) return;
+      contactValues = readContactInputs();
+      const entered = contactValues.map((value) => value.trim()).filter(Boolean);
+      if (!entered.length) { contactStatus.textContent = '파일을 받을 이메일 주소를 1개 이상 입력해 주세요.'; return; }
+      if (entered.some((value) => !validMailAddress(value))) { contactStatus.textContent = '올바른 이메일 주소를 입력해 주세요.'; return; }
+      const normalized = entered.map((value) => value.toLowerCase());
+      if (new Set(normalized).size !== normalized.length) {
+        contactStatus.textContent = '중복된 이메일 주소가 있습니다. 서로 다른 이메일 주소를 입력해 주세요.';
+        return;
+      }
+      if (normalized.length > MAX_CONTACT_EMAILS) {
+        contactStatus.textContent = `수신 이메일은 최대 ${MAX_CONTACT_EMAILS}개까지 등록할 수 있습니다.`;
+        return;
+      }
+      contactBusy = true;
+      syncContactControls();
       contactForm.setAttribute('aria-busy', 'true');
-      status.textContent = '수신 이메일을 저장하고 있습니다.';
+      contactStatus.textContent = '수신 이메일을 저장하고 있습니다.';
       let saved = false;
       try {
-        await festa.contact(email);
+        await festa.contact(normalized);
         saved = true;
         await refresh();
         toastOk('대용량 파일 수신 이메일을 저장했습니다.');
       } catch (error) {
-        status.textContent = saved ? '이메일은 저장되었습니다. 페이지를 새로고침해 안내를 확인해 주세요.' : `저장하지 못했습니다 — ${error.message}`;
+        contactStatus.textContent = saved ? '이메일은 저장되었습니다. 페이지를 새로고침해 안내를 확인해 주세요.' : `저장하지 못했습니다 — ${error.message}`;
       } finally {
-        button.disabled = false;
-        contactForm.elements.email.disabled = false;
-        contactForm.removeAttribute('aria-busy');
+        contactBusy = false;
+        if (contactForm.isConnected) {
+          syncContactControls();
+          contactForm.removeAttribute('aria-busy');
+        }
       }
     });
     root.querySelectorAll('[data-phase]').forEach((button) => button.addEventListener('click', async () => {
