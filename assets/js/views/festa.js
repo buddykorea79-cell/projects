@@ -3,6 +3,7 @@ import { festa, FESTA_RUBRIC as RUBRIC } from '../festa.js';
 import { currentUser, isAdmin } from '../auth.js';
 import { esc, attr, fmtDate, fmtBytes, isEmail } from '../utils.js';
 import { spinner, emptyState, toastOk, toastErr, confirmModal, stat } from '../ui.js';
+import { adminNavBar } from './festa-tally.js';
 
 const TITLE = '말하는 대로, 바이브 코딩 페스타';
 const FILE_LIMIT = 30 * 1024 * 1024;
@@ -162,9 +163,9 @@ function shell(mount, admin = false) {
     <p class="crumb"><a href="#/" style="color:inherit">홈</a><span>/</span>페스타${admin ? ' 관리' : ''}</p>
     <h1 style="font-size:clamp(2.4rem,5vw,3.4rem);color:inherit">${TITLE}</h1>
     <p style="margin-top:var(--space-2)">${admin ? '전체 접수 현황과 심사 결과를 확인하고 운영 단계를 관리합니다.' : '개인 작품을 접수하고 제출 내역을 확인하세요.'}</p>
-    <div class="row" data-festa-hero-actions style="margin-top:var(--space-3)">${admin
-      ? '<a class="btn btn--ghostDark is-active" href="#/admin/festa" data-testid="festa-admin-submissions-btn" aria-current="page">접수 현황</a><a class="btn btn--ghostDark" href="#/admin/festa/jury">심사위원·평가 대상 관리</a><a class="btn btn--ghostDark" href="#/admin/festa/awards">수상작 확정·발표</a><a class="btn btn--ghostDark" href="#/admin/festa/rehearsal" data-testid="festa-rehearsal-link">AI Build Camp 본선 테스트·초기화</a><a class="btn btn--ghostDark" href="#/admin/festa/practice" data-testid="festa-practice-link">샘플 작품 10건 · 평가 연습</a>'
-      : (isAdmin() ? '<a class="btn btn--ghostDark" href="#/admin/festa">페스타 관리</a>' : '')}</div>
+    ${admin
+      ? adminNavBar('submissions')
+      : `<div class="row" data-festa-hero-actions style="margin-top:var(--space-3)">${isAdmin() ? '<a class="btn btn--ghostDark" href="#/admin/festa">페스타 관리</a>' : ''}</div>`}
   </div></section><section class="section"><div class="wrap festa-stack" data-festa-root>${spinner()}</div></section>`;
   return mount.querySelector('[data-festa-root]');
 }
@@ -181,14 +182,14 @@ function prelimMenuHtml(panels) {
   return `<section class="card fj-prelim-menu" data-testid="festa-prelim-menu" aria-labelledby="festaPrelimMenuTitle">
     <div class="festa-entry-head">
       <div>
-        <h2 id="festaPrelimMenuTitle" class="page-title" style="font-size:2.2rem">예선 심사 메뉴</h2>
+        <h2 id="festaPrelimMenuTitle" class="page-title" style="font-size:2.2rem">예선 심사</h2>
         <p class="page-sub">담당 기관의 예선 심사 화면으로 바로 이동하여 블라인드 심사를 진행할 수 있습니다.</p>
       </div>
     </div>
     <div class="row" style="margin-top:var(--space-3)">
       ${panels.map((panel) => `
         <a class="btn btn--festa" href="#/festa/prelim/${attr(panel.key)}" data-testid="festa-prelim-${attr(panel.key)}">
-          ${esc(panel.label)}
+          ${esc(panel.buttonLabel || panel.label)}
           ${prelimStatusBadge(panel)}
         </a>`).join('')}
     </div>
@@ -375,7 +376,7 @@ export async function festaView(mount) {
     const heroActions = mount.querySelector('[data-festa-hero-actions]');
     if (heroActions) {
       heroActions.innerHTML = [
-        ...prelimPanels.map((panel) => `<a class="btn btn--ghostDark" href="#/festa/prelim/${attr(panel.key)}" data-testid="festa-hero-prelim-${attr(panel.key)}">${esc(panel.label)}</a>`),
+        ...prelimPanels.map((panel) => `<a class="btn btn--ghostDark" href="#/festa/prelim/${attr(panel.key)}" data-testid="festa-hero-prelim-${attr(panel.key)}">${esc(panel.buttonLabel || panel.label)}</a>`),
         ...(isAdmin() ? ['<a class="btn btn--ghostDark" href="#/admin/festa">페스타 관리</a>'] : []),
       ].join('');
     }
@@ -435,19 +436,11 @@ export async function festaView(mount) {
   catch (error) { if (root.isConnected) root.innerHTML = `<p class="notice notice--err" role="alert">페스타 정보를 불러오지 못했습니다 — ${esc(error.message)}</p>`; }
 }
 
-async function adminEntry(entry, index) {
-  return `<article class="card" id="festaAdminEntryCard${index}" aria-labelledby="festaAdminEntry${index}"><div class="festa-entry-head"><div><span class="badge badge--soft">${index + 1}번 · ${esc(entry.institution || '소속기관 확인 필요')}</span><h3 id="festaAdminEntry${index}" style="margin-top:var(--space-2)">${esc(entry.title)}</h3><p class="page-sub">${esc(entry.author?.name || '이름 없음')}</p><p class="field__hint">${esc(entry.author?.email || '')}</p></div></div>
-    <p class="field__hint">접수 ${esc(fmtDate(entry.createdAt, true))} · 최종 수정 ${esc(fmtDate(entry.updatedAt || entry.createdAt, true))} · 접수 번호 ${esc(entry.id)}</p>
-    <p class="festa-description" style="margin-block:var(--space-3)">${esc(entry.description)}</p>${entryLinks(entry)}
-    <div style="margin-top:var(--space-3)">${await attachments(entry.files)}</div>
-  </article>`;
-}
-
 function adminOverviewTable(entries) {
   if (!entries.length) return '';
   return `<div class="fj-table-wrap" data-testid="festa-admin-table"><table class="fj-table">
     <caption>전체 접수 리스트 · ${entries.length}건</caption>
-    <thead><tr><th>번호</th><th>소속기관</th><th>작품명</th><th>제출자</th><th>실행 방식</th><th>첨부</th><th>최종 저장</th></tr></thead>
+    <thead><tr><th>번호</th><th>소속기관</th><th>작품명</th><th>제출자</th><th>실행 방식</th><th>첨부</th><th>최종 저장</th><th>상세</th></tr></thead>
     <tbody>${entries.map((entry, index) => `<tr>
       <td>${index + 1}</td>
       <td>${esc(entry.institution || '미지정')}</td>
@@ -456,8 +449,62 @@ function adminOverviewTable(entries) {
       <td>${entry.localOnly ? '<span class="badge badge--soft">로컬</span>' : '<span class="badge badge--open">배포</span>'}</td>
       <td>${(entry.files || []).length}건</td>
       <td>${esc(fmtDate(entry.updatedAt || entry.createdAt, true))}</td>
+      <td style="white-space:nowrap"><a class="btn btn--outline btn--sm" href="#/admin/festa/entry/${attr(encodeURIComponent(entry.id))}" target="_blank" rel="noopener noreferrer" data-testid="festa-admin-detail-link" data-entry-id="${attr(entry.id)}">상세 보기<span class="sr-only">: ${esc(entry.title)} (새 창)</span></a></td>
     </tr>`).join('')}</tbody>
   </table></div>`;
+}
+
+export async function festaAdminEntryView(mount, { entryId }) {
+  const root = shell(mount, true);
+  if (!isAdmin()) { root.innerHTML = '<p class="notice notice--err" role="alert">관리자만 이용할 수 있습니다.</p>'; return; }
+  try {
+    const state = await festa.get();
+    const entries = Array.isArray(state.entries) ? state.entries : [];
+    const index = entries.findIndex((item) => item.id === entryId);
+    const entry = index >= 0 ? entries[index] : null;
+    if (!root.isConnected) return;
+    if (!entry) {
+      root.innerHTML = `<div class="card">${emptyState({
+        title: '작품을 찾을 수 없습니다',
+        body: '삭제되었거나 존재하지 않는 접수 번호입니다.',
+        action: '<a class="btn btn--primary" href="#/admin/festa">접수 현황으로 돌아가기</a>',
+      })}</div>`;
+      return;
+    }
+    const filesMarkup = await attachments(entry.files);
+    if (!root.isConnected) return;
+    root.innerHTML = `<div class="festa-entry-head">
+        <div>
+          <span class="badge badge--soft">${index + 1}번 · ${esc(entry.institution || '소속기관 확인 필요')}</span>
+          <span class="badge ${entry.localOnly ? 'badge--soft' : 'badge--open'}" style="margin-left:6px">${entry.localOnly ? '로컬 실행 작품' : '웹 배포 작품'}</span>
+        </div>
+        <div class="row">
+          <a class="btn btn--outline btn--sm" href="#/admin/festa">← 접수 현황 목록</a>
+          <button type="button" class="btn btn--quiet btn--sm" data-close-window>창 닫기</button>
+        </div>
+      </div>
+      <article class="card festa-stack" data-testid="festa-admin-entry-detail">
+        <div>
+          <h2 class="page-title" style="font-size:2.4rem">${esc(entry.title)}</h2>
+          <p class="page-sub" style="margin-top:var(--space-2)">${esc(entry.institution || '소속기관 미지정')} · ${esc(entry.author?.name || '이름 없음')} (${esc(entry.author?.email || '')})</p>
+          <p class="field__hint" style="margin-top:var(--space-1)">접수 번호: ${esc(entry.id)} · 최초 접수 ${esc(fmtDate(entry.createdAt, true))} · 최종 수정 ${esc(fmtDate(entry.updatedAt || entry.createdAt, true))}</p>
+        </div>
+        <div>${entryLinks(entry)}</div>
+        <section aria-label="작품 설명">
+          <h3 style="font-size:1.8rem;margin-bottom:var(--space-2)">📝 작품 설명</h3>
+          <div class="festa-description card card--flat" style="padding:var(--space-4);line-height:1.8">${esc(entry.description)}</div>
+        </section>
+        <section aria-label="첨부 파일">
+          <h3 style="font-size:1.8rem;margin-bottom:var(--space-2)">📎 첨부 파일 (${(entry.files || []).length}건)</h3>
+          ${filesMarkup}
+        </section>
+      </article>`;
+    root.querySelector('[data-close-window]')?.addEventListener('click', () => {
+      window.close();
+    });
+  } catch (error) {
+    if (root.isConnected) root.innerHTML = `<p class="notice notice--err" role="alert">작품 상세 정보를 불러오지 못했습니다 — ${esc(error.message)}</p>`;
+  }
 }
 
 export async function festaAdminView(mount) {
@@ -480,14 +527,13 @@ export async function festaAdminView(mount) {
     const filtered = selectedOrg === 'all' ? entries
       : selectedOrg === 'unset' ? entries.filter((entry) => !['행정안전부', '한국서부발전'].includes(entry.institution))
       : entries.filter((entry) => entry.institution === selectedOrg);
-    const cards = await Promise.all(filtered.map(adminEntry));
     if (!root.isConnected) return;
     stopDeadline?.();
     root.innerHTML = `<section aria-labelledby="festaAdminListTitle" class="festa-stack" data-testid="festa-admin-overview">
       <div class="festa-entry-head">
         <div>
           <h2 id="festaAdminListTitle" class="page-title" style="font-size:2.4rem">전체 접수 현황 · ${entries.length}건</h2>
-          <p class="page-sub">기관별 접수 현황과 전체 제출 작품 리스트를 한눈에 확인합니다.</p>
+          <p class="page-sub">기관별 접수 현황과 전체 제출 작품 리스트를 한눈에 확인하고, [상세 보기]로 새 창에서 작품 내용과 첨부 파일을 열람합니다.</p>
         </div>
         <button type="button" class="btn btn--outline btn--sm" data-festa-refresh>현황 새로고침</button>
       </div>
@@ -497,7 +543,7 @@ export async function festaAdminView(mount) {
         ${stat(`${iwestCount}건`, '한국서부발전')}
         ${stat(`${authorCount}명`, '참여 인원')}
       </div>
-      <section class="card fj-stack">
+      <section class="card fj-stack" data-testid="festa-admin-list">
         <div class="fj-head">
           <div class="fj-tabs" role="tablist" aria-label="기관별 접수 필터">
             <button type="button" class="btn btn--outline btn--sm" role="tab" aria-selected="${selectedOrg === 'all'}" data-org-filter="all">전체 (${entries.length})</button>
@@ -506,17 +552,16 @@ export async function festaAdminView(mount) {
             ${unsetCount ? `<button type="button" class="btn btn--outline btn--sm" role="tab" aria-selected="${selectedOrg === 'unset'}" data-org-filter="unset">미지정 (${unsetCount})</button>` : ''}
           </div>
         </div>
-        ${filtered.length ? adminOverviewTable(filtered) : emptyState({ title: '접수된 작품이 없습니다', body: '회원이 작품을 제출하면 접수 현황과 리스트가 이곳에 표시됩니다.' })}
+        ${filtered.length ? adminOverviewTable(filtered) : emptyState({ title: '아직 접수된 작품이 없습니다', body: '회원이 작품을 제출하면 접수 현황과 리스트가 이곳에 표시됩니다.' })}
       </section>
       <p class="notice notice--info">${mailHelp(savedContacts)}</p>
-      <div class="festa-stack" data-testid="festa-admin-list">${cards.length ? cards.join('') : emptyState({ title: '아직 접수된 작품이 없습니다', body: '회원이 작품을 제출하면 접수 정보와 첨부 파일이 이곳에 표시됩니다.' })}</div>
     </section>
     ${deadlineHtml(state)}<section class="card" aria-labelledby="festaDeadlineTitle"><h2 id="festaDeadlineTitle" class="page-title" style="font-size:2.2rem"><span aria-hidden="true">🗓️</span> 접수 마감일 설정</h2>
       <p class="page-sub">선택한 날짜의 한국시간 23:59:59까지 접수합니다. 수동으로 접수를 마감하기 전에는 기한이 지나도 날짜를 연장하거나 앞당길 수 있습니다.</p>
       <form data-testid="festa-deadline-form" style="margin-top:var(--space-3)"><div class="row"><label class="field grow"><span class="field__label">접수 마감일 (한국시간)</span><input class="input" type="date" name="deadline" required value="${attr(deadlineOf(state))}" data-testid="festa-deadline-input" ${state.phase === 'open' ? '' : 'disabled'} /></label><button type="submit" class="btn btn--primary" data-testid="festa-deadline-save" ${state.phase === 'open' ? '' : 'disabled'}>마감일 저장</button></div><p data-deadline-status role="status" aria-live="polite" class="field__hint">${state.phase === 'open' ? '날짜가 지나도 평가는 자동으로 시작되지 않습니다. 접수 마감 → 평가 시작을 직접 진행해 주세요.' : '운영자가 접수를 마감한 뒤에는 마감일을 변경할 수 없습니다.'}</p></form>
     </section><section class="card" aria-labelledby="festaPhaseTitle"><div class="festa-entry-head"><h2 id="festaPhaseTitle" class="page-title" style="font-size:2.2rem"><span aria-hidden="true">⚙️</span> 페스타 운영 단계</h2><span data-admin-phase-badge>${state.phase === 'open' && deadlinePassed(state) ? '<span class="badge badge--closed">기한 종료 · 수동 마감 전</span>' : phaseBadge(state.phase)}</span></div>
       <p class="page-sub" data-admin-phase-description>${state.phase === 'open' ? deadlinePassed(state) ? '접수 기한이 지나 신규 제출과 수정이 중지되었습니다. 마감일을 연장하거나 접수 마감을 선택해 주세요.' : '마감 기한까지 1인 최대 2작품을 제출·수정할 수 있습니다. 준비가 끝나면 접수를 마감해 주세요.' : '접수를 마감했습니다. 심사위원 관리에서 기관별 예선과 본선의 작품과 심사위원을 지정하세요.'}</p>
-      <div class="row" style="margin-top:var(--space-3)">${state.phase === 'open' ? '<button class="btn btn--primary" data-phase="closed">접수 마감</button>' : ''}<a class="btn btn--outline" href="#/admin/festa/jury">심사위원·평가 대상 관리</a><a class="btn btn--outline" href="#/admin/festa/awards">수상작 확정·발표</a></div>
+      <div class="row" style="margin-top:var(--space-3)">${state.phase === 'open' ? '<button class="btn btn--primary" data-phase="closed">접수 마감</button>' : ''}<a class="btn btn--outline" href="#/admin/festa/jury">심사위원 관리</a><a class="btn btn--outline" href="#/admin/festa/tally/first">예선 심사 현황</a><a class="btn btn--outline" href="#/admin/festa/prelim-results">예선 심사 결과</a><a class="btn btn--outline" href="#/admin/festa/tally/final">본선 심사 현황</a><a class="btn btn--outline" href="#/admin/festa/awards">수상작 확정·발표</a></div>
       <p data-phase-status role="status" aria-live="polite"></p>
     </section><section class="card" aria-labelledby="festaContactTitle"><h2 id="festaContactTitle" class="page-title" style="font-size:2.2rem">대용량 파일 수신 안내</h2>
       <p class="page-sub">30MB를 초과하는 파일을 받을 이메일입니다. 여러 명이 함께 수신하려면 수신 이메일을 추가하세요(최대 5명). 저장하면 회원의 제출 안내에 표시됩니다.</p>

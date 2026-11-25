@@ -290,10 +290,13 @@ async function overview(env, member, cors) {
   const myEntries = own.map((entry) => entryView(entry, member));
   const emails = contactEmails(state, env);
   const prelimLabels = { mois: '예선 심사(행정안전부)', iwest: '예선 심사(한국서부발전)' };
+  const prelimButtons = { mois: '행정안전부 심사하기', iwest: '한국서부발전 심사하기' };
+  const prelimInstitutions = { mois: '행정안전부', iwest: '한국서부발전' };
   const prelimPanels = ['mois', 'iwest'].map((key) => {
     const panel = state.juryPanels?.[key];
+    const expectedOrg = prelimInstitutions[key];
     const judge = Array.isArray(panel?.judges)
-      ? panel.judges.find((row) => normEmail(row?.email) === memberEmail && !row.revoked)
+      ? panel.judges.find((row) => normEmail(row?.email) === memberEmail && !row.revoked && (!row.institution || row.institution === expectedOrg))
       : null;
     if (!isAdmin(member) && !judge) return null;
     const completed = Boolean(
@@ -302,10 +305,12 @@ async function overview(env, member, cors) {
     );
     return {
       key,
+      institution: expectedOrg,
       label: prelimLabels[key],
+      buttonLabel: prelimButtons[key],
       status: panel?.status || 'draft',
       isJudge: Boolean(judge),
-      adminPreview: !judge && isAdmin(member),
+      adminPreview: isAdmin(member),
       completed,
     };
   }).filter(Boolean);

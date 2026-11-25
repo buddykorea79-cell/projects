@@ -528,3 +528,317 @@ export async function downloadPrelimResultPdf(completion, options = {}) {
   setTimeout(() => URL.revokeObjectURL(url), 30000);
   return { filename, size: blob.size };
 }
+
+/**
+ * 1차 심사 집계 또는 최종 심사 집계·수상 결과표를 고해상도 A4 PDF Blob으로 생성합니다.
+ */
+export async function renderTallyResultPdfBlob(report) {
+  if (document.fonts?.ready) {
+    try { await document.fonts.ready; } catch { /* 시스템 폰트 사용 */ }
+  }
+  const MARGIN_X = 96;
+  const CONTENT_W = PAGE_PX_W - MARGIN_X * 2;
+  const FOOTER_Y = PAGE_PX_H - 76;
+  const MAX_BODY_Y = FOOTER_Y - 54;
+  const HEAD_H = 66;
+  const ROW_H = 78;
+  const isFinal = report.kind === 'final';
+
+  const cols = isFinal ? [
+    { key: 'rank', label: '순위', width: 76 },
+    { key: 'institution', label: '기관', width: 146 },
+    { key: 'work', label: '작품명 · 제출자', width: 394 },
+    { key: 'count', label: '평가수', width: 92 },
+    { key: 'c0', label: '문제인식\n(40)', width: 118 },
+    { key: 'c1', label: '기능구현\n(30)', width: 118 },
+    { key: 'c2', label: '완성도\n(20)', width: 110 },
+    { key: 'c3', label: '확산성\n(10)', width: 110 },
+    { key: 'avg', label: '최종평균\n(100)', width: 132 },
+    { key: 'award', label: '수상구분', width: 166 },
+  ] : [
+    { key: 'rank', label: '순위', width: 82 },
+    { key: 'work', label: '작품명 · 제출자', width: 510 },
+    { key: 'count', label: '평가수\n(온라인/엑셀)', width: 162 },
+    { key: 'c0', label: '문제인식\n(40점)', width: 136 },
+    { key: 'c1', label: '기능구현\n(30점)', width: 136 },
+    { key: 'c2', label: '완성도\n(20점)', width: 134 },
+    { key: 'c3', label: '확산가능성\n(10점)', width: 136 },
+    { key: 'avg', label: '환산평균\n(100점)', width: 166 },
+  ];
+
+  const rows = Array.isArray(report.rows) ? report.rows : [];
+  const recipients = Array.isArray(report.recipients) ? report.recipients : [];
+  const pages = [];
+
+  const drawTop = (ctx, first) => {
+    let y = 92;
+    if (first) {
+      ctx.fillStyle = '#1E3932';
+      ctx.fillRect(MARGIN_X, y, CONTENT_W, 10);
+      y += 38;
+
+      ctx.fillStyle = '#a51e57';
+      ctx.font = `700 25px ${FONT_FAMILY}`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText('말하는 대로, 바이브 코딩 페스타', MARGIN_X, y);
+      y += 38;
+
+      ctx.fillStyle = '#111111';
+      ctx.font = `700 44px ${FONT_FAMILY}`;
+      ctx.fillText(report.title || (isFinal ? '최종 심사 집계 결과표' : '1차 심사 집계 결과표'), MARGIN_X, y);
+      y += 66;
+
+      ctx.fillStyle = '#f6f7f6';
+      ctx.strokeStyle = '#d4dcd8';
+      ctx.lineWidth = 2;
+      ctx.fillRect(MARGIN_X, y, CONTENT_W, 96);
+      ctx.strokeRect(MARGIN_X, y, CONTENT_W, 96);
+
+      ctx.fillStyle = '#222222';
+      ctx.font = `500 21px ${FONT_FAMILY}`;
+      ctx.fillText(report.summaryLine || '', MARGIN_X + 24, y + 18);
+      ctx.fillStyle = '#4a5550';
+      ctx.font = `400 20px ${FONT_FAMILY}`;
+      ctx.fillText(
+        `단계 상태: ${report.statusLabel || ''}  |  출력 일시: ${formatKst(report.generatedAt)}  |  관리자 테스트 점수 미반영`,
+        MARGIN_X + 24, y + 54,
+      );
+      y += 124;
+    } else {
+      ctx.fillStyle = '#1E3932';
+      ctx.font = `700 25px ${FONT_FAMILY}`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(`${report.title || '심사 집계 결과표'} (계속)`, MARGIN_X, y);
+      y += 46;
+    }
+    return y;
+  };
+
+  const drawHead = (ctx, y) => {
+    ctx.fillStyle = '#1E3932';
+    ctx.fillRect(MARGIN_X, y, CONTENT_W, HEAD_H);
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    let x = MARGIN_X;
+    for (const col of cols) {
+      const parts = col.label.split('\n');
+      if (parts.length === 1) {
+        ctx.font = `700 19px ${FONT_FAMILY}`;
+        ctx.fillText(parts[0], x + col.width / 2, y + HEAD_H / 2);
+      } else {
+        ctx.font = `700 19px ${FONT_FAMILY}`;
+        ctx.fillText(parts[0], x + col.width / 2, y + HEAD_H / 2 - 12);
+        ctx.font = `400 16px ${FONT_FAMILY}`;
+        ctx.fillText(parts[1], x + col.width / 2, y + HEAD_H / 2 + 14);
+      }
+      x += col.width;
+    }
+    return y + HEAD_H;
+  };
+
+  const fmtNum = (n) => (typeof n === 'number' && Number.isFinite(n) ? n.toFixed(1) : '—');
+
+  let current = createPageCanvas();
+  pages.push(current);
+  let y = drawTop(current.ctx, true);
+  y = drawHead(current.ctx, y);
+
+  rows.forEach((row, idx) => {
+    if (y + ROW_H > MAX_BODY_Y) {
+      current = createPageCanvas();
+      pages.push(current);
+      y = drawTop(current.ctx, false);
+      y = drawHead(current.ctx, y);
+    }
+    const { ctx } = current;
+    ctx.fillStyle = idx % 2 === 1 ? '#f9fbfa' : '#ffffff';
+    ctx.fillRect(MARGIN_X, y, CONTENT_W, ROW_H);
+    ctx.strokeStyle = '#d4dcd8';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(MARGIN_X, y, CONTENT_W, ROW_H);
+
+    let x = MARGIN_X;
+    ctx.textBaseline = 'middle';
+    for (let c = 0; c < cols.length; c += 1) {
+      const col = cols[c];
+      if (c > 0) {
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x, y + ROW_H);
+        ctx.stroke();
+      }
+      if (col.key === 'rank') {
+        ctx.fillStyle = '#1E3932';
+        ctx.font = `700 22px ${FONT_FAMILY}`;
+        ctx.textAlign = 'center';
+        ctx.fillText(row.rank ? `${row.rank}위` : '—', x + col.width / 2, y + ROW_H / 2);
+      } else if (col.key === 'institution') {
+        ctx.fillStyle = '#222222';
+        ctx.font = `500 19px ${FONT_FAMILY}`;
+        ctx.textAlign = 'center';
+        ctx.fillText(row.institution || '—', x + col.width / 2, y + ROW_H / 2);
+      } else if (col.key === 'work') {
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#111111';
+        ctx.font = `700 20px ${FONT_FAMILY}`;
+        const titleLines = wrapText(ctx, row.title || '', col.width - 24, 1);
+        ctx.fillText(titleLines[0], x + 12, y + ROW_H / 2 - 14);
+        ctx.fillStyle = '#555555';
+        ctx.font = `400 18px ${FONT_FAMILY}`;
+        const sub = `${row.authorName || ''}${!isFinal && row.institution ? ` · ${row.institution}` : ''}`;
+        ctx.fillText(wrapText(ctx, sub, col.width - 24, 1)[0], x + 12, y + ROW_H / 2 + 16);
+      } else if (col.key === 'count') {
+        ctx.fillStyle = '#222222';
+        ctx.font = `500 19px ${FONT_FAMILY}`;
+        ctx.textAlign = 'center';
+        const label = isFinal
+          ? `${row.scoreCount ?? 0}건`
+          : `${row.scoreCount ?? 0}건 (${row.onlineCount ?? 0}/${row.manualCount ?? 0})`;
+        ctx.fillText(label, x + col.width / 2, y + ROW_H / 2);
+      } else if (col.key === 'avg') {
+        ctx.fillStyle = '#a51e57';
+        ctx.font = `700 22px ${FONT_FAMILY}`;
+        ctx.textAlign = 'center';
+        ctx.fillText(row.average != null ? `${fmtNum(row.average)}점` : '—', x + col.width / 2, y + ROW_H / 2);
+      } else if (col.key === 'award') {
+        ctx.fillStyle = row.awardName ? '#1E3932' : '#666666';
+        ctx.font = `700 20px ${FONT_FAMILY}`;
+        ctx.textAlign = 'center';
+        ctx.fillText(row.awardName || '—', x + col.width / 2, y + ROW_H / 2);
+      } else {
+        const ci = Number(col.key.slice(1));
+        ctx.fillStyle = '#222222';
+        ctx.font = `500 19px ${FONT_FAMILY}`;
+        ctx.textAlign = 'center';
+        ctx.fillText(fmtNum(row.criterionAverages?.[ci]), x + col.width / 2, y + ROW_H / 2);
+      }
+      x += col.width;
+    }
+    y += ROW_H;
+  });
+
+  if (recipients.length) {
+    const recHeadH = 54;
+    const recRowH = 62;
+    const needed = 64 + recHeadH + recipients.length * recRowH;
+    if (y + needed > MAX_BODY_Y) {
+      current = createPageCanvas();
+      pages.push(current);
+      y = drawTop(current.ctx, false) + 12;
+    } else {
+      y += 42;
+    }
+    const { ctx } = current;
+    ctx.fillStyle = '#1E3932';
+    ctx.font = `700 26px ${FONT_FAMILY}`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('수상 결과 요약', MARGIN_X, y);
+    y += 42;
+
+    const rCols = [
+      { label: '수상 구분', width: 170 },
+      { label: '상훈 · 부상', width: 340 },
+      { label: '소속 기관', width: 190 },
+      { label: '수상자', width: 170 },
+      { label: '작품명', width: CONTENT_W - 170 - 340 - 190 - 170 },
+    ];
+    ctx.fillStyle = '#e9f0ec';
+    ctx.fillRect(MARGIN_X, y, CONTENT_W, recHeadH);
+    ctx.strokeStyle = '#8fa39a';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(MARGIN_X, y, CONTENT_W, recHeadH);
+    let rx = MARGIN_X;
+    ctx.fillStyle = '#1E3932';
+    ctx.font = `700 20px ${FONT_FAMILY}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i < rCols.length; i += 1) {
+      if (i > 0) { ctx.beginPath(); ctx.moveTo(rx, y); ctx.lineTo(rx, y + recHeadH); ctx.stroke(); }
+      ctx.fillText(rCols[i].label, rx + rCols[i].width / 2, y + recHeadH / 2);
+      rx += rCols[i].width;
+    }
+    y += recHeadH;
+
+    recipients.forEach((rec, i) => {
+      ctx.fillStyle = i % 2 === 1 ? '#f9fbfa' : '#ffffff';
+      ctx.fillRect(MARGIN_X, y, CONTENT_W, recRowH);
+      ctx.strokeStyle = '#d4dcd8';
+      ctx.strokeRect(MARGIN_X, y, CONTENT_W, recRowH);
+      const vals = [rec.awardName, `${rec.certificate} · ${rec.prizeText}`, rec.institution, rec.name, rec.projectTitle];
+      let cx = MARGIN_X;
+      for (let c = 0; c < rCols.length; c += 1) {
+        if (c > 0) { ctx.beginPath(); ctx.moveTo(cx, y); ctx.lineTo(cx, y + recRowH); ctx.stroke(); }
+        ctx.fillStyle = c === 0 ? '#a51e57' : '#111111';
+        ctx.font = c === 0 || c === 3 ? `700 19px ${FONT_FAMILY}` : `500 19px ${FONT_FAMILY}`;
+        ctx.textAlign = c === 4 ? 'left' : 'center';
+        const txt = wrapText(ctx, vals[c] || '', rCols[c].width - 20, 1)[0];
+        ctx.fillText(txt, c === 4 ? cx + 10 : cx + rCols[c].width / 2, y + recRowH / 2);
+        cx += rCols[c].width;
+      }
+      y += recRowH;
+    });
+  }
+
+  if (report.note) {
+    y += 22;
+    if (y + 36 > MAX_BODY_Y) {
+      current = createPageCanvas();
+      pages.push(current);
+      y = drawTop(current.ctx, false) + 12;
+    }
+    current.ctx.fillStyle = '#555555';
+    current.ctx.font = `400 18px ${FONT_FAMILY}`;
+    current.ctx.textAlign = 'left';
+    current.ctx.textBaseline = 'top';
+    current.ctx.fillText(report.note, MARGIN_X, y);
+  }
+
+  const totalPages = pages.length;
+  pages.forEach((p, idx) => {
+    p.ctx.strokeStyle = '#e0e4e2';
+    p.ctx.lineWidth = 1.5;
+    p.ctx.beginPath();
+    p.ctx.moveTo(MARGIN_X, FOOTER_Y - 14);
+    p.ctx.lineTo(MARGIN_X + CONTENT_W, FOOTER_Y - 14);
+    p.ctx.stroke();
+
+    p.ctx.fillStyle = '#666666';
+    p.ctx.font = `400 18px ${FONT_FAMILY}`;
+    p.ctx.textBaseline = 'top';
+    p.ctx.textAlign = 'left';
+    p.ctx.fillText(`말하는 대로, 바이브 코딩 페스타 · ${report.title || '심사 집계 결과표'}`, MARGIN_X, FOOTER_Y);
+    p.ctx.textAlign = 'right';
+    p.ctx.fillText(`${idx + 1} / ${totalPages}`, MARGIN_X + CONTENT_W, FOOTER_Y);
+  });
+
+  const jpegPages = pages.map((p) => {
+    const dataUrl = p.canvas.toDataURL('image/jpeg', 0.92);
+    const bytes = dataUrlToBytes(dataUrl);
+    p.canvas.width = 0;
+    p.canvas.height = 0;
+    return { bytes, width: PAGE_PX_W, height: PAGE_PX_H };
+  });
+
+  return new Blob([buildPdfFromJpegs(jpegPages)], { type: 'application/pdf' });
+}
+
+export async function downloadTallyResultPdf(report, filePrefix = '심사집계결과') {
+  const blob = await renderTallyResultPdfBlob(report);
+  const date = new Date(report.generatedAt || Date.now());
+  const kst = new Date((Number.isNaN(date.getTime()) ? Date.now() : date.getTime()) + 9 * 60 * 60 * 1000);
+  const stamp = `${kst.getUTCFullYear()}${String(kst.getUTCMonth() + 1).padStart(2, '0')}${String(kst.getUTCDate()).padStart(2, '0')}`;
+  const filename = `${safeFilePart(filePrefix)}_${stamp}.pdf`;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  return { filename, size: blob.size };
+}

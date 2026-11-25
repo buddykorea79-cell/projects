@@ -4,7 +4,9 @@ import { store } from '../store/index.js';
 import { currentUser, isAdmin } from '../auth.js';
 import { currentPath, currentQuery } from '../router.js';
 import { esc, attr } from '../utils.js';
-import { confirmModal, spinner, emptyState } from '../ui.js';
+import { confirmModal, spinner, emptyState, toastOk, toastErr } from '../ui.js';
+import { downloadTallyResultPdf } from '../pdf.js';
+import { adminNavBar } from './festa-tally.js';
 
 const GROUPS = [
   { key: 'grand', name: '최우수상' }, { key: 'excellence', name: '우수상' }, { key: 'encouragement', name: '장려상' },
@@ -147,13 +149,13 @@ export async function festaAwardsAdminView(mount, { runId } = {}) {
   }
   let plan;
   const shell = () => {
-    mount.innerHTML = `<section class="band festa-hero"><div class="wrap"><p class="crumb"><a href="#/admin/festa" style="color:inherit">페스타 관리</a><span>/</span>최종 시상</p>
-      <h1>${paths.rehearsal ? 'AI Build Camp 테스트 수상 결과' : '최종 수상 결과 검토'}</h1><p style="margin-top:var(--space-3)">${paths.rehearsal ? '이 회차의 예시 점수와 회원 평가로 테스트 수상 결과를 확인합니다.' : '최종 심사와 기관별 수상 조건을 확인한 뒤 발표 자료를 공개합니다.'}</p></div></section>
+    mount.innerHTML = `<section class="band festa-hero"><div class="wrap"><p class="crumb"><a href="#/admin/festa" style="color:inherit">접수 현황</a><span>/</span>최종 시상</p>
+      <h1>${paths.rehearsal ? 'AI Build Camp 테스트 수상 결과' : '최종 수상 결과 검토'}</h1><p style="margin-top:var(--space-3)">${paths.rehearsal ? '이 회차의 예시 점수와 회원 평가로 테스트 수상 결과를 확인합니다.' : '최종 심사와 기관별 수상 조건을 확인한 뒤 발표 자료를 공개합니다.'}</p>${paths.rehearsal ? '' : adminNavBar('awards')}</div></section>
       <section class="section"><div class="wrap festa-stack" data-testid="awards-admin-root">${spinner()}</div></section>`;
   };
   const render = (root, message = '') => {
     if (!root.isConnected) return;
-    root.innerHTML = `<div class="row"><a class="btn btn--outline" href="#/admin/festa">접수 현황</a><a class="btn btn--outline" href="${attr(paths.manage)}">${paths.rehearsal ? '테스트 회차 관리' : '심사위원·최종 후보 설정'}</a><button class="btn btn--quiet" data-testid="awards-refresh">다시 검토</button></div>
+    root.innerHTML = `<div class="row">${paths.rehearsal ? `<a class="btn btn--outline" href="#/admin/festa">접수 현황</a><a class="btn btn--outline" href="${attr(paths.manage)}">테스트 회차 관리</a>` : ''}<button class="btn btn--primary" type="button" data-testid="awards-pdf-download" ${plan.ranking?.length ? '' : 'disabled'}>📄 최종 심사 결과 PDF 다운로드</button><button class="btn btn--quiet" data-testid="awards-refresh">다시 검토</button></div>
       ${plan.published ? `<p class="notice notice--info">${paths.rehearsal ? '테스트 회차 수상 결과를 확정했습니다.' : '수상 결과를 공개했습니다. 공개된 발표 자료는 확정 당시의 결과로 고정됩니다.'}</p><div class="row"><a class="btn btn--primary" href="${attr(paths.results)}" data-testid="awards-present-link">시상식 발표 시작</a><a class="btn btn--outline" href="${attr(paths.list)}" data-testid="awards-public-link">전체 수상자 보기</a></div>` : ''}
       <section class="card"><h2 class="page-title" style="font-size:2.2rem">선정 기준</h2>
         <p>행정안전부 상위 2명과 한국서부발전 상위 1명을 선정하고, 이 세 명의 최종 심사 평균 순으로 최우수상 1명과 우수상 2명을 결정합니다. 나머지 세 명은 장려상입니다.</p>
@@ -172,6 +174,39 @@ export async function festaAwardsAdminView(mount, { runId } = {}) {
         <button class="btn btn--primary" style="margin-top:var(--space-3)" data-testid="awards-publish" ${!plan.ready || plan.published ? 'disabled' : ''}>수상 결과 확정·공개</button>
         <p role="status" aria-live="polite" data-testid="awards-admin-status" style="margin-top:var(--space-3)">${esc(message)}</p></div>`;
     root.querySelector('[data-testid="awards-refresh"]').addEventListener('click', load);
+    root.querySelector('[data-testid="awards-pdf-download"]')?.addEventListener('click', async (event) => {
+      const btn = event.currentTarget;
+      btn.disabled = true;
+      try {
+        const recipients = plan.publication?.recipients || plan.recipients || [];
+        const awardMap = new Map(recipients.map((r) => [`${r.name}::${r.projectTitle}`, r.awardName]));
+        const rows = (plan.ranking || []).map((row, idx) => ({
+          rank: row.average !== null ? idx + 1 : null,
+          institution: row.institution,
+          title: row.projectTitle,
+          authorName: row.name,
+          scoreCount: row.ballotCount ?? 0,
+          criterionAverages: row.criterionAverages,
+          average: row.average,
+          awardName: awardMap.get(`${row.name}::${row.projectTitle}`) || '',
+        }));
+        await downloadTallyResultPdf({
+          kind: 'final',
+          title: paths.rehearsal ? 'AI Build Camp 테스트 최종 심사 결과표' : '최종 심사 및 수상 결과표',
+          statusLabel: plan.published ? '수상 확정·공개 완료' : (plan.ready ? '확정 대기' : '심사 진행·검토 중'),
+          generatedAt: plan.publication?.publishedAt || new Date().toISOString(),
+          summaryLine: `최종 후보 ${rows.length}명 · 총 평가 ${rows.reduce((s, r) => s + r.scoreCount, 0)}건`,
+          rows,
+          recipients,
+          note: plan.tieRule || '',
+        }, paths.rehearsal ? '테스트_최종심사결과' : '최종심사결과');
+        toastOk('최종 심사 결과 PDF를 다운로드했습니다.');
+      } catch (error) {
+        toastErr(`PDF 생성 실패: ${error.message}`);
+      } finally {
+        btn.disabled = false;
+      }
+    });
     const tieForm = root.querySelector('[data-testid="awards-tie-form"]');
     tieForm?.addEventListener('input', () => {
       root.querySelector('[data-testid="awards-publish"]').disabled = true;

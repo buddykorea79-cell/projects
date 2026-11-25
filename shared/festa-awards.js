@@ -83,6 +83,25 @@ export function finalBallots(panel, entries) {
     ballots.set(unique, { judgeId: row.memberId, email, name: row.name || '', entryId: entry.id,
       scores: [...row.scores], member: true, memberCreatedAt: row.memberCreatedAt });
   }
+  if (panel?.manualScores !== undefined && !Array.isArray(panel.manualScores)) issues.push('수동심사(엑셀) 기록 형식이 올바르지 않습니다.');
+  const seenManual = new Set();
+  for (const row of Array.isArray(panel?.manualScores) ? panel.manualScores : []) {
+    const entry = works.get(row?.entryId);
+    const email = normEmail(row?.judgeEmail);
+    const judgeId = typeof row?.judgeId === 'string' ? row.judgeId : '';
+    const identity = email || judgeId;
+    const unique = `${identity}/${row?.entryId}`;
+    const selfVote = email && email === normEmail(entry?.author?.email);
+    if (!judgeId.startsWith('manual_') || !entry || selfVote || !validScores(row?.scores) || seenManual.has(unique)) {
+      issues.push('수동심사(엑셀) 기록에 중복·미배정·자기평가 또는 범위를 벗어난 점수가 있습니다.');
+      continue;
+    }
+    seenManual.add(unique);
+    ballots.set(unique, {
+      judgeId, email: email || judgeId, name: String(row.judgeName || '수동 심사위원'),
+      entryId: entry.id, scores: [...row.scores], member: false, manual: true,
+    });
+  }
   return { rows: [...ballots.values()], issues: [...new Set(issues)] };
 }
 
@@ -173,6 +192,10 @@ function fingerprint(state) {
       memberId: row?.memberId, email: normEmail(row?.email), memberCreatedAt: row?.memberCreatedAt,
       name: row?.name, entryId: row?.entryId, scores: row?.scores,
     })).sort((a, b) => `${a.memberId}:${a.entryId}`.localeCompare(`${b.memberId}:${b.entryId}`)),
+    manualScores: (Array.isArray(panel?.manualScores) ? panel.manualScores : []).map((row) => ({
+      judgeId: row?.judgeId, judgeEmail: normEmail(row?.judgeEmail),
+      judgeName: row?.judgeName, entryId: row?.entryId, scores: row?.scores,
+    })).sort((a, b) => `${a.judgeId}:${a.entryId}`.localeCompare(`${b.judgeId}:${b.entryId}`)),
     entries: ids.map((id) => state.entries.find((entry) => entry.id === id)).filter(Boolean)
       .map((entry) => ({ id: entry.id, owner: normEmail(entry.author?.email), institution: entryInstitution(entry), name: entry.author?.name, title: entry.title }))
       .sort((a, b) => a.id.localeCompare(b.id)),

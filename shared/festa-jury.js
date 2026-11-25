@@ -223,10 +223,53 @@ function buildCompletionRecord({ judgeId, panelKey: key, entries, items, signer,
   };
 }
 
+function manualScoreRows(panel, entries) {
+  const works = new Map(entries.map((entry) => [entry.id, entry]));
+  const rows = new Map();
+  for (const row of Array.isArray(panel?.manualScores) ? panel.manualScores : []) {
+    const entry = works.get(row?.entryId);
+    const judgeId = typeof row?.judgeId === 'string' ? row.judgeId : '';
+    const judgeEmail = normEmail(row?.judgeEmail);
+    const selfVote = judgeEmail && judgeEmail === normEmail(entry?.author?.email);
+    if (!judgeId.startsWith('manual_') || !entry || selfVote || !validScores(row?.scores)) continue;
+    rows.set(`${judgeId}/${entry.id}`, {
+      judgeId,
+      judgeName: String(row.judgeName || '수동 심사위원'),
+      judgeEmail,
+      entryId: entry.id,
+      scores: [...row.scores],
+      ...(validRawScores(row.rawScores) ? { rawScores: [...row.rawScores] } : {}),
+      source: 'excel',
+      importedAt: row.importedAt || null,
+    });
+  }
+  return [...rows.values()];
+}
+
+function adminTestsSummary(panel) {
+  const previews = panel?.adminPreviews;
+  if (!previews || typeof previews !== 'object' || Array.isArray(previews)) return [];
+  return Object.entries(previews).map(([email, data]) => {
+    const scoredCount = Array.isArray(data?.scores) ? data.scores.length : 0;
+    const completed = Boolean(data?.completion);
+    if (!scoredCount && !completed) return null;
+    return {
+      email,
+      name: String(data?.completion?.name || data?.name || email),
+      scoredCount,
+      completed,
+      completedAt: data?.completion?.completedAt || null,
+    };
+  }).filter(Boolean);
+}
+
 function adminPanel(state, key) {
   const panel = panelOf(state, key);
   const entries = entryList(state, key, panel.entryIds);
-  let rows = key === 'final' ? finalBallots(panel, entries).rows : scoreRows(panel, entries);
+  const manualRows = manualScoreRows(panel, entries);
+  let rows = key === 'final'
+    ? finalBallots(panel, entries).rows
+    : [...scoreRows(panel, entries), ...manualRows];
   const people = new Map();
   if (key === 'final') {
     for (const row of rows) {
@@ -238,17 +281,33 @@ function adminPanel(state, key) {
     rows = rows.map((row) => ({ ...row, judgeId: people.get(row.email).judgeId }));
   }
   const participants = [...people.values()].map((row) => ({
-    id: row.judgeId, name: row.name, email: row.email, member: row.member,
+    id: row.judgeId, name: row.name, email: row.email, member: Boolean(row.member),
+    manual: Boolean(row.manual),
     scoredCount: rows.filter((score) => score.email === row.email).length,
     eligibleCount: entries.filter((entry) => normEmail(entry.author?.email) !== row.email).length,
   }));
+  const manualJudgeMap = new Map();
+  for (const row of manualRows) {
+    const existing = manualJudgeMap.get(row.judgeId);
+    if (!existing) {
+      manualJudgeMap.set(row.judgeId, {
+        id: row.judgeId, name: row.judgeName, email: row.judgeEmail,
+        scoredCount: 1, importedAt: row.importedAt,
+      });
+    } else {
+      existing.scoredCount += 1;
+      if (row.importedAt && (!existing.importedAt || row.importedAt > existing.importedAt)) existing.importedAt = row.importedAt;
+    }
+  }
   return {
     key, label: JURY_LABELS[key], status: panel.status, entryIds: [...panel.entryIds],
     ...(key === 'final' ? { memberVoting: true, participants, minimumBallots: 1 } : {}),
     judges: panel.judges.map((judge) => {
       const comp = panel.completions?.[judge.id];
       return {
-        id: judge.id, name: judge.name, email: judge.email, expiresAt: judge.expiresAt || null,
+        id: judge.id, name: judge.name, email: judge.email,
+        institution: judge.institution || INSTITUTIONS[key] || '',
+        expiresAt: judge.expiresAt || null,
         revoked: Boolean(judge.revoked), hasInvite: Boolean(judge.tokenHash && judge.pinHash),
         hasCommonCode: Boolean(judge.pinLookup && judge.pinHash),
         scoredCount: rows.filter((row) => row.judgeId === judge.id).length,
@@ -257,14 +316,27 @@ function adminPanel(state, key) {
         completedAt: comp?.completedAt || null,
       };
     }),
-    scores: rows.map(({ judgeId, entryId, scores, rawScores }) => ({
-      judgeId, entryId, scores: [...scores],
-      ...(validRawScores(rawScores) ? { rawScores: [...rawScores] } : {}),
+    manualJudges: [...manualJudgeMap.values()],
+    adminTests: adminTestsSummary(panel),
+    scores: rows.map((row) => ({
+      judgeId: row.judgeId, entryId: row.entryId, scores: [...row.scores],
+      ...(validRawScores(row.rawScores) ? { rawScores: [...row.rawScores] } : {}),
+      ...(row.source === 'excel' || row.manual ? { source: 'excel', judgeName: row.judgeName || row.name || '수동 심사위원' } : {}),
     })),
     results: entries.map((entry) => {
       const votes = rows.filter((row) => row.entryId === entry.id);
-      return { entryId: entry.id, scoreCount: votes.length,
-        average: votes.length ? votes.reduce((sum, row) => sum + row.scores.reduce((a, b) => a + b, 0), 0) / votes.length : null };
+      const manualCount = votes.filter((row) => row.source === 'excel' || row.manual).length;
+      const criterionAverages = votes.length
+        ? [0, 1, 2, 3].map((i) => Math.round((votes.reduce((s, r) => s + r.scores[i], 0) / votes.length) * 100) / 100)
+        : null;
+      return {
+        entryId: entry.id,
+        scoreCount: votes.length,
+        onlineCount: votes.length - manualCount,
+        manualCount,
+        criterionAverages,
+        average: votes.length ? votes.reduce((sum, row) => sum + row.scores.reduce((a, b) => a + b, 0), 0) / votes.length : null,
+      };
     }),
   };
 }
@@ -296,32 +368,78 @@ async function configure(request, env, member, cors) {
   return reply({ panel: adminPanel(state, key) }, 200, cors);
 }
 
+async function adminEmailSet(env) {
+  try {
+    const { list } = await readMembers(env);
+    return new Set(
+      (Array.isArray(list) ? list : [])
+        .filter((row) => row?.role === 'admin')
+        .map((row) => normEmail(row?.email))
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+const INSTITUTION_TO_PANEL = { 행정안전부: 'mois', 한국서부발전: 'iwest' };
+
 async function saveJudge(request, env, member, cors) {
   requireAdmin(member);
   const body = await jsonBody(request);
-  const key = panelKey(body.panel);
+  const sourceKey = panelKey(body.panel);
   const email = normEmail(body.email);
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   if (!validEmail(email) || !name || name.length > 80) fail(400, '심사위원 성명과 올바른 이메일을 입력하세요.');
+  let targetKey = sourceKey;
+  let institution = INSTITUTIONS[sourceKey] || '';
+  if (body.institution !== undefined && body.institution !== '') {
+    if (!Object.hasOwn(INSTITUTION_TO_PANEL, body.institution)) {
+      fail(400, '기관명은 행정안전부 또는 한국서부발전 중에서 선택해 주세요.');
+    }
+    institution = body.institution;
+    if (PRELIM_KEYS.includes(sourceKey)) targetKey = INSTITUTION_TO_PANEL[institution];
+  }
+  const admins = await adminEmailSet(env);
+  if (admins.has(email) || email === normEmail(member.email)) {
+    fail(400, '관리자 이메일은 실제 심사위원으로 등록할 수 없습니다. 관리자는 테스트 모드로만 심사를 점검할 수 있습니다.');
+  }
   const newId = `fj_${crypto.randomUUID()}`;
   const { state, result } = await updateState(env, (current) => {
-    const panel = panelOf(current, key, true);
-    draftOnly(panel);
-    const existing = body.judgeId ? findJudge(panel, body.judgeId) : null;
-    if (panel.judges.some((judge) => judge.email === email && judge.id !== existing?.id)) fail(409, '이미 배정한 심사위원 이메일입니다.');
-    if (!existing && panel.judges.length >= 100) fail(400, '심사위원은 단계별 100명까지 배정할 수 있습니다.');
-    if (existing) {
-      if (existing.email !== email || existing.name !== name) {
-        Object.assign(existing, { name, email, tokenHash: null, pinHash: null, pinLookup: null, expiresAt: 0,
-          revoked: true, credentialVersion: crypto.randomUUID(), failedAttempts: 0, lockedUntil: 0 });
-      }
-      return existing.id;
+    const sourcePanel = panelOf(current, sourceKey, true);
+    const targetPanel = targetKey === sourceKey ? sourcePanel : panelOf(current, targetKey, true);
+    draftOnly(sourcePanel);
+    if (targetPanel !== sourcePanel) draftOnly(targetPanel);
+    const existing = body.judgeId ? findJudge(sourcePanel, body.judgeId) : null;
+    if (targetPanel.judges.some((judge) => judge.email === email && judge.id !== existing?.id)) {
+      fail(409, '이미 해당 기관에 배정한 심사위원 이메일입니다.');
     }
-    panel.judges.push({ id: newId, name, email, revoked: false, expiresAt: 0,
-      failedAttempts: 0, lockedUntil: 0, credentialVersion: crypto.randomUUID() });
-    return newId;
+    if (!existing && targetPanel.judges.length >= 100) fail(400, '심사위원은 단계별 100명까지 배정할 수 있습니다.');
+    if (existing) {
+      const moved = targetPanel !== sourcePanel;
+      const changed = moved || existing.email !== email || existing.name !== name || (existing.institution || INSTITUTIONS[sourceKey] || '') !== institution;
+      if (changed) {
+        Object.assign(existing, {
+          name, email, institution, tokenHash: null, pinHash: null, pinLookup: null, expiresAt: 0,
+          revoked: true, credentialVersion: crypto.randomUUID(), failedAttempts: 0, lockedUntil: 0,
+        });
+      }
+      if (moved) {
+        sourcePanel.judges = sourcePanel.judges.filter((row) => row.id !== existing.id);
+        targetPanel.judges.push(existing);
+      }
+      return { id: existing.id, panelKey: targetKey };
+    }
+    targetPanel.judges.push({
+      id: newId, name, email, institution, revoked: false, expiresAt: 0,
+      failedAttempts: 0, lockedUntil: 0, credentialVersion: crypto.randomUUID(),
+    });
+    return { id: newId, panelKey: targetKey };
   });
-  return reply({ judge: adminPanel(state, key).judges.find((judge) => judge.id === result) }, 200, cors);
+  return reply({
+    panel: result.panelKey,
+    judge: adminPanel(state, result.panelKey).judges.find((judge) => judge.id === result.id),
+  }, 200, cors);
 }
 
 async function removeJudge(request, env, member, cors) {
@@ -738,9 +856,10 @@ function prelimTargets(state, key, panel, adminPreview) {
 function resolvePrelimAccess(state, key, member) {
   const panel = panelOf(state, key);
   const email = normEmail(member.email);
+  // 관리자는 실제 심사위원 집계에 참여하지 않고 항상 테스트 모드로만 심사 화면을 점검합니다.
+  if (member.role === 'admin') return { mode: 'admin-preview', panel, judge: null, email };
   const judge = panel.judges.find((row) => normEmail(row?.email) === email && !row.revoked) || null;
   if (judge) return { mode: 'judge', panel, judge, email };
-  if (member.role === 'admin') return { mode: 'admin-preview', panel, judge: null, email };
   fail(403, '해당 기관의 예선 심사위원으로 등록된 이메일이 아닙니다.');
 }
 
@@ -750,6 +869,11 @@ async function prelimSession(request, env, member, cors) {
   const { state } = await readState(env);
   const access = resolvePrelimAccess(state, key, member);
   const isPreview = access.mode === 'admin-preview';
+  const otherKey = key === 'mois' ? 'iwest' : 'mois';
+  const otherPanel = panelOf(state, otherKey);
+  const canSwitchPanel = isPreview || otherPanel.judges.some(
+    (row) => normEmail(row?.email) === access.email && !row.revoked && (!row.institution || row.institution === INSTITUTIONS[otherKey]),
+  );
   const canScore = isPreview ? access.panel.status !== 'closed' : access.panel.status === 'open';
   const rawEntries = (canScore || isPreview) ? prelimTargets(state, key, access.panel, isPreview) : [];
   if (isPreview) {
@@ -761,6 +885,7 @@ async function prelimSession(request, env, member, cors) {
       status: access.panel.status,
       mode: 'admin-preview',
       adminPreview: true,
+      canSwitchPanel: true,
       blind: true,
       canScore,
       judgeId: pseudoJudge.id,
@@ -790,6 +915,7 @@ async function prelimSession(request, env, member, cors) {
     status: access.panel.status,
     mode: 'judge',
     adminPreview: false,
+    canSwitchPanel,
     blind: true,
     canScore,
     judgeId: access.judge.id,
@@ -815,7 +941,8 @@ async function prelimScore(request, env, member, cors) {
       const targets = prelimTargets(state, key, panel, true);
       if (!targets.some((entry) => entry.id === body.entryId)) fail(403, '해당 기관의 예선 대상 작품만 평가할 수 있습니다.');
       panel.adminPreviews ??= {};
-      const preview = panel.adminPreviews[access.email] ??= { scores: [], completion: null };
+      const preview = panel.adminPreviews[access.email] ??= { name: String(member.name || access.email), scores: [], completion: null };
+      preview.name = String(member.name || access.email);
       const idx = preview.scores.findIndex((row) => row.entryId === body.entryId);
       const row = { entryId: body.entryId, scores: [...scores], rawScores: [...rawScores], updatedAt: new Date().toISOString() };
       if (idx >= 0) preview.scores[idx] = row;
@@ -947,6 +1074,16 @@ async function memberFinal(env, member, cors) {
   const identity = await memberIdentity(env, member);
   const { state } = await readState(env);
   const panel = panelOf(state, 'final');
+  if (member.role === 'admin') {
+    const entries = panel.status !== 'closed' ? entryList(state, 'final', panel.entryIds) : [];
+    const preview = panel.adminPreviews?.[identity.email] || { scores: [] };
+    const own = (preview.scores || []).map((row) => ({ ...row, judgeId: identity.id }));
+    return reply({
+      panel: 'final', label: JURY_LABELS.final, status: panel.status,
+      adminTest: true, judgeId: identity.id, judgeName: identity.name,
+      entries: entries.map((entry) => publicEntry(entry, { id: identity.id, email: '' }, own)),
+    }, 200, cors);
+  }
   const entries = panel.status === 'open' ? entryList(state, 'final', panel.entryIds) : [];
   // 재가입한 계정에는 이전 가입의 비공개 점수를 보여 주지 않습니다.
   const own = (panel.memberScores || []).filter((row) => row.memberId === identity.id)
@@ -963,6 +1100,21 @@ async function memberScore(request, env, member, cors) {
     fail(409, '로그인한 회원이 바뀌었습니다. 현재 계정을 확인한 뒤 평가해 주세요.');
   }
   if (typeof body.entryId !== 'string' || !validScores(body.scores)) fail(400, '각 배점(40·30·20·10) 안에서 네 항목의 정수 점수를 입력하세요.');
+  if (member.role === 'admin') {
+    await updateState(env, (state) => {
+      const panel = panelOf(state, 'final', true);
+      if (panel.status === 'closed' || state.awardsPublication) fail(409, '마감된 본선 평가에서는 테스트 점수를 저장할 수 없습니다.');
+      if (!panel.entryIds.includes(body.entryId)) fail(403, '본선에 선정된 작품만 테스트 평가할 수 있습니다.');
+      panel.adminPreviews ??= {};
+      const preview = panel.adminPreviews[identity.email] ??= { name: identity.name, scores: [] };
+      preview.name = identity.name || identity.email;
+      const idx = preview.scores.findIndex((row) => row.entryId === body.entryId);
+      const row = { entryId: body.entryId, scores: [...body.scores], updatedAt: new Date().toISOString() };
+      if (idx >= 0) preview.scores[idx] = row;
+      else preview.scores.push(row);
+    });
+    return reply({ ok: true, adminTest: true, entryId: body.entryId, myScores: [...body.scores] }, 200, cors);
+  }
   await updateState(env, (state) => {
     const panel = panelOf(state, 'final');
     if (panel.status !== 'open' || state.awardsPublication) fail(409, '현재 진행 중인 2차 본선 평가가 아닙니다.');
@@ -976,6 +1128,119 @@ async function memberScore(request, env, member, cors) {
       name: identity.name, entryId: entry.id, scores: [...body.scores], updatedAt: new Date().toISOString() });
   });
   return reply({ ok: true, entryId: body.entryId, myScores: [...body.scores] }, 200, cors);
+}
+
+async function manualImport(request, env, member, cors) {
+  requireAdmin(member);
+  const body = await jsonBody(request, 512 * 1024);
+  const key = panelKey(body.panel);
+  const mode = body.mode === 'replace' ? 'replace' : 'merge';
+  if (!Array.isArray(body.rows) || !body.rows.length || body.rows.length > 2000) {
+    fail(400, '업로드할 수동심사 행이 1~2,000건 범위여야 합니다.');
+  }
+  const admins = await adminEmailSet(env);
+  admins.add(normEmail(member.email));
+  const now = new Date().toISOString();
+  const isPrelim = PRELIM_KEYS.includes(key);
+
+  const normalized = [];
+  for (let i = 0; i < body.rows.length; i += 1) {
+    const raw = body.rows[i];
+    if (!raw || typeof raw !== 'object') fail(400, `${i + 1}번째 행 형식이 올바르지 않습니다.`);
+    const entryId = typeof raw.entryId === 'string' ? raw.entryId.trim() : '';
+    const judgeName = typeof raw.judgeName === 'string' ? raw.judgeName.trim() : '';
+    const judgeEmail = typeof raw.judgeEmail === 'string' ? normEmail(raw.judgeEmail) : '';
+    if (!entryId) fail(400, `${i + 1}번째 행: 접수번호(entryId)가 비어 있습니다.`);
+    if (!judgeName || judgeName.length > 80) fail(400, `${i + 1}번째 행: 심사위원명을 1~80자로 입력해 주세요.`);
+    if (judgeEmail) {
+      if (!validEmail(judgeEmail)) fail(400, `${i + 1}번째 행: 심사위원 이메일 형식이 올바르지 않습니다.`);
+      if (admins.has(judgeEmail)) fail(400, `${i + 1}번째 행: 관리자 이메일(${judgeEmail})은 공식 심사 점수에 반영할 수 없습니다.`);
+    }
+    let scores;
+    let rawScores = null;
+    if (raw.rawScores !== undefined && raw.rawScores !== null) {
+      if (!validRawScores(raw.rawScores)) {
+        fail(400, `${i + 1}번째 행: 4개 항목 점수는 1~10 사이의 정수로 입력해 주세요.`);
+      }
+      rawScores = [...raw.rawScores];
+      scores = convertRawScores(rawScores);
+    } else if (validScores(raw.scores)) {
+      if (isPrelim) {
+        const derived = deriveRawScores(raw.scores);
+        rawScores = derived ? [...derived] : null;
+      }
+      scores = [...raw.scores];
+    } else {
+      fail(400, `${i + 1}번째 행: ${isPrelim ? '4개 항목은 1~10 사이 정수로 입력해 주세요.' : '각 항목 배점(40·30·20·10) 범위의 정수로 입력해 주세요.'}`);
+    }
+    const identityKey = judgeEmail || judgeName.toLowerCase();
+    const judgeId = `manual_${await digest(`${key}:${identityKey}`)}`.slice(0, 23);
+    normalized.push({ judgeId, judgeName, judgeEmail, entryId, scores, rawScores });
+  }
+
+  const { state, result } = await updateState(env, (current) => {
+    const panel = panelOf(current, key, true);
+    if (panel.status === 'closed') fail(409, '마감된 심사 단계에는 엑셀 점수를 반영할 수 없습니다.');
+    if (key === 'final' && current.awardsPublication) fail(409, '공개된 본선 결과에는 점수를 반영할 수 없습니다.');
+    if (!panel.entryIds.length) fail(409, '먼저 [심사위원·평가 대상 관리]에서 평가 대상 작품을 선택·저장해 주세요.');
+    const allowed = new Map(entryList(current, key, panel.entryIds).map((e) => [e.id, e]));
+    const nextMap = new Map();
+    if (mode === 'merge') {
+      for (const existing of Array.isArray(panel.manualScores) ? panel.manualScores : []) {
+        nextMap.set(`${existing.judgeId}/${existing.entryId}`, existing);
+      }
+    }
+    for (let i = 0; i < normalized.length; i += 1) {
+      const row = normalized[i];
+      const entry = allowed.get(row.entryId);
+      if (!entry) fail(400, `${i + 1}번째 행: 접수번호(${row.entryId})는 이 단계의 평가 대상 작품이 아닙니다.`);
+      if (row.judgeEmail && row.judgeEmail === normEmail(entry.author?.email)) {
+        fail(400, `${i + 1}번째 행: 출품자 본인(${row.judgeEmail})의 점수는 반영할 수 없습니다.`);
+      }
+      nextMap.set(`${row.judgeId}/${row.entryId}`, {
+        judgeId: row.judgeId,
+        judgeName: row.judgeName,
+        judgeEmail: row.judgeEmail,
+        entryId: row.entryId,
+        scores: row.scores,
+        ...(row.rawScores ? { rawScores: row.rawScores } : {}),
+        source: 'excel',
+        importedAt: now,
+      });
+    }
+    panel.manualScores = [...nextMap.values()];
+    return { importedCount: normalized.length, totalManualCount: panel.manualScores.length };
+  });
+  return reply({ ok: true, ...result, panel: adminPanel(state, key) }, 200, cors);
+}
+
+async function manualClear(request, env, member, cors) {
+  requireAdmin(member);
+  const body = await jsonBody(request);
+  const key = panelKey(body.panel);
+  const judgeId = typeof body.judgeId === 'string' ? body.judgeId.trim() : '';
+  const { state } = await updateState(env, (current) => {
+    const panel = panelOf(current, key, true);
+    if (panel.status === 'closed') fail(409, '마감된 심사의 점수는 삭제할 수 없습니다.');
+    if (key === 'final' && current.awardsPublication) fail(409, '공개된 본선 결과의 점수는 삭제할 수 없습니다.');
+    const prev = Array.isArray(panel.manualScores) ? panel.manualScores : [];
+    panel.manualScores = judgeId ? prev.filter((row) => row.judgeId !== judgeId) : [];
+  });
+  return reply({ ok: true, panel: adminPanel(state, key) }, 200, cors);
+}
+
+async function testClear(request, env, member, cors) {
+  requireAdmin(member);
+  const body = await jsonBody(request);
+  const key = panelKey(body.panel);
+  const email = normEmail(member.email);
+  const { state } = await updateState(env, (current) => {
+    const panel = panelOf(current, key, true);
+    if (!panel.adminPreviews || typeof panel.adminPreviews !== 'object') return;
+    if (body.all === true) panel.adminPreviews = {};
+    else delete panel.adminPreviews[email];
+  });
+  return reply({ ok: true, panel: adminPanel(state, key) }, 200, cors);
 }
 
 async function memberDownload(env, member, rawKey, cors) {
@@ -1005,6 +1270,9 @@ export async function handleJury(request, env, { path, member, cors = {} }) {
     if (path.startsWith('/festa/jury/file/')) return download(request, env, path.slice('/festa/jury/file/'.length), cors);
   }
   if (request.method === 'POST') {
+    if (path === '/festa/jury/manual-import') return manualImport(request, env, member, cors);
+    if (path === '/festa/jury/manual-clear') return manualClear(request, env, member, cors);
+    if (path === '/festa/jury/test-clear') return testClear(request, env, member, cors);
     if (path === '/festa/jury/prelim/score') return prelimScore(request, env, member, cors);
     if (path === '/festa/jury/prelim/complete') return prelimComplete(request, env, member, cors);
     if (path === '/festa/jury/complete') return pinComplete(request, env, cors);

@@ -7,9 +7,10 @@ import { toastErr, toastOk, emptyState } from './ui.js';
 import * as R from './router.js';
 
 import { homeView } from './views/home.js';
-import { festaView, festaAdminView } from './views/festa.js';
+import { festaView, festaAdminView, festaAdminEntryView } from './views/festa.js';
 import { festaPracticeView } from './views/festa-practice.js';
 import { festaJuryAdminView, festaJurorView, festaMemberFinalView, festaPrelimView } from './views/festa-jury.js';
+import { festaFirstTallyView, festaPrelimResultsView, festaFinalTallyView } from './views/festa-tally.js';
 import { festaRehearsalAdminView } from './views/festa-rehearsal.js';
 import { festaAwardsAdminView, festaAwardsView } from './views/festa-awards.js';
 import { projectView, submitView } from './views/project.js';
@@ -207,6 +208,7 @@ function registerRoutes() {
   R.route('/camp', view((m) => campHomeView(m)));
   R.route('/festa', view(festaView));
   R.route('/admin/festa', view(festaAdminView, { admin: true }));
+  R.route('/admin/festa/entry/:entryId', view(festaAdminEntryView, { admin: true }));
   R.route('/admin/festa/practice', view(festaPracticeView, { admin: true }));
   R.route('/admin/festa/rehearsal', view(festaRehearsalAdminView, { admin: true }));
   R.route('/admin/festa/rehearsal/:runId/awards', view(festaAwardsAdminView, { admin: true }));
@@ -214,6 +216,9 @@ function registerRoutes() {
   R.route('/festa/rehearsal/:runId/results', view(festaAwardsView));
   R.route('/festa/rehearsal/:runId/awards', view(festaAwardsView));
   R.route('/admin/festa/jury', view(festaJuryAdminView, { admin: true }));
+  R.route('/admin/festa/tally/first', view(festaFirstTallyView, { admin: true }));
+  R.route('/admin/festa/prelim-results', view(festaPrelimResultsView, { admin: true }));
+  R.route('/admin/festa/tally/final', view(festaFinalTallyView, { admin: true }));
   R.route('/festa/prelim/:panel', view(festaPrelimView));
   R.route('/festa/jury/final', view(festaMemberFinalView));
   R.route('/festa/jury/:invite', view(festaJurorView, { publicPage: true }));

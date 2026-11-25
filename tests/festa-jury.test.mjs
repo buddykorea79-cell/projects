@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { MockBucket, TEST_GOOGLE_ENV, mockGoogleLogin, applySetCookies } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
 import { buildPdfFromJpegs } from '../assets/js/pdf.js';
+import { buildXlsx, readSheet } from '../assets/js/sheet.js';
+import { parseManualSheetRows, adminNavBar } from '../assets/js/views/festa-tally.js';
 
 const ORIGIN = 'https://site.test';
 const ADMIN = 'jury-admin@example.com';
@@ -831,6 +833,136 @@ await test('자체 PDF 1.4 생성기가 다중 A4 JPEG 페이지 PDF를 표준 �
   assert.ok(text.includes('/MediaBox [0 0 595.28 841.89]'));
   assert.ok(text.includes('xref\n0 9\n'));
   assert.ok(text.trimEnd().endsWith('%%EOF'));
+});
+
+await test('관리자는 공식 심사위원 등록이 차단되고 본선·예선 모두 테스트 중으로만 격리됨', async () => {
+  const f = await fixture();
+  await configure(f, 'mois', [f.entries[0].id]);
+  await configure(f, 'final', f.entries.map((e) => e.id));
+  // 관리자 이메일은 공식 심사위원으로 등록 불가
+  ok(await f.admin('/festa/jury/judge', { panel: 'mois', name: '관리자', email: ADMIN }), 400);
+  await open(f, 'final');
+  // 관리자가 본선 심사를 진행하면 adminTest=true로 격리되고 공식 집계에는 미반영
+  const finalSession = ok(await f.admin('/festa/jury/member-final'));
+  assert.equal(finalSession.adminTest, true);
+  assert.equal(finalSession.entries.length, 6);
+  const scored = ok(await f.admin('/festa/jury/member-score', { entryId: f.entries[0].id, scores: [40, 30, 20, 10] }));
+  assert.equal(scored.adminTest, true);
+  const finalPanel = ok(await f.admin('/festa/jury/admin')).panels[2];
+  assert.equal(finalPanel.scores.length, 0);
+  assert.equal(finalPanel.results[0].scoreCount, 0);
+  assert.equal(finalPanel.adminTests.length, 1);
+  assert.equal(finalPanel.adminTests[0].scoredCount, 1);
+  // 테스트 초기화
+  const cleared = ok(await f.admin('/festa/jury/test-clear', { panel: 'final', all: true }));
+  assert.equal(cleared.panel.adminTests.length, 0);
+});
+
+await test('수동심사 엑셀 양식 생성·파싱·업로드가 1차 집계 및 최종 심사 집계·수상 계산에 반영됨', async () => {
+  const f = await fixture();
+  await configure(f, 'mois', [f.entries[0].id, f.entries[1].id]);
+  await configure(f, 'final', f.entries.map((e) => e.id));
+
+  // 1차 예선: 엑셀(.xlsx) 왕복 파싱(1~10점) → 서버 업로드(자동 환산 40·30·20·10)
+  const xlsxBlob = buildXlsx([{
+    name: '수동심사_입력',
+    rows: [
+      ['접수번호', '작품명', '심사위원명', '심사위원이메일', '문제인식(1~10)', '기능구현수준(1~10)', '완성도(1~10)', '확산가능성(1~10)'],
+      [f.entries[0].id, f.entries[0].title, '오프라인위원A', 'offline-a@example.com', 9, 8, 7, 6], // 36+24+14+6 = 80
+      [f.entries[1].id, f.entries[1].title, '오프라인위원A', 'offline-a@example.com', 10, 10, 10, 10], // 100
+      [f.entries[0].id, f.entries[0].title, '', '', '', '', '', ''], // 빈 행은 무시
+    ],
+  }]);
+  const sheetRows = await readSheet(xlsxBlob);
+  const parsed = parseManualSheetRows(sheetRows, 'mois', [f.entries[0], f.entries[1]]);
+  assert.equal(parsed.errors.length, 0, JSON.stringify(parsed.errors));
+  assert.equal(parsed.valid.length, 2);
+
+  // 본인 출품작·관리자 이메일 업로드는 차단
+  ok(await f.admin('/festa/jury/manual-import', {
+    panel: 'mois', mode: 'merge',
+    rows: [{ entryId: f.entries[0].id, judgeName: '본인', judgeEmail: 'author-0@example.com', rawScores: [10, 10, 10, 10] }],
+  }), 400);
+  ok(await f.admin('/festa/jury/manual-import', {
+    panel: 'mois', mode: 'merge',
+    rows: [{ entryId: f.entries[0].id, judgeName: '관리자', judgeEmail: ADMIN, rawScores: [10, 10, 10, 10] }],
+  }), 400);
+
+  const imported1 = ok(await f.admin('/festa/jury/manual-import', {
+    panel: 'mois', mode: 'merge',
+    rows: parsed.valid.map(({ entryId, judgeName, judgeEmail, rawScores }) => ({ entryId, judgeName, judgeEmail, rawScores })),
+  }));
+  assert.equal(imported1.importedCount, 2);
+  assert.equal(imported1.panel.manualJudges.length, 1);
+  assert.equal(imported1.panel.results.find((r) => r.entryId === f.entries[0].id).average, 80);
+  assert.equal(imported1.panel.results.find((r) => r.entryId === f.entries[0].id).manualCount, 1);
+  assert.equal(imported1.panel.results.find((r) => r.entryId === f.entries[1].id).average, 100);
+
+  // 최종 심사: 엑셀 수동심사만으로 6작품 점수 반영 → 마감 → 수상 계산까지 연동
+  await open(f, 'final');
+  const finalRows = f.entries.map((entryRow, idx) => ({
+    entryId: entryRow.id,
+    judgeName: '현장심사위원',
+    judgeEmail: 'onsite-judge@example.com',
+    scores: [40 - idx * 3, 25, 15, 8],
+  }));
+  const importedFinal = ok(await f.admin('/festa/jury/manual-import', { panel: 'final', mode: 'replace', rows: finalRows }));
+  assert.equal(importedFinal.importedCount, 6);
+  assert.equal(importedFinal.panel.manualJudges.length, 1);
+  ok(await f.admin('/festa/jury/status', { panel: 'final', status: 'closed' }));
+  // 마감 후에는 수동심사 업로드/삭제 차단
+  ok(await f.admin('/festa/jury/manual-import', { panel: 'final', mode: 'merge', rows: finalRows }), 409);
+  ok(await f.admin('/festa/jury/manual-clear', { panel: 'final' }), 409);
+  const awardsPreview = ok(await f.admin('/festa/awards/preview'));
+  assert.equal(awardsPreview.ready, true);
+  assert.equal(awardsPreview.recipients.length, 6);
+  assert.equal(awardsPreview.ranking[0].average, 88);
+});
+
+await test('심사위원 등록 시 기관명 선택에 따라 해당 기관 심사하기 버튼만 보이고 페스타 관리 메뉴에서 연습·테스트 제외', async () => {
+  const f = await fixture();
+  const moisJudge = await memberClient(f, 'only-mois@example.com');
+  const iwestJudge = await memberClient(f, 'only-iwest@example.com');
+  await configure(f, 'mois', [f.entries[0].id]);
+  await configure(f, 'iwest', [f.entries[3].id]);
+
+  // 잘못된 기관명 거절
+  ok(await f.admin('/festa/jury/judge', { panel: 'mois', institution: '임의기관', name: '오류위원', email: 'bad-org@example.com' }), 400);
+
+  // mois 탭에서 기관명을 한국서부발전으로 선택해 등록하면 자동으로 iwest 패널에 배정됨
+  const addedMois = ok(await f.admin('/festa/jury/judge', { panel: 'mois', institution: MOIS, name: '행안부전용', email: 'only-mois@example.com' }));
+  assert.equal(addedMois.panel, 'mois');
+  assert.equal(addedMois.judge.institution, MOIS);
+  const addedIwest = ok(await f.admin('/festa/jury/judge', { panel: 'mois', institution: IWEST, name: '서부전용', email: 'only-iwest@example.com' }));
+  assert.equal(addedIwest.panel, 'iwest');
+  assert.equal(addedIwest.judge.institution, IWEST);
+
+  await open(f, 'mois');
+  await open(f, 'iwest');
+
+  // 행정안전부 심사위원은 행정안전부 심사하기 버튼만, 한국서부발전은 한국서부발전 심사하기 버튼만 노출
+  const moisOverview = ok(await moisJudge('/festa'));
+  assert.deepEqual(moisOverview.prelimPanels.map((p) => p.buttonLabel), ['행정안전부 심사하기']);
+  const iwestOverview = ok(await iwestJudge('/festa'));
+  assert.deepEqual(iwestOverview.prelimPanels.map((p) => p.buttonLabel), ['한국서부발전 심사하기']);
+  const adminOverview = ok(await f.admin('/festa'));
+  assert.deepEqual(adminOverview.prelimPanels.map((p) => p.buttonLabel), ['행정안전부 심사하기', '한국서부발전 심사하기']);
+
+  // 심사 화면 내부에서도 타 기관 전환 불가(canSwitchPanel=false) 및 403 차단
+  assert.equal(ok(await moisJudge('/festa/jury/prelim?panel=mois')).canSwitchPanel, false);
+  ok(await moisJudge('/festa/jury/prelim?panel=iwest'), 403);
+  assert.equal(ok(await iwestJudge('/festa/jury/prelim?panel=iwest')).canSwitchPanel, false);
+  ok(await iwestJudge('/festa/jury/prelim?panel=mois'), 403);
+  assert.equal(ok(await f.admin('/festa/jury/prelim?panel=mois')).canSwitchPanel, true);
+
+  // 페스타 관리 상단 메뉴 확인: 6개 공식 메뉴만 포함, 본선 테스트·초기화 및 샘플 10건 제외
+  const navHtml = adminNavBar('submissions');
+  for (const required of ['접수 현황', '심사위원 관리', '예선 심사 현황', '예선 심사 결과', '본선 심사 현황', '수상작 확정·발표']) {
+    assert.ok(navHtml.includes(required), required);
+  }
+  for (const excluded of ['rehearsal', 'practice', '본선 테스트', '샘플 작품', '관리자 홈', '회원 화면 보기']) {
+    assert.equal(navHtml.includes(excluded), false, excluded);
+  }
 });
 
 Date.now = originalNow;
