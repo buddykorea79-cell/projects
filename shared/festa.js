@@ -75,8 +75,19 @@ export function validEmail(value) {
 }
 
 export const juryScoreLimits = [40, 30, 20, 10];
+export const juryRawWeights = [4, 3, 2, 1];
 export const validJuryScores = (scores) => Array.isArray(scores) && scores.length === juryScoreLimits.length
   && scores.every((score, index) => Number.isInteger(score) && score >= 0 && score <= juryScoreLimits[index]);
+export const validRawJuryScores = (rawScores) => Array.isArray(rawScores) && rawScores.length === juryRawWeights.length
+  && rawScores.every((score) => Number.isInteger(score) && score >= 1 && score <= 10);
+export const convertRawJuryScores = (rawScores) => (
+  validRawJuryScores(rawScores) ? rawScores.map((score, index) => score * juryRawWeights[index]) : null
+);
+export const deriveRawJuryScores = (scores) => {
+  if (!validJuryScores(scores)) return null;
+  const raw = scores.map((score, index) => score / juryRawWeights[index]);
+  return validRawJuryScores(raw) ? raw : null;
+};
 
 // 초대 만료는 접근만 막습니다. 이미 배정받은 작품과 심사표는 그대로 계산합니다.
 export function judgeCanScore(judge, entry) {
@@ -217,12 +228,12 @@ function limitedBody(request, limit) {
   });
 }
 
-async function jsonBody(request) {
+async function jsonBody(request, maxBytes = 128 * 1024) {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('Content-Type') || '')) {
     fail(415, 'JSON 형식으로 요청해 주세요.');
   }
   let body;
-  try { body = await new Response(limitedBody(request, 128 * 1024)).json(); } catch (error) {
+  try { body = await new Response(limitedBody(request, maxBytes)).json(); } catch (error) {
     if (error instanceof FestaError) throw error;
     fail(400, '요청 내용을 읽을 수 없습니다.');
   }
@@ -273,10 +284,31 @@ function entryView(entry, member) {
 
 async function overview(env, member, cors) {
   const { state } = await readState(env);
-  const existing = state.entries.filter((entry) => ownerOf(entry) === normEmail(member.email));
+  const memberEmail = normEmail(member.email);
+  const existing = state.entries.filter((entry) => ownerOf(entry) === memberEmail);
   const own = existing.filter((entry) => isMine(entry, member));
   const myEntries = own.map((entry) => entryView(entry, member));
   const emails = contactEmails(state, env);
+  const prelimLabels = { mois: '예선 심사(행정안전부)', iwest: '예선 심사(한국서부발전)' };
+  const prelimPanels = ['mois', 'iwest'].map((key) => {
+    const panel = state.juryPanels?.[key];
+    const judge = Array.isArray(panel?.judges)
+      ? panel.judges.find((row) => normEmail(row?.email) === memberEmail && !row.revoked)
+      : null;
+    if (!isAdmin(member) && !judge) return null;
+    const completed = Boolean(
+      (judge && panel?.completions?.[judge.id])
+      || (!judge && isAdmin(member) && panel?.adminPreviews?.[memberEmail]?.completion),
+    );
+    return {
+      key,
+      label: prelimLabels[key],
+      status: panel?.status || 'draft',
+      isJudge: Boolean(judge),
+      adminPreview: !judge && isAdmin(member),
+      completed,
+    };
+  }).filter(Boolean);
   return reply({
     phase: state.phase,
     deadline: deadlineOf(state), deadlinePassed: deadlinePassed(state),
@@ -286,6 +318,7 @@ async function overview(env, member, cors) {
     entries: isAdmin(member) ? state.entries.map((entry) => entryView(entry, member)) : [],
     awardsPublished: Boolean(state.awardsPublication),
     finalStatus: state.juryPanels?.final?.status || 'draft',
+    prelimPanels,
     email: emails.join(', '),
     emails,
   }, 200, cors);

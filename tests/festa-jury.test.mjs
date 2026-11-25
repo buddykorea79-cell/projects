@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { MockBucket, TEST_GOOGLE_ENV, mockGoogleLogin, applySetCookies } from './mock-r2.mjs';
 import { handleApi } from '../shared/r2api.js';
+import { buildPdfFromJpegs } from '../assets/js/pdf.js';
 
 const ORIGIN = 'https://site.test';
 const ADMIN = 'jury-admin@example.com';
@@ -701,6 +702,135 @@ await test('탈퇴 후 같은 이메일 재가입은 이전 표를 읽지 못하
   const state = JSON.parse(await (await f.bucket.get('data/festa.json')).text());
   assert.equal(state.juryPanels.final.memberScores.length, 1);
   assert.equal(state.juryPanels.final.memberScores[0].memberId, before.judgeId);
+});
+
+const FAKE_SIG = `data:image/png;base64,${'A'.repeat(64)}`;
+
+await test('심사위원 이메일 로그인 및 관리자 메뉴 표시(행정안전부·한국서부발전)', async () => {
+  const f = await fixture();
+  const moisJudge = await memberClient(f, 'mois-judge@example.com');
+  const iwestJudge = await memberClient(f, 'iwest-judge@example.com');
+  const bothJudge = await memberClient(f, 'both-judge@example.com');
+  await configure(f, 'mois', [f.entries[0].id, f.entries[1].id]);
+  await configure(f, 'iwest', [f.entries[3].id]);
+  ok(await f.admin('/festa/jury/judge', { panel: 'mois', name: '행안부위원', email: 'mois-judge@example.com' }));
+  ok(await f.admin('/festa/jury/judge', { panel: 'iwest', name: '서부위원', email: 'iwest-judge@example.com' }));
+  ok(await f.admin('/festa/jury/judge', { panel: 'mois', name: '겸직위원', email: 'both-judge@example.com' }));
+  ok(await f.admin('/festa/jury/judge', { panel: 'iwest', name: '겸직위원', email: 'both-judge@example.com' }));
+
+  assert.deepEqual(ok(await f.member('/festa')).prelimPanels, []);
+  assert.deepEqual(ok(await moisJudge('/festa')).prelimPanels.map((p) => p.label), ['예선 심사(행정안전부)']);
+  assert.deepEqual(ok(await iwestJudge('/festa')).prelimPanels.map((p) => p.label), ['예선 심사(한국서부발전)']);
+  assert.deepEqual(ok(await bothJudge('/festa')).prelimPanels.map((p) => p.label), ['예선 심사(행정안전부)', '예선 심사(한국서부발전)']);
+  assert.deepEqual(ok(await f.admin('/festa')).prelimPanels.map((p) => p.label), ['예선 심사(행정안전부)', '예선 심사(한국서부발전)']);
+});
+
+await test('예선 블라인드 심사(소속·성명 비공개)·1~10점 환산·순위정렬·서명 완료 저장', async () => {
+  const f = await fixture();
+  const judgeCall = await memberClient(f, 'email-judge@example.com');
+  await configure(f, 'mois', [f.entries[0].id, f.entries[1].id, f.entries[2].id]);
+  const added = ok(await f.admin('/festa/jury/judge', { panel: 'mois', name: '이메일심사위원', email: 'email-judge@example.com' })).judge;
+  // 사이트 가입 이메일 심사위원은 별도 PIN 발급 없이도 평가 시작 가능
+  await open(f, 'mois');
+
+  // 일반 회원은 예선 심사 접근 불가
+  ok(await f.member('/festa/jury/prelim?panel=mois'), 403);
+
+  // 블라인드 검증: 소속·성명·이메일 비노출
+  const sess = ok(await judgeCall('/festa/jury/prelim?panel=mois'));
+  assert.equal(sess.entries.length, 3);
+  for (const row of sess.entries) {
+    assert.equal(row.institution, '');
+    assert.equal(row.author.name, '');
+    assert.equal(row.author.institution, '');
+    assert.equal('email' in row.author, false);
+  }
+
+  // 1~10 범위 검증 및 심사기준 환산(40·30·20·10)
+  ok(await judgeCall('/festa/jury/prelim/score', { panel: 'mois', entryId: f.entries[0].id, rawScores: [0, 5, 5, 5] }), 400);
+  ok(await judgeCall('/festa/jury/prelim/score', { panel: 'mois', entryId: f.entries[0].id, rawScores: [11, 5, 5, 5] }), 400);
+  const scored0 = ok(await judgeCall('/festa/jury/prelim/score', { panel: 'mois', entryId: f.entries[0].id, rawScores: [6, 7, 8, 9] }));
+  assert.deepEqual(scored0.myRawScores, [6, 7, 8, 9]);
+  assert.deepEqual(scored0.myScores, [24, 21, 16, 9]); // 6*4=24, 7*3=21, 8*2=16, 9*1=9 => 70
+
+  // 미완료 작품 누락·서명 누락 시 완료 거절
+  ok(await judgeCall('/festa/jury/prelim/complete', {
+    panel: 'mois',
+    items: [{ entryId: f.entries[0].id, rawScores: [6, 7, 8, 9] }],
+    signer: { affiliation: '행정안전부', position: '사무관', name: '이메일심사위원', signatureDataUrl: FAKE_SIG },
+  }), 400);
+  ok(await judgeCall('/festa/jury/prelim/complete', {
+    panel: 'mois',
+    items: [
+      { entryId: f.entries[0].id, rawScores: [6, 7, 8, 9] },
+      { entryId: f.entries[1].id, rawScores: [10, 9, 8, 7] },
+      { entryId: f.entries[2].id, rawScores: [8, 8, 8, 8] },
+    ],
+    signer: { affiliation: '행정안전부', position: '사무관', name: '이메일심사위원', signatureDataUrl: '' },
+  }), 400);
+
+  // 모든 값 정상 입력 시 순위별 정렬·결과 저장 및 관리자 조회 가능
+  const completed = ok(await judgeCall('/festa/jury/prelim/complete', {
+    panel: 'mois',
+    items: [
+      { entryId: f.entries[0].id, rawScores: [6, 7, 8, 9] },  // 70점 -> 3위
+      { entryId: f.entries[1].id, rawScores: [10, 9, 8, 7] }, // 40+27+16+7 = 90점 -> 1위
+      { entryId: f.entries[2].id, rawScores: [8, 8, 8, 8] },  // 32+24+16+8 = 80점 -> 2위
+    ],
+    signer: { affiliation: '행정안전부 디지털정부국', position: '서기관', name: '이메일심사위원', signatureDataUrl: FAKE_SIG },
+  })).completion;
+  assert.deepEqual(completed.rankedResults.map((r) => [r.rank, r.entryId, r.total]), [
+    [1, f.entries[1].id, 90],
+    [2, f.entries[2].id, 80],
+    [3, f.entries[0].id, 70],
+  ]);
+  assert.equal(completed.affiliation, '행정안전부 디지털정부국');
+  assert.equal(completed.position, '서기관');
+  assert.equal(completed.signatureDataUrl, FAKE_SIG);
+
+  // 관리자 화면 집계 및 완료 PDF 조회 확인
+  const adminOverview = ok(await f.admin('/festa/jury/admin')).panels[0];
+  assert.equal(adminOverview.judges.find((j) => j.id === added.id).completed, true);
+  assert.deepEqual(adminOverview.scores.find((s) => s.entryId === f.entries[1].id).rawScores, [10, 9, 8, 7]);
+  const adminComp = ok(await f.admin(`/festa/jury/admin/completion?panel=mois&judgeId=${added.id}`)).completion;
+  assert.equal(adminComp.name, '이메일심사위원');
+  // 파일 다운로드도 이메일 로그인 심사위원에게 허용
+  assert.equal((await judgeCall(`/festa/jury/prelim/file/${encodeURIComponent(f.file.key)}?panel=mois`)).status, 200);
+});
+
+await test('관리자는 예선 심사 동일 화면을 점검·저장해도 공식 심사 집계에 혼입되지 않음', async () => {
+  const f = await fixture();
+  await configure(f, 'mois', [f.entries[0].id, f.entries[1].id]);
+  const preview = ok(await f.admin('/festa/jury/prelim?panel=mois'));
+  assert.equal(preview.adminPreview, true);
+  assert.equal(preview.entries.length, 2);
+  assert.equal(preview.entries[0].author.name, '');
+  ok(await f.admin('/festa/jury/prelim/complete', {
+    panel: 'mois',
+    items: [
+      { entryId: f.entries[0].id, rawScores: [9, 9, 9, 9] },
+      { entryId: f.entries[1].id, rawScores: [5, 5, 5, 5] },
+    ],
+    signer: { affiliation: '운영본부', position: '관리자', name: '검증 회원', signatureDataUrl: FAKE_SIG },
+  }));
+  const adminOverview = ok(await f.admin('/festa/jury/admin')).panels[0];
+  assert.equal(adminOverview.scores.length, 0);
+  assert.equal(ok(await f.admin('/festa/jury/prelim?panel=mois')).completion.rankedResults[0].total, 90);
+});
+
+await test('자체 PDF 1.4 생성기가 다중 A4 JPEG 페이지 PDF를 표준 구조로 조립', async () => {
+  const dummyJpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0xff, 0xd9]);
+  const pdf = buildPdfFromJpegs([
+    { bytes: dummyJpeg, width: 1654, height: 2339 },
+    { bytes: dummyJpeg, width: 1654, height: 2339 },
+  ]);
+  const text = new TextDecoder('latin1').decode(pdf);
+  assert.ok(text.startsWith('%PDF-1.4\n'));
+  assert.ok(text.includes('/Type /Pages /Kids [5 0 R 8 0 R] /Count 2'));
+  assert.ok(text.includes('/Filter /DCTDecode'));
+  assert.ok(text.includes('/MediaBox [0 0 595.28 841.89]'));
+  assert.ok(text.includes('xref\n0 9\n'));
+  assert.ok(text.trimEnd().endsWith('%%EOF'));
 });
 
 Date.now = originalNow;

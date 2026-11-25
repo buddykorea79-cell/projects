@@ -9,7 +9,7 @@ import * as R from './router.js';
 import { homeView } from './views/home.js';
 import { festaView, festaAdminView } from './views/festa.js';
 import { festaPracticeView } from './views/festa-practice.js';
-import { festaJuryAdminView, festaJurorView, festaMemberFinalView } from './views/festa-jury.js';
+import { festaJuryAdminView, festaJurorView, festaMemberFinalView, festaPrelimView } from './views/festa-jury.js';
 import { festaRehearsalAdminView } from './views/festa-rehearsal.js';
 import { festaAwardsAdminView, festaAwardsView } from './views/festa-awards.js';
 import { projectView, submitView } from './views/project.js';
@@ -130,6 +130,9 @@ async function updateFrap(path) {
 function signInWall(path) {
   let body = '과제 제출과 강의자료는 Google 계정으로 로그인한 교육생만 이용할 수 있습니다.';
   if (path === '/festa') body = 'Google 계정으로 로그인하면 페스타에 작품을 접수하고 내 접수증을 확인할 수 있습니다.';
+  if (path === '/festa/prelim/mois' || path === '/festa/prelim/iwest') {
+    body = '심사위원으로 등록된 이메일(Google 계정)로 로그인하면 예선 심사를 진행할 수 있습니다.';
+  }
   if (path === '/festa/jury/final' || path.startsWith('/festa/rehearsal/')) {
     body = path.endsWith('/final') ? 'Google 계정으로 로그인하면 회원 누구나 본선 작품을 평가할 수 있습니다.' : '로그인하면 이 테스트 회차의 발표를 볼 수 있습니다.';
   }
@@ -211,6 +214,7 @@ function registerRoutes() {
   R.route('/festa/rehearsal/:runId/results', view(festaAwardsView));
   R.route('/festa/rehearsal/:runId/awards', view(festaAwardsView));
   R.route('/admin/festa/jury', view(festaJuryAdminView, { admin: true }));
+  R.route('/festa/prelim/:panel', view(festaPrelimView));
   R.route('/festa/jury/final', view(festaMemberFinalView));
   R.route('/festa/jury/:invite', view(festaJurorView, { publicPage: true }));
   R.route('/admin/festa/awards', view(festaAwardsAdminView, { admin: true }));

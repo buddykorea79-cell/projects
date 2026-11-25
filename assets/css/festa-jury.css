@@ -54,6 +54,58 @@
 .fj-rehearsal-source { display:grid; grid-template-columns:minmax(0,1fr) minmax(160px,220px); gap:var(--space-3); align-items:center; }
 .fj-rehearsal-source .field { margin:0; }
 .festa-jury .btn { max-width: 100%; }
+.btn--ghostDark.is-active { background: rgba(255,255,255,.22); border-color: #fff; font-weight: 700; }
+
+/* 예선 심사 메뉴 카드 */
+.fj-prelim-menu { background: #fff7fa; border: 1px solid #e7b8cb; border-inline-start: 4px solid var(--festa-accent, #a51e57); }
+.fj-prelim-menu .btn--festa { display: inline-flex; align-items: center; gap: 10px; }
+.fj-prelim-menu .btn--festa .badge { background: rgba(255,255,255,.92); color: #1E3932; }
+
+/* 1~10 숫자 선택 채점 UI */
+.fj-scale-row { display: grid; gap: 12px; padding-block: var(--space-3); border-bottom: 1px solid var(--hairline); }
+.fj-scale-row:last-child { border-bottom: 0; }
+.fj-scale-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: var(--space-2); }
+.fj-scale-readout { font-size: 1.5rem; font-variant-numeric: tabular-nums; color: var(--house-green, #1E3932); }
+.fj-scale-picker { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 8px; }
+.fj-scale-btn {
+  display: grid; place-items: center; min-height: 46px; padding: 6px 2px;
+  border: 1.5px solid var(--input-border); border-radius: 10px;
+  background: #fff; color: var(--text-black); font-size: 1.6rem; font-weight: 700;
+  font-variant-numeric: tabular-nums; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease, transform .08s ease;
+}
+.fj-scale-btn:hover { border-color: var(--festa-accent, #a51e57); background: #fff5f8; }
+.fj-scale-btn:active { transform: scale(.96); }
+.fj-scale-btn.is-picked {
+  background: var(--festa-accent, #a51e57); border-color: var(--festa-accent, #a51e57);
+  color: #fff; box-shadow: 0 2px 6px rgba(165, 30, 87, .28);
+}
+
+/* 점수 환산 표시 전환 바 */
+.fj-mode-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.fj-mode-bar .btn.is-selected { background: var(--house-green, #1E3932); border-color: var(--house-green, #1E3932); color: #fff; }
+.fj-ranked-table td:first-child, .fj-ranked-table th:first-child { text-align: center; white-space: nowrap; }
+.fj-ranked-table td:last-child, .fj-ranked-table th:last-child { text-align: center; font-variant-numeric: tabular-nums; }
+.fj-incomplete-list { margin: var(--space-2) 0 0; padding-left: 1.8rem; display: grid; gap: 6px; }
+
+/* 심사위원 소속·직급·성명 및 직접 서명란 */
+.fj-signer-inputs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); }
+.fj-sig-box {
+  border: 2px dashed #8ea69a; border-radius: var(--radius-field); background: #fff;
+  padding: 6px; max-width: 580px; width: 100%;
+}
+.fj-sig-canvas {
+  display: block; width: 100%; height: auto; aspect-ratio: 560 / 180;
+  background: #fff; border-radius: 6px; cursor: crosshair; touch-action: none;
+}
+.fj-signer-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); margin-top: var(--space-3); align-items: start; }
+.fj-signer-grid p { margin-top: 6px; font-size: 1.6rem; font-weight: 600; }
+.fj-sig-preview {
+  margin-top: 6px; padding: 6px; border: 1px solid var(--hairline); border-radius: 6px;
+  background: #fff; min-height: 68px; display: grid; place-items: center;
+}
+.fj-sig-preview img { max-width: 100%; max-height: 76px; display: block; }
+
 @media (max-width: 640px) {
   .fj-form-grid, .fj-assign-row { grid-template-columns: minmax(0,1fr); }
   .fj-rehearsal-source { grid-template-columns:minmax(0,1fr); }
@@ -64,4 +116,7 @@
   .fj-pin-row { grid-template-columns: minmax(0,1fr); }
   .fj-pin-row button { justify-self: start; }
   .festa-jury .btn { white-space: normal; }
+  .fj-scale-picker { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .fj-signer-inputs { grid-template-columns: minmax(0, 1fr); }
+  .fj-signer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

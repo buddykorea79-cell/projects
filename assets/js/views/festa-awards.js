@@ -153,7 +153,7 @@ export async function festaAwardsAdminView(mount, { runId } = {}) {
   };
   const render = (root, message = '') => {
     if (!root.isConnected) return;
-    root.innerHTML = `<div class="row"><a class="btn btn--outline" href="${attr(paths.manage)}">${paths.rehearsal ? '테스트 회차 관리' : '심사위원·최종 후보 설정'}</a><a class="btn btn--outline" href="#/admin/festa">페스타 관리</a><button class="btn btn--quiet" data-testid="awards-refresh">다시 검토</button></div>
+    root.innerHTML = `<div class="row"><a class="btn btn--outline" href="#/admin/festa">접수 현황</a><a class="btn btn--outline" href="${attr(paths.manage)}">${paths.rehearsal ? '테스트 회차 관리' : '심사위원·최종 후보 설정'}</a><button class="btn btn--quiet" data-testid="awards-refresh">다시 검토</button></div>
       ${plan.published ? `<p class="notice notice--info">${paths.rehearsal ? '테스트 회차 수상 결과를 확정했습니다.' : '수상 결과를 공개했습니다. 공개된 발표 자료는 확정 당시의 결과로 고정됩니다.'}</p><div class="row"><a class="btn btn--primary" href="${attr(paths.results)}" data-testid="awards-present-link">시상식 발표 시작</a><a class="btn btn--outline" href="${attr(paths.list)}" data-testid="awards-public-link">전체 수상자 보기</a></div>` : ''}
       <section class="card"><h2 class="page-title" style="font-size:2.2rem">선정 기준</h2>
         <p>행정안전부 상위 2명과 한국서부발전 상위 1명을 선정하고, 이 세 명의 최종 심사 평균 순으로 최우수상 1명과 우수상 2명을 결정합니다. 나머지 세 명은 장려상입니다.</p>

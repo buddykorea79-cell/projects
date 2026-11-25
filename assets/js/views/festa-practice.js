@@ -185,7 +185,7 @@ export function festaPracticeView(mount) {
         <span class="badge badge--gold">관리자 전용 · 연습용</span>
         <h1 style="font-size:clamp(2.4rem,5vw,3.4rem);color:inherit;margin-top:var(--space-3)">샘플 심사 연습</h1>
         <p style="margin-top:var(--space-2)">가상 작품 10개를 살펴보고, 네 가지 기준으로 평가를 연습하세요.</p>
-        <a class="btn btn--ghostDark" href="#/admin/festa" style="margin-top:var(--space-3)">실제 페스타 관리로 돌아가기</a>
+        <a class="btn btn--ghostDark" href="#/admin/festa" style="margin-top:var(--space-3)">접수 현황으로 돌아가기</a>
       </div></section>
       <section class="section"><div class="wrap festa-stack" data-testid="practice-root">
         <div class="notice notice--info" data-testid="practice-notice"><div><strong>아래 작품과 소속은 모두 가상의 샘플입니다.</strong><p>여기서 저장한 점수는 실제 접수·심사 결과에 포함되지 않습니다. 연습 기록은 현재 브라우저 탭에서 관리자 계정별로 유지됩니다. 이 탭을 닫으면 기록이 사라질 수 있습니다.</p></div></div>
