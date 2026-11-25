@@ -177,25 +177,6 @@ function prelimStatusBadge(panel) {
   return '<span class="badge badge--soft">평가 준비 중</span>';
 }
 
-function prelimMenuHtml(panels) {
-  if (!Array.isArray(panels) || !panels.length) return '';
-  return `<section class="card fj-prelim-menu" data-testid="festa-prelim-menu" aria-labelledby="festaPrelimMenuTitle">
-    <div class="festa-entry-head">
-      <div>
-        <h2 id="festaPrelimMenuTitle" class="page-title" style="font-size:2.2rem">예선 심사</h2>
-        <p class="page-sub">담당 기관의 예선 심사 화면으로 바로 이동하여 블라인드 심사를 진행할 수 있습니다.</p>
-      </div>
-    </div>
-    <div class="row" style="margin-top:var(--space-3)">
-      ${panels.map((panel) => `
-        <a class="btn btn--festa" href="#/festa/prelim/${attr(panel.key)}" data-testid="festa-prelim-${attr(panel.key)}">
-          ${esc(panel.buttonLabel || panel.label)}
-          ${prelimStatusBadge(panel)}
-        </a>`).join('')}
-    </div>
-  </section>`;
-}
-
 async function receiptHtml(entry, state, index) {
   const heading = `festaReceiptTitle${index}`;
   return `<section class="card festa-receipt" data-testid="festa-receipt" data-entry-id="${attr(entry.id)}" aria-labelledby="${heading}" tabindex="-1">
@@ -376,15 +357,14 @@ export async function festaView(mount) {
     const heroActions = mount.querySelector('[data-festa-hero-actions]');
     if (heroActions) {
       heroActions.innerHTML = [
-        ...prelimPanels.map((panel) => `<a class="btn btn--ghostDark" href="#/festa/prelim/${attr(panel.key)}" data-testid="festa-hero-prelim-${attr(panel.key)}">${esc(panel.buttonLabel || panel.label)}</a>`),
+        ...prelimPanels.map((panel) => `<a class="btn btn--festa fj-hero-prelim" href="#/festa/prelim/${attr(panel.key)}" data-testid="festa-prelim-${attr(panel.key)}">${esc(panel.buttonLabel || panel.label)}${prelimStatusBadge(panel)}</a>`),
         ...(isAdmin() ? ['<a class="btn btn--ghostDark" href="#/admin/festa">페스타 관리</a>'] : []),
       ].join('');
     }
     stopDeadline?.();
     activeEditor = null;
     activeKey = null;
-    root.innerHTML = `${prelimMenuHtml(prelimPanels)}
-      ${state.finalStatus === 'open' ? '<section class="card"><h2>본선 회원 평가 진행 중</h2><p class="page-sub">참여하고 싶은 작품을 골라 네 항목으로 채점해 주세요. 내 작품은 평가 대상에서 제외됩니다.</p><a class="btn btn--festa" href="#/festa/jury/final">본선 작품 평가하기</a></section>' : ''}
+    root.innerHTML = `${state.finalStatus === 'open' ? '<section class="card"><h2>본선 회원 평가 진행 중</h2><p class="page-sub">참여하고 싶은 작품을 골라 네 항목으로 채점해 주세요. 내 작품은 평가 대상에서 제외됩니다.</p><a class="btn btn--festa" href="#/festa/jury/final">본선 작품 평가하기</a></section>' : ''}
       ${deadlineHtml(state)}
       <section class="festa-stack" aria-labelledby="festaMyEntriesTitle"><div class="festa-entry-head"><h2 id="festaMyEntriesTitle" class="page-title" style="font-size:2.2rem"><span aria-hidden="true">🎟️</span> 내 작품 ${myEntries.length} / 2</h2>${canCreate && myEntries.length ? '<button type="button" class="btn btn--primary" data-testid="festa-add-entry"><span aria-hidden="true">＋</span> 두 번째 작품 추가</button>' : ''}</div>
         ${entryBlocked ? `<p class="notice notice--info" data-testid="festa-entry-blocked">${esc(entryBlocked)}</p>` : myEntries.length >= MAX_ENTRIES ? `<p class="notice notice--info" data-entry-limit-message>최대 2작품을 모두 접수했습니다. ${submissionsOpen(state) ? '각 작품의 수정 버튼으로 해당 작품만 수정할 수 있습니다.' : '두 작품의 접수증을 확인할 수 있습니다.'}</p>` : ''}
