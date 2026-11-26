@@ -104,9 +104,9 @@ try {
     await page.goto(`${origin}/#/festa/rehearsal/${runId}/final`);
     const returnLink = `#/login?next=${encodeURIComponent(`/festa/rehearsal/${runId}/final`)}`;
     await page.locator(`a[href="${returnLink}"]`).click();
-    await page.locator('#loginForm [name=email]').fill('learner@example.com');
-    await page.locator('#loginForm [name=password]').fill('Rehearsal-browser-2026!');
-    await page.locator('#loginForm button[type=submit]').click();
+    setNextGoogleUser({ email: 'learner@example.com', name: '연습 참여 회원' });
+    await page.locator('#googleLoginBtn').waitFor();
+    await page.locator('#googleLoginBtn').click();
     await page.getByTestId('juror-entry-list').waitFor();
     assert.ok(page.url().endsWith(`/rehearsal/${runId}/final`));
     assert.equal(await page.locator('[name=pin]').count(), 0);
@@ -150,7 +150,8 @@ try {
     await results.goto(`${origin}/#/festa/rehearsal/${runId}/results`);
     await results.getByTestId('awards-public').waitFor();
     assert.ok((await results.locator('.festa-awards-eyebrow').innerText()).includes('테스트'));
-    assert.equal(await results.getByTestId('awards-curtain').count(), 1);
+    assert.equal(await results.getByTestId('awards-board').count(), 1);
+    assert.equal(await results.locator('[data-testid="award-slot"][data-revealed="false"]').count(), 6);
     assert.equal(await admin.getByTestId('rehearsal-awards-link').getAttribute('href'), `#/admin/festa/rehearsal/${runId}/awards`);
     await staleMemberPage.getByTestId('member-final-refresh').click();
     await staleMemberPage.getByTestId('juror-closed').waitFor();

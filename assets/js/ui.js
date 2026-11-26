@@ -92,6 +92,64 @@ export function confirmModal(opts) {
   });
 }
 
+/**
+ * 콘텐츠 팝업 모달. 닫힐 때 onClose 를 호출하고 포커스를 복원합니다.
+ * @param {{title:string, subtitle?:string, badgeHtml?:string, bodyHtml:string, footerHtml?:string,
+ *          wide?:boolean, testid?:string, onMount?:(dialog:HTMLElement, close:Function)=>void,
+ *          onClose?:()=>void}} opts
+ */
+export function openModal(opts) {
+  const {
+    title, subtitle = '', badgeHtml = '', bodyHtml = '', footerHtml = '',
+    wide = true, testid = 'app-modal', onMount = null, onClose = null,
+  } = opts;
+  const root = $('#modalRoot');
+  const prevFocus = document.activeElement;
+  let closed = false;
+
+  root.innerHTML = `
+    <div class="modal-scrim" data-scrim>
+      <div class="modal${wide ? ' modal--xl' : ''}" role="dialog" aria-modal="true" aria-labelledby="mdPopTitle" data-testid="${attr(testid)}">
+        <div class="modal__head">
+          <div class="modal__head-text">
+            ${badgeHtml ? `<div class="row" style="margin-bottom:6px">${badgeHtml}</div>` : ''}
+            <h2 id="mdPopTitle">${esc(title)}</h2>
+            ${subtitle ? `<p class="page-sub" style="margin-top:4px">${esc(subtitle)}</p>` : ''}
+          </div>
+          <button type="button" class="modal__close" data-modal-close aria-label="팝업 닫기">&times;</button>
+        </div>
+        <div class="modal__body" data-modal-body>${bodyHtml}</div>
+        ${footerHtml ? `<div class="modal__actions modal__footer" data-modal-footer>${footerHtml}</div>` : ''}
+      </div>
+    </div>`;
+
+  const scrim = root.querySelector('[data-scrim]');
+  const dialog = root.querySelector('.modal');
+
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKey);
+    root.innerHTML = '';
+    if (prevFocus?.focus && document.contains(prevFocus)) prevFocus.focus();
+    onClose?.();
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    if (e.key === 'Tab') trapFocus(e, dialog);
+  };
+
+  root.querySelectorAll('[data-modal-close]').forEach((btn) => btn.addEventListener('click', close));
+  scrim.addEventListener('click', (e) => { if (e.target === scrim) close(); });
+  document.addEventListener('keydown', onKey);
+
+  onMount?.(dialog, close);
+  const focusTarget = dialog.querySelector('[data-autofocus]') || dialog.querySelector('.modal__close');
+  focusTarget?.focus();
+
+  return { close, dialog };
+}
+
 function trapFocus(e, container) {
   if (!container) return;
   const focusables = container.querySelectorAll(

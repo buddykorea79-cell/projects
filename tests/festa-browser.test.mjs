@@ -259,6 +259,13 @@ try {
     assert.ok((await list.innerText()).includes('민원 안내 도우미 최종본'));
     assert.ok((await list.innerText()).includes('문서 정리 웹앱'));
     assert.ok((await list.innerText()).includes('현장 점검표 개정판'));
+    await admin.getByTestId('festa-admin-detail-link').first().click();
+    const detailModal = admin.getByTestId('festa-admin-entry-modal');
+    await detailModal.waitFor();
+    assert.ok((await detailModal.innerText()).includes('민원을 쉽게 찾을 수 있도록 만든 로컬 실행 서비스입니다.'));
+    assert.ok((await detailModal.innerText()).includes('사용설명.txt'));
+    await detailModal.locator('[data-modal-close]').first().click();
+    await detailModal.waitFor({ state: 'hidden' });
     await admin.getByTestId('festa-contact-email').fill('submissions@example.com');
     await admin.getByTestId('festa-contact-add').click();
     await admin.getByTestId('festa-contact-email-2').fill('backup@example.com');

@@ -49,14 +49,7 @@ async function publicPage(page) {
 async function presentationPage(page, path = '/festa/results') {
   const url = `${origin}/#${path}`;
   if (page.url() === url) await page.reload(); else await page.goto(url);
-  await page.getByTestId('awards-curtain').waitFor();
-}
-async function ready(page) {
-  await page.waitForFunction(() => document.querySelector('[data-testid="awards-next"]')?.getAttribute('aria-disabled') !== 'true');
-}
-async function advance(page, testid = 'awards-next') {
-  await ready(page);
-  await page.getByTestId(testid).click();
+  await page.getByTestId('awards-board').waitFor();
 }
 async function assertConcealed(page) {
   assert.equal(await page.getByTestId('awards-recipient').count(), 0);
@@ -64,19 +57,20 @@ async function assertConcealed(page) {
   for (const name of names) assert.equal(content.includes(name), false, name);
   for (const title of titles) assert.equal(content.includes(title), false, title);
 }
-async function assertFits(page) {
+async function assertPopupFits(page) {
   const layout = await page.evaluate(() => {
-    const elements = document.querySelectorAll('[data-testid="awards-recipient"], .festa-awards-certificate, .festa-awards-name, .festa-awards-institution, .festa-awards-project, .festa-awards-prize, [data-testid="awards-next"]');
-    return { scrollY, height: document.documentElement.scrollHeight, viewportHeight: innerHeight,
+    const elements = document.querySelectorAll('[data-testid="awards-recipient"], .festa-awards-certificate, .festa-awards-name, .festa-awards-institution, .festa-awards-project, .festa-awards-prize, [data-testid="awards-congrats"], [data-testid="awards-popup-close"]');
+    return {
+      width: innerWidth,
+      scrollWidth: document.documentElement.scrollWidth,
       outOfView: [...elements].filter((element) => {
         const rect = element.getBoundingClientRect();
-        return rect.width <= 0 || rect.height <= 0 || rect.left < -1 || rect.top < -1 || rect.right > innerWidth + 1 || rect.bottom > innerHeight + 1;
+        return rect.width <= 0 || rect.height <= 0 || rect.left < -1 || rect.right > innerWidth + 1;
       }).map((element) => `${element.className}: ${element.textContent.trim()}`),
     };
   });
-  assert.equal(layout.scrollY, 0);
+  assert.ok(layout.scrollWidth <= layout.width + 1, `가로 넘침 ${layout.scrollWidth}`);
   assert.deepEqual(layout.outOfView, []);
-  assert.ok(layout.height <= layout.viewportHeight + 1, `페이지 높이 ${layout.height}`);
 }
 async function screenshot(page, name, fullPage = true) {
   if (!process.env.FESTA_AWARDS_SCREENSHOT_DIR) return;
@@ -158,121 +152,93 @@ try {
     for (const privateText of ['평균', '심사위원', 'judge@example.com', '점수', 'not-public']) assert.equal(content.includes(privateText), false, privateText);
     await screenshot(guest, 'awards-all-desktop.png');
     await waiting.getByTestId('awards-retry').click();
-    await waiting.getByTestId('awards-curtain').waitFor();
+    await waiting.getByTestId('awards-board').waitFor();
     await assertConcealed(waiting);
   });
-  await step('새 발표 주소와 기존 주소 모두 가림 화면에서 시작하고 자동 공개·음향이 없음', async () => {
+  await step('발표 보드는 장려3·우수2·최우수1 슬롯이 가려진 상태로 시작하고 자동 공개·음향이 없음', async () => {
     await guest.setViewportSize({ width: 1280, height: 720 });
     for (const path of ['/festa/results', '/festa/awards?mode=present']) {
       await presentationPage(guest, path);
       await assertConcealed(guest);
-      assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '-1');
+      assert.equal(await guest.locator('[data-testid="award-slot"][data-award="encouragement"]').count(), 3);
+      assert.equal(await guest.locator('[data-testid="award-slot"][data-award="excellence"]').count(), 2);
+      assert.equal(await guest.locator('[data-testid="award-slot"][data-award="grand"]').count(), 1);
+      assert.equal(await guest.locator('[data-testid="award-slot"][data-revealed="false"]').count(), 6);
       assert.equal(await guest.locator('audio, video').count(), 0);
     }
     await presentationPage(guest);
     await screenshot(guest, 'ceremony-opening-1280x720.png', false);
   });
   await step('새로고침·뒤로·앞으로 이동해도 수상자 정보가 먼저 나타나지 않음', async () => {
-    await advance(guest);
-    await advance(guest);
+    await guest.locator('[data-slot-index="0"]').click();
+    await guest.getByTestId('awards-popup').waitFor();
     assert.equal(await guest.getByTestId('awards-recipient').count(), 1);
     await guest.reload();
-    await guest.getByTestId('awards-curtain').waitFor();
+    await guest.getByTestId('awards-board').waitFor();
     await assertConcealed(guest);
     await publicPage(guest);
     await guest.getByTestId('awards-all').waitFor();
     await guest.goBack();
-    await guest.getByTestId('awards-curtain').waitFor();
+    await guest.getByTestId('awards-board').waitFor();
     await assertConcealed(guest);
     await guest.goForward();
     await guest.getByTestId('awards-all').waitFor();
     assert.equal(await guest.getByTestId('awards-recipient').count(), 6);
     await guest.getByTestId('awards-present').click();
-    await guest.getByTestId('awards-curtain').waitFor();
+    await guest.getByTestId('awards-board').waitFor();
     await assertConcealed(guest);
   });
-  await step('더블클릭과 누른 채 반복되는 Enter는 다음 수상자를 건너뛰지 않음', async () => {
-    await advance(guest);
-    await ready(guest);
-    await guest.getByTestId('awards-next').dblclick({ delay: 30 });
-    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '0');
-    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-revealed'), 'true');
-    await ready(guest);
-    await guest.getByTestId('awards-next').focus();
-    await guest.keyboard.down('Enter');
-    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '1');
-    await ready(guest);
-    await guest.keyboard.down('Enter');
-    await guest.keyboard.up('Enter');
-    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-revealed'), 'false');
-    await assertConcealed(guest);
-    await guest.keyboard.press('Space');
-    assert.equal(await guest.getByTestId('awards-recipient').count(), 1);
-    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '1');
-  });
-  await step('이전과 처음부터는 가림 상태로 이동하고 키보드 포커스를 유지', async () => {
-    await advance(guest, 'awards-prev');
-    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '1');
-    await assertConcealed(guest);
-    await advance(guest, 'awards-prev');
-    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '0');
-    await assertConcealed(guest);
-    await advance(guest, 'awards-restart');
-    assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), '-1');
-    assert.equal(await guest.evaluate(() => document.activeElement?.dataset.testid), 'awards-next');
-    await assertConcealed(guest);
-  });
-  await step('장려 3명 → 우수 2명 → 최우수 1명을 각각 가림·공개하며 두 프로젝터 해상도에서 전체 정보 표시', async () => {
+  await step('장려 3명 → 우수 2명 → 최우수 1명을 하나씩 클릭하면 폭죽 전체화면 팝업과 축하 메시지 표시', async () => {
     const order = [
-      ['encouragement', '최가람'], ['encouragement', '이바다'], ['encouragement', '한여울'],
-      ['excellence', '박나래'], ['excellence', '김하늘'], ['grand', '정다온'],
+      ['encouragement', '최가람', '장려상', '한국서부발전 사장상', '30만원 상당'],
+      ['encouragement', '이바다', '장려상', '한국서부발전 사장상', '30만원 상당'],
+      ['encouragement', '한여울', '장려상', '한국서부발전 사장상', '30만원 상당'],
+      ['excellence', '박나래', '우수상', '행정안전부 장관상', '30만원 상당'],
+      ['excellence', '김하늘', '우수상', '행정안전부 장관상', '30만원 상당'],
+      ['grand', '정다온', '최우수상', '행정안전부 장관상', '50만원 상당'],
     ];
-    await advance(guest);
-    for (const [index, [award, name]] of order.entries()) {
-      assert.equal(await guest.getByTestId('awards-public').getAttribute('data-position'), String(index));
-      await assertConcealed(guest);
-      if (award === 'grand') {
-        await ready(guest);
-        await screenshot(guest, 'ceremony-grand-curtain-1280x720.png', false);
-      }
-      await advance(guest);
-      await ready(guest);
+    for (const [index, [award, name, awardName, cert, prize]] of order.entries()) {
+      await guest.locator(`[data-slot-index="${index}"]`).click();
+      const popup = guest.getByTestId('awards-popup');
+      await popup.waitFor();
+      assert.equal(await popup.locator('canvas.festa-fireworks-canvas').count(), 1);
       assert.equal(await guest.getByTestId('awards-recipient').count(), 1);
       assert.equal(await guest.getByTestId('awards-recipient').getAttribute('data-award'), award);
       const content = await guest.getByTestId('awards-recipient').innerText();
+      assert.ok(content.includes(awardName), awardName);
       assert.ok(content.includes(name), name);
+      assert.ok(content.includes(cert), cert);
+      assert.ok(content.includes(prize), prize);
+      assert.ok(content.includes('축하합니다'), '축하 메시지');
       for (const otherName of names.filter((item) => item !== name)) assert.equal(content.includes(otherName), false, otherName);
-      assert.ok(content.includes(award === 'grand' ? '50만원 상당' : '30만원 상당'));
-      assert.ok(content.includes(award === 'encouragement' ? '한국서부발전 사장상' : '행정안전부 장관상'));
       for (const viewport of [{ width: 1280, height: 720 }, { width: 1366, height: 768 }]) {
         await guest.setViewportSize(viewport);
-        await assertFits(guest);
+        await assertPopupFits(guest);
       }
       await guest.setViewportSize({ width: 1280, height: 720 });
-      if (award === 'grand') {
-        await screenshot(guest, 'ceremony-grand-reveal-1280x720.png', false);
-        await screenshot(guest, 'awards-grand-desktop.png', false);
-      }
-      await advance(guest);
+      if (award === 'grand') await screenshot(guest, 'ceremony-grand-reveal-1280x720.png', false);
+      await guest.getByTestId('awards-popup-close').click();
+      await popup.waitFor({ state: 'hidden' });
+      assert.equal(await guest.locator(`[data-slot-index="${index}"]`).getAttribute('data-revealed'), 'true');
     }
     await guest.getByTestId('awards-ending').waitFor();
+    await guest.getByTestId('awards-restart').click();
     await assertConcealed(guest);
-    await advance(guest);
+    await guest.getByTestId('awards-all-link').click();
     await guest.getByTestId('awards-all').waitFor();
     assert.equal(await guest.getByTestId('awards-recipient').count(), 6);
     assert.equal(await guest.locator('#gnav').isVisible(), true);
     assert.equal(await guest.locator('body > .foot').isVisible(), true);
   });
-  await step('모바일에서도 개별 공개가 가능하고 동작 줄이기 설정에서는 애니메이션 없이 표시', async () => {
+  await step('모바일에서도 전체화면 팝업 표시 및 동작 줄이기 설정에서 애니메이션 없이 표시', async () => {
     await guest.setViewportSize({ width: 375, height: 812 });
     await guest.emulateMedia({ reducedMotion: 'reduce' });
     await presentationPage(guest);
-    await advance(guest);
-    await advance(guest);
+    await guest.locator('[data-slot-index="0"]').click();
+    await guest.getByTestId('awards-popup').waitFor();
     assert.equal(await guest.getByTestId('awards-recipient').count(), 1);
     assert.ok(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
-    assert.equal(await guest.locator('.festa-ceremony-reveal').evaluate((element) => getComputedStyle(element).animationName), 'none');
-    assert.equal(await guest.locator('.festa-ceremony-reveal').evaluate((element) => getComputedStyle(element, '::before').display), 'none');
+    assert.equal(await guest.getByTestId('awards-popup').evaluate((element) => getComputedStyle(element).animationName), 'none');
     const contrast = await guest.locator('.festa-awards-institution, .festa-awards-project').evaluateAll((elements) => {
       const luminance = (color) => {
         const channels = color.match(/[\d.]+/g).slice(0, 3).map(Number).map((c) => {
@@ -294,7 +260,7 @@ try {
     await screenshot(guest, 'ceremony-mobile-reveal.png');
     await guest.emulateMedia({ reducedMotion: 'no-preference' });
   });
-  await step('긴 성명·작품명도 잘리지 않고 모바일은 자연 스크롤로 진행 가능', async () => {
+  await step('긴 성명·작품명도 잘리지 않고 ESC 키로 팝업 닫기 가능', async () => {
     const publication = await (await guest.request.get(origin + '/api/festa/awards')).json();
     const longName = '긴성명'.repeat(20);
     const longTitle = '민원과 현장 업무를 돕는 지능형 업무 지원 서비스 '.repeat(8).slice(0, 160);
@@ -302,9 +268,8 @@ try {
     await guest.route('**/api/festa/awards', (route) => route.fulfill({ json: publication }));
     try {
       await presentationPage(guest);
-      await advance(guest);
-      await advance(guest);
-      await ready(guest);
+      await guest.locator('[data-slot-index="0"]').click();
+      await guest.getByTestId('awards-popup').waitFor();
       for (const viewport of [{ width: 1280, height: 720 }, { width: 768, height: 1024 }, { width: 375, height: 812 }]) {
         await guest.setViewportSize(viewport);
         const layout = await guest.locator('.festa-awards-name, .festa-awards-project').evaluateAll((elements) => elements.map((element) => ({
@@ -319,11 +284,8 @@ try {
         }
         assert.ok(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
       }
-      assert.ok(await guest.evaluate(() => document.documentElement.scrollHeight > innerHeight));
-      await guest.getByTestId('awards-next').scrollIntoViewIfNeeded();
-      await advance(guest);
-      assert.equal(await guest.getByTestId('awards-recipient').count(), 0);
-      assert.equal(await guest.evaluate(() => scrollY), 0);
+      await guest.keyboard.press('Escape');
+      await guest.getByTestId('awards-popup').waitFor({ state: 'hidden' });
     } finally { await guest.unroute('**/api/festa/awards'); }
   });
   await step('완전동점은 자동발행을 막고 관리자 순서 입력 후 검토·공개', async () => {

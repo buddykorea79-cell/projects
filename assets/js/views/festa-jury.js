@@ -7,7 +7,7 @@ import {
 } from '../festa.js';
 import { downloadPrelimResultPdf } from '../pdf.js';
 import { esc, attr, fmtDate, fmtBytes, isEmail } from '../utils.js';
-import { spinner, emptyState, confirmModal, toastOk, toastErr } from '../ui.js';
+import { spinner, emptyState, confirmModal, openModal, toastOk, toastErr } from '../ui.js';
 import { adminNavBar } from './festa-tally.js';
 
 const PANELS = {
@@ -143,7 +143,7 @@ function scoreTable(panel, entries, mode = 'converted') {
 
 function judgesHtml(panel) {
   const url = panelUrl(panel.key);
-  if (panel.key === 'final') return `<section class="card fj-stack" data-testid="jury-member-setup"><h3>2. 회원 본선 평가</h3><p>로그인한 회원 누구나 별도 코드 없이 참여합니다. 본인 작품은 평가에서 제외되며, 평가를 저장한 회원만 참여 현황에 집계됩니다. 참여자가 모든 작품을 평가할 필요는 없습니다.</p><div class="fj-secret"><label class="field"><span class="field__label">회원 본선 평가 주소</span><input class="input" value="${attr(url)}" readonly data-testid="jury-panel-url" /></label><button type="button" class="btn btn--primary btn--sm" data-copy-panel>평가 주소 복사</button><p data-copy-status role="status" aria-live="polite"></p></div><h4>평가 참여 현황 · ${(panel.participants || []).length}명</h4><p class="field__hint">각 작품에 본인이 아닌 회원의 평가가 1건 이상 저장되면 운영자가 마감할 수 있습니다.</p><div class="fj-stack" data-testid="jury-member-participants">${(panel.participants || []).length ? panel.participants.map((person) => `<div class="fj-head"><div><strong>${esc(person.name)}</strong><p class="field__hint">${esc(person.email)}</p></div><span class="festa-total">${esc(person.scoredCount)} / ${esc(person.eligibleCount)}건 평가</span></div>`).join('') : '<p class="fj-note">아직 평가를 저장한 회원이 없습니다.</p>'}</div></section>`;
+  if (panel.key === 'final') return `<section class="card fj-stack" data-testid="jury-member-setup"><h3>2. 본선 심사 링크 공유 (다수 평가 · 평균 계산)</h3><p>엑셀 업로드 없이 아래 본선 심사 링크를 심사위원(회원)에게 전달하여 평가합니다. 여러 명이 각자 평가하면 작품별 평균 점수로 자동 계산되며, 본인 작품은 평가에서 제외됩니다.</p><div class="fj-secret"><label class="field"><span class="field__label">본선 심사 링크 (심사위원·회원 공유용)</span><input class="input" value="${attr(url)}" readonly data-testid="jury-panel-url" /></label><div class="fj-actions" style="margin-top:var(--space-2)"><button type="button" class="btn btn--primary btn--sm" data-copy-panel>본선 심사 링크 복사</button><a class="btn btn--outline btn--sm" href="#/admin/festa/tally/final">본선 심사 현황 보기</a></div><p data-copy-status role="status" aria-live="polite"></p></div><h4>평가 참여 현황 · ${(panel.participants || []).length}명</h4><p class="field__hint">각 작품에 본인이 아닌 평가자의 점수가 1건 이상 저장되면 운영자가 마감할 수 있습니다.</p><div class="fj-stack" data-testid="jury-member-participants">${(panel.participants || []).length ? panel.participants.map((person) => `<div class="fj-head"><div><strong>${esc(person.name)}</strong><p class="field__hint">${esc(person.email)}</p></div><span class="festa-total">${esc(person.scoredCount)} / ${esc(person.eligibleCount)}건 평가</span></div>`).join('') : '<p class="fj-note">아직 평가를 저장한 회원이 없습니다.</p>'}</div></section>`;
   const defaultOrg = PANELS[panel.key].institution;
   return `<section class="card fj-stack" aria-labelledby="juryJudgesTitle"><div><h3 id="juryJudgesTitle">2. 심사위원 등록 · 기관 선택 · 이메일 로그인 및 개인 코드</h3><p class="field__hint">심사위원 등록 시 선택한 기관명(행정안전부 / 한국서부발전)에 따라, 심사위원이 이메일로 로그인했을 때 <strong>해당 기관 심사하기 버튼만</strong> 표시됩니다. (비회원 심사위원은 공용 주소 + 6자리 개인 코드로도 입장 가능합니다.)</p></div><div class="fj-secret"><label class="field"><span class="field__label">${esc(PANELS[panel.key].label)} 공용 심사 주소</span><input class="input" value="${attr(url)}" readonly data-testid="jury-panel-url" /></label><div class="fj-actions" style="margin-top:var(--space-2)"><button type="button" class="btn btn--primary btn--sm" data-copy-panel>공용 주소 복사</button><a class="btn btn--outline btn--sm" href="#/festa/prelim/${attr(panel.key)}" data-testid="admin-preview-prelim">${esc(PANELS[panel.key].institution)} 심사 화면 테스트</a></div><p class="field__hint">개인 코드를 발급하거나 재발급해도 이 주소는 바뀌지 않습니다.</p><p data-copy-status role="status" aria-live="polite"></p></div>${panel.status === 'draft' ? `<form data-testid="jury-add-judge-form"><div class="fj-form-grid fj-form-grid--3"><label class="field"><span class="field__label">기관명 <span class="field__req">*</span></span><select class="select" name="institution" required data-testid="jury-judge-institution">${INSTITUTIONS.map((org) => `<option value="${org}" ${org === defaultOrg ? 'selected' : ''}>${org}</option>`).join('')}</select></label><label class="field"><span class="field__label">심사위원 이름 <span class="field__req">*</span></span><input class="input" name="name" maxlength="60" required /></label><label class="field"><span class="field__label">심사위원 이메일 <span class="field__req">*</span></span><input class="input" name="email" type="email" maxlength="254" required /></label></div><button class="btn btn--primary" type="submit">심사위원 추가</button><p data-add-judge-status role="status" aria-live="polite" style="margin-top:var(--space-3)"></p></form>` : '<p class="fj-note">평가를 시작한 뒤에는 심사위원을 추가할 수 없습니다.</p>'}<div class="fj-stack" data-testid="jury-judges">${panel.judges.length ? panel.judges.map((judge) => {
     const mailto = invitationMailto(judge, panel, url);
@@ -157,10 +157,11 @@ function judgesHtml(panel) {
   }).join('') : '<p class="notice notice--info">등록된 심사위원이 없습니다.</p>'}</div></section>`;
 }
 
-export async function festaJuryAdminView(mount) {
+export async function festaJuryAdminView(mount, _params, query) {
   const root = shell(mount, true);
   if (!isAdmin()) { root.innerHTML = '<p class="notice notice--err">관리자만 이용할 수 있습니다.</p>'; return; }
-  let selectedPanel = 'mois';
+  const initialPanel = query?.get?.('panel');
+  let selectedPanel = Object.hasOwn(PANELS, initialPanel) ? initialPanel : 'mois';
   let adminScoreMode = 'converted';
   const refresh = async () => {
     const data = await jury('admin');
@@ -482,8 +483,186 @@ function prelimScoreFormHtml(entry, rawValues) {
         <button class="btn btn--primary" type="submit" data-testid="juror-score-save">${stored ? '이 작품 점수 수정 저장' : '이 작품 점수 저장'}</button>
       </div>
     </fieldset>
-    <p data-score-status role="status" aria-live="polite" style="margin-top:var(--space-3)">${stored ? '저장된 평가입니다. 모든 작품을 심사한 뒤 아래 [심사 완료] 버튼을 눌러 순위 확인 및 서명을 진행해 주세요.' : '항목별 숫자를 선택한 뒤 [이 작품 점수 저장]을 누르세요.'}</p>
+    <p data-score-status role="status" aria-live="polite" style="margin-top:var(--space-3)">${stored ? '저장된 평가입니다. 모든 작품을 심사한 뒤 목록 하단의 [심사 완료] 버튼을 눌러 순위 확인 및 서명을 진행해 주세요.' : '항목별 숫자를 선택한 뒤 [이 작품 점수 저장]을 누르세요.'}</p>
   </form>`;
+}
+
+function prelimListTableHtml(entries, drafts) {
+  if (!entries.length) {
+    return emptyState({ title: '심사할 작품이 없습니다', body: '운영자가 해당 기관의 예선 평가 대상 작품을 배정하면 이곳에 표시됩니다.' });
+  }
+  return `<div class="fj-table-wrap" data-testid="juror-entry-list"><table class="fj-table fj-prelim-table">
+    <caption>예선 심사 대상 리스트 (블라인드 · ${entries.length}건)</caption>
+    <thead>
+      <tr>
+        <th>번호</th>
+        <th>작품명</th>
+        <th>첨부</th>
+        <th>심사 상태</th>
+        <th>바로가기</th>
+        <th>상세 · 심사</th>
+      </tr>
+    </thead>
+    <tbody>${entries.map((entry, index) => {
+      const raw = effectiveRawOf(entry, drafts);
+      const hasFull = !entry.scoreBlocked && validRawFestaScores(raw);
+      const isSaved = !entry.scoreBlocked && (validRawFestaScores(entry.myRawScores) || validFestaScores(entry.myScores)) && !drafts.has(entry.id);
+      const convTotal = hasFull ? totalOf(convertRawFestaScores(raw)) : null;
+      const rawSum = hasFull ? rawTotalOf(raw) : null;
+      const deployHref = safeUrl(entry.deployUrl);
+      const githubHref = safeUrl(entry.githubUrl);
+      return `<tr class="${hasFull ? 'is-complete' : 'is-unscored'}" data-juror-entry="${attr(entry.id)}">
+        <td>${index + 1}</td>
+        <td>
+          <strong>${esc(entry.title)}</strong>
+          ${entry.localOnly ? '<div style="margin-top:4px"><span class="badge badge--soft">로컬 실행</span></div>' : ''}
+        </td>
+        <td style="white-space:nowrap">${(entry.files || []).length}건</td>
+        <td style="white-space:nowrap">
+          ${entry.scoreBlocked
+            ? '<span class="badge badge--soft">평가 제외</span>'
+            : hasFull
+              ? `<span class="badge ${isSaved ? 'badge--open' : 'badge--gold'}">${isSaved ? '✓ 저장됨' : '● 임시 선택'}</span><br><span class="field__hint">${convTotal}점 (원점수 ${rawSum}/40)</span>`
+              : '<span class="badge badge--soft">○ 미심사</span>'}
+        </td>
+        <td style="white-space:nowrap">
+          <div class="fj-actions">
+            ${deployHref
+              ? `<a class="btn btn--outline btn--sm" href="${attr(deployHref)}" target="_blank" rel="noopener noreferrer" data-testid="prelim-service-link">서비스<span class="sr-only">: ${esc(entry.title)} (새 창)</span></a>`
+              : '<span class="badge badge--soft">로컬</span>'}
+            ${githubHref
+              ? `<a class="btn btn--outline btn--sm" href="${attr(githubHref)}" target="_blank" rel="noopener noreferrer" data-testid="prelim-github-link">깃허브<span class="sr-only">: ${esc(entry.title)} (새 창)</span></a>`
+              : ''}
+          </div>
+        </td>
+        <td style="white-space:nowrap">
+          <div class="fj-actions">
+            <button type="button" class="btn btn--outline btn--sm" data-prelim-detail="${attr(entry.id)}" data-testid="prelim-detail-btn">상세보기</button>
+            ${entry.scoreBlocked
+              ? '<button type="button" class="btn btn--quiet btn--sm" disabled>평가 제외</button>'
+              : `<button type="button" class="btn ${isSaved ? 'btn--outline' : 'btn--primary'} btn--sm" data-prelim-score="${attr(entry.id)}" data-testid="prelim-score-btn">${isSaved ? '점수 수정' : '심사하기'}</button>`}
+          </div>
+        </td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table></div>`;
+}
+
+function openPrelimDetailModal({ entry, index, accessQuery, filePath, onOpenScore }) {
+  openModal({
+    testid: 'prelim-detail-modal',
+    badgeHtml: `<span class="badge badge--soft">작품 ${index + 1} · 블라인드 심사 (소속·성명 비공개)</span>
+      ${entry.localOnly ? '<span class="badge badge--soft">로컬 실행 작품</span>' : '<span class="badge badge--open">웹 배포 작품</span>'}`,
+    title: entry.title,
+    bodyHtml: `
+      <div>${linksHtml(entry)}</div>
+      <section aria-label="작품 설명">
+        <h3 style="font-size:1.7rem;margin-bottom:var(--space-2)">📝 작품 설명</h3>
+        <div class="fj-description card card--flat" data-testid="juror-description" style="padding:var(--space-4);margin:0">${esc(entry.description)}</div>
+      </section>
+      <section aria-label="첨부 자료">
+        <h3 style="font-size:1.7rem;margin-bottom:var(--space-2)">📎 첨부 자료 (${(entry.files || []).length}건)</h3>
+        ${filesHtml(entry, accessQuery, filePath)}
+      </section>
+      ${entry.scoreBlocked ? `<p class="notice notice--info" data-testid="juror-score-blocked">${esc(entry.scoreBlocked)}</p>` : ''}`,
+    footerHtml: `
+      ${entry.scoreBlocked ? '' : '<button type="button" class="btn btn--primary" data-switch-to-score>심사하기</button>'}
+      <button type="button" class="btn btn--quiet" data-modal-close>닫기</button>`,
+    onMount(dialog, close) {
+      dialog.querySelector('[data-switch-to-score]')?.addEventListener('click', () => {
+        close();
+        onOpenScore?.();
+      });
+    },
+  });
+}
+
+function openPrelimScoreModal({ entry, index, drafts, isSaving, setSaving, onSave, onAfterClose, onOpenDetail }) {
+  let savedAndClosed = false;
+  openModal({
+    testid: 'prelim-score-modal',
+    badgeHtml: `<span class="badge badge--soft">작품 ${index + 1} · 블라인드 심사</span>`,
+    title: entry.title,
+    bodyHtml: `
+      <div class="fj-head" style="align-items:center">
+        ${linksHtml(entry)}
+        <button type="button" class="btn btn--quiet btn--sm" data-switch-to-detail>작품 상세보기</button>
+      </div>
+      ${prelimScoreFormHtml(entry, effectiveRawOf(entry, drafts))}`,
+    footerHtml: '<button type="button" class="btn btn--quiet" data-modal-close>닫기</button>',
+    onMount(dialog, close) {
+      const form = dialog.querySelector('[data-testid="juror-score-form"]');
+      dialog.querySelector('[data-switch-to-detail]')?.addEventListener('click', () => {
+        if (isSaving()) return;
+        close();
+        onOpenDetail?.();
+      });
+      if (!form) return;
+
+      const updateReadout = (raw) => {
+        const valid = validRawFestaScores(raw);
+        const totalEl = dialog.querySelector('[data-testid="juror-score-total"]');
+        if (totalEl) {
+          totalEl.textContent = valid
+            ? `원점수 ${rawTotalOf(raw)} / 40점 · 환산 ${totalOf(convertRawFestaScores(raw))} / 100점`
+            : '네 항목 모두 1~10 숫자를 선택해 주세요.';
+        }
+      };
+
+      form.querySelectorAll('[data-pick-criterion]').forEach((btn) => btn.addEventListener('click', () => {
+        if (isSaving()) return;
+        const ci = Number(btn.dataset.pickCriterion);
+        const val = Number(btn.dataset.pickValue);
+        const next = [...effectiveRawOf(entry, drafts)];
+        next[ci] = val;
+        drafts.set(entry.id, next);
+        form.elements[`score${ci}`].value = String(val);
+        const rowEl = form.querySelector(`[data-criterion-row="${ci}"]`);
+        rowEl.querySelectorAll('[data-pick-criterion]').forEach((b) => {
+          const picked = Number(b.dataset.pickValue) === val;
+          b.classList.toggle('is-picked', picked);
+          b.setAttribute('aria-checked', String(picked));
+        });
+        const readout = form.querySelector(`[data-criterion-readout="${ci}"]`);
+        if (readout) {
+          readout.innerHTML = `<strong>${val} / 10</strong> <span class="field__hint">(환산 ${val * RUBRIC[ci].weight}/${RUBRIC[ci].max}점)</span>`;
+        }
+        updateReadout(next);
+        statusText(form.querySelector('[data-score-status]'), '선택한 점수는 아직 서버에 저장되지 않았습니다. [이 작품 점수 저장]을 눌러 주세요.');
+      }));
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (isSaving()) return;
+        const rawScores = effectiveRawOf(entry, drafts);
+        const status = form.querySelector('[data-score-status]');
+        if (!validRawFestaScores(rawScores)) {
+          statusText(status, '네 항목 모두 1~10 사이의 숫자를 선택해 주세요.', true);
+          return;
+        }
+        setSaving(true);
+        form.querySelector('fieldset').disabled = true;
+        statusText(status, '점수를 저장하고 있습니다.');
+        try {
+          const outcome = await onSave(rawScores, { close });
+          setSaving(false);
+          if (outcome === 'closed') { savedAndClosed = true; return; }
+          savedAndClosed = true;
+          close();
+          onAfterClose?.();
+        } catch (error) {
+          setSaving(false);
+          if (dialog.isConnected) {
+            statusText(status, error.message, true);
+            form.querySelector('fieldset').disabled = false;
+          }
+        }
+      });
+    },
+    onClose() {
+      if (!savedAndClosed) onAfterClose?.();
+    },
+  });
 }
 
 /** 이메일 로그인 심사위원 & 관리자용 예선 심사 화면 (`/festa/prelim/:panel`) */
@@ -499,7 +678,6 @@ export async function festaPrelimView(mount, { panel }) {
   const title = PANELS[panel].prelimLabel;
   const root = shell(mount, false, title, '소속과 성명이 비공개된 블라인드 방식으로 4개 항목(1~10점)을 심사합니다.');
   let session = null;
-  let selectedId = null;
   let step = 'score'; // 'score' | 'review' | 'completed'
   let scoreMode = 'both';
   let saving = false;
@@ -753,42 +931,24 @@ export async function festaPrelimView(mount, { panel }) {
 
     const completedCount = eligible.filter((entry) => validRawFestaScores(effectiveRawOf(entry, drafts))).length;
     const savedCount = eligible.filter((entry) => validRawFestaScores(entry.myRawScores) || validFestaScores(entry.myScores)).length;
-    if (!entries.some((entry) => entry.id === selectedId)) {
-      selectedId = entries.find((entry) => !entry.scoreBlocked && !validRawFestaScores(effectiveRawOf(entry, drafts)))?.id || entries[0]?.id;
-    }
-    const current = entries.find((entry) => entry.id === selectedId);
-    const currentIndex = entries.findIndex((entry) => entry.id === selectedId);
-    const currentRaw = current ? effectiveRawOf(current, drafts) : [null, null, null, null];
 
     root.innerHTML = `${renderHeader()}
       <section class="card fj-stack">
         <div class="fj-head">
           <div>
-            <h3>심사 대상 작품 목록 (블라인드)</h3>
-            <p class="fj-note">소속과 성명은 비공개 처리되어 있습니다. 모든 작품의 4개 항목(1~10점)을 선택한 뒤 아래 [심사 완료]를 눌러 주세요.</p>
+            <h3>심사 대상 작품 리스트 (블라인드)</h3>
+            <p class="fj-note">소속과 성명은 비공개 처리되어 있습니다. 리스트에서 바로가기(서비스·깃허브), 상세보기(팝업), 심사하기(팝업)를 이용해 모든 작품을 평가한 뒤 아래 [심사 완료]를 눌러 주세요.</p>
           </div>
           <span data-testid="juror-progress" class="festa-total">작성 ${completedCount} / ${eligible.length}건 (저장 ${savedCount}건)</span>
         </div>
         <div class="fj-progress">
           <progress max="${Math.max(1, eligible.length)}" value="${completedCount}" aria-label="예선 심사 진행 현황"></progress>
         </div>
-        <nav class="fj-entry-nav" aria-label="심사할 작품 선택" data-testid="juror-entry-list">
-          ${entries.map((entry, index) => {
-            const raw = effectiveRawOf(entry, drafts);
-            const hasFull = !entry.scoreBlocked && validRawFestaScores(raw);
-            const isSaved = !entry.scoreBlocked && (validRawFestaScores(entry.myRawScores) || validFestaScores(entry.myScores)) && !drafts.has(entry.id);
-            const convTotal = hasFull ? totalOf(convertRawFestaScores(raw)) : null;
-            const active = entry.id === selectedId;
-            return `<button type="button" class="fj-entry-choice ${hasFull ? 'is-complete' : 'is-unscored'}${active ? ' is-current' : ''}" data-juror-entry="${attr(entry.id)}" ${active ? 'aria-current="step"' : ''}>
-              <span class="fj-entry-choice__title">${index + 1}. ${esc(entry.title)}</span>
-              <span class="fj-entry-choice__status">${active ? '현재 · ' : ''}${entry.scoreBlocked ? '평가 제외' : hasFull ? `${isSaved ? '✓ 저장됨' : '● 선택 완료'} (${convTotal}점)` : '○ 미심사'}</span>
-            </button>`;
-          }).join('')}
-        </nav>
+        ${prelimListTableHtml(entries, drafts)}
         ${incompleteReport ? `<div class="notice notice--warn" role="alert" data-testid="prelim-incomplete-alert">
           <div>
             <strong>아직 모든 항목의 심사가 완료되지 않았습니다 (${incompleteReport.length}개 작품 미완료)</strong>
-            <ul class="fj-incomplete-list">${incompleteReport.map((item) => `<li><button type="button" class="btn btn--quiet btn--sm" data-jump-entry="${attr(item.entryId)}">${item.index + 1}. ${esc(item.title)}</button> — 미입력 항목: ${item.missing.map(esc).join(', ')}</li>`).join('')}</ul>
+            <ul class="fj-incomplete-list">${incompleteReport.map((item) => `<li><button type="button" class="btn btn--quiet btn--sm" data-jump-entry="${attr(item.entryId)}">${item.index + 1}. ${esc(item.title)} 심사하기</button> — 미입력 항목: ${item.missing.map(esc).join(', ')}</li>`).join('')}</ul>
           </div>
         </div>` : ''}
         <div class="fj-head" style="padding-top:var(--space-2);border-top:1px solid var(--hairline)">
@@ -798,25 +958,52 @@ export async function festaPrelimView(mount, { panel }) {
             <button type="button" class="btn btn--festa" data-testid="prelim-complete-btn" ${eligible.length ? '' : 'disabled'}>심사 완료 (전체 점검 · 순위 확인)</button>
           </div>
         </div>
-      </section>
-      <div data-juror-detail>
-        ${current ? `<article class="card fj-stack" data-testid="juror-entry-detail">
-          <div>
-            <span class="badge badge--soft">작품 ${currentIndex + 1} · 블라인드 심사</span>
-            <h2 class="page-title" style="font-size:2.3rem;margin-top:var(--space-2)">${esc(current.title)}</h2>
-          </div>
-          ${linksHtml(current)}
-          <section aria-label="작품 설명"><h3>📝 작품 설명</h3><div class="fj-description" data-testid="juror-description">${esc(current.description)}</div></section>
-          <section aria-label="첨부 자료"><h3 style="margin-bottom:var(--space-3)">📎 첨부 자료</h3>${filesHtml(current, `panel=${encodeURIComponent(panel)}`, '/festa/jury/prelim/file')}</section>
-          ${current.scoreBlocked ? `<p class="notice notice--info" data-testid="juror-score-blocked">${esc(current.scoreBlocked)}</p>` : prelimScoreFormHtml(current, currentRaw)}
-        </article>` : emptyState({ title: '심사할 작품이 없습니다', body: '운영자가 해당 기관의 예선 평가 대상 작품을 배정하면 이곳에 표시됩니다.' })}
-      </div>`;
+      </section>`;
 
-    root.querySelectorAll('[data-juror-entry], [data-jump-entry]').forEach((btn) => btn.addEventListener('click', () => {
+    const openDetailFor = (entryId) => {
+      const idx = entries.findIndex((item) => item.id === entryId);
+      if (idx < 0) return;
+      openPrelimDetailModal({
+        entry: entries[idx],
+        index: idx,
+        accessQuery: `panel=${encodeURIComponent(panel)}`,
+        filePath: '/festa/jury/prelim/file',
+        onOpenScore: () => openScoreFor(entryId),
+      });
+    };
+
+    const openScoreFor = (entryId) => {
+      const idx = entries.findIndex((item) => item.id === entryId);
+      if (idx < 0 || entries[idx].scoreBlocked) return;
+      const entry = entries[idx];
+      openPrelimScoreModal({
+        entry,
+        index: idx,
+        drafts,
+        isSaving: () => saving,
+        setSaving: (v) => { saving = v; },
+        onOpenDetail: () => openDetailFor(entryId),
+        onAfterClose: () => render(),
+        onSave: async (rawScores) => {
+          const res = await jury('prelim/score', { panel, entryId: entry.id, rawScores });
+          entry.myRawScores = [...res.myRawScores];
+          entry.myScores = [...res.myScores];
+          session.completion = null;
+          drafts.delete(entry.id);
+          incompleteReport = null;
+          toastOk(`원점수 ${rawTotalOf(rawScores)}/40점 · 환산 ${totalOf(res.myScores)}/100점으로 저장했습니다.`);
+        },
+      });
+    };
+
+    root.querySelectorAll('[data-prelim-detail]').forEach((btn) => btn.addEventListener('click', () => {
       if (saving) { toastErr('점수를 저장하고 있습니다. 잠시 기다려 주세요.'); return; }
-      selectedId = btn.dataset.jurorEntry || btn.dataset.jumpEntry;
-      render();
-      root.querySelector('[data-testid="juror-entry-detail"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      openDetailFor(btn.dataset.prelimDetail);
+    }));
+
+    root.querySelectorAll('[data-prelim-score], [data-jump-entry]').forEach((btn) => btn.addEventListener('click', () => {
+      if (saving) { toastErr('점수를 저장하고 있습니다. 잠시 기다려 주세요.'); return; }
+      openScoreFor(btn.dataset.prelimScore || btn.dataset.jumpEntry);
     }));
 
     root.querySelector('[data-testid="prelim-view-saved"]')?.addEventListener('click', () => {
@@ -843,70 +1030,6 @@ export async function festaPrelimView(mount, { panel }) {
       step = 'review';
       render();
       window.scrollTo({ top: 0, behavior: 'smooth' });
-    });
-
-    const form = root.querySelector('[data-testid="juror-score-form"]');
-    if (!form || !current) return;
-
-    const updateReadout = (raw) => {
-      const valid = validRawFestaScores(raw);
-      const totalEl = root.querySelector('[data-testid="juror-score-total"]');
-      if (totalEl) {
-        totalEl.textContent = valid
-          ? `원점수 ${rawTotalOf(raw)} / 40점 · 환산 ${totalOf(convertRawFestaScores(raw))} / 100점`
-          : '네 항목 모두 1~10 숫자를 선택해 주세요.';
-      }
-    };
-
-    form.querySelectorAll('[data-pick-criterion]').forEach((btn) => btn.addEventListener('click', () => {
-      if (saving) return;
-      const ci = Number(btn.dataset.pickCriterion);
-      const val = Number(btn.dataset.pickValue);
-      const next = [...effectiveRawOf(current, drafts)];
-      next[ci] = val;
-      drafts.set(current.id, next);
-      incompleteReport = null;
-      form.elements[`score${ci}`].value = String(val);
-      const rowEl = form.querySelector(`[data-criterion-row="${ci}"]`);
-      rowEl.querySelectorAll('[data-pick-criterion]').forEach((b) => {
-        const picked = Number(b.dataset.pickValue) === val;
-        b.classList.toggle('is-picked', picked);
-        b.setAttribute('aria-checked', String(picked));
-      });
-      const readout = form.querySelector(`[data-criterion-readout="${ci}"]`);
-      if (readout) {
-        readout.innerHTML = `<strong>${val} / 10</strong> <span class="field__hint">(환산 ${val * RUBRIC[ci].weight}/${RUBRIC[ci].max}점)</span>`;
-      }
-      updateReadout(next);
-      statusText(form.querySelector('[data-score-status]'), '선택한 점수는 아직 서버에 저장되지 않았습니다. [이 작품 점수 저장] 또는 마지막 [심사 완료]를 눌러 주세요.');
-    }));
-
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      if (saving) return;
-      const rawScores = effectiveRawOf(current, drafts);
-      const status = form.querySelector('[data-score-status]');
-      if (!validRawFestaScores(rawScores)) {
-        statusText(status, '네 항목 모두 1~10 사이의 숫자를 선택해 주세요.', true);
-        return;
-      }
-      saving = true;
-      form.querySelector('fieldset').disabled = true;
-      statusText(status, '점수를 저장하고 있습니다.');
-      try {
-        const res = await jury('prelim/score', { panel, entryId: current.id, rawScores });
-        current.myRawScores = [...res.myRawScores];
-        current.myScores = [...res.myScores];
-        session.completion = null;
-        drafts.delete(current.id);
-        saving = false;
-        render();
-        statusText(root.querySelector('[data-score-status]'), `원점수 ${rawTotalOf(rawScores)}/40점 · 환산 ${totalOf(res.myScores)}/100점으로 저장했습니다.`);
-      } catch (error) {
-        saving = false;
-        statusText(status, error.message, true);
-        form.querySelector('fieldset').disabled = false;
-      }
     });
   };
 
@@ -1135,98 +1258,128 @@ export async function festaJurorView(mount, { invite, memberMode = false, runId 
     const completed = isPrelim
       ? eligible.filter((entry) => validRawFestaScores(effectiveRawOf(entry, drafts))).length
       : eligible.filter((entry) => validFestaScores(entry.myScores)).length;
-    if (!entries.some((entry) => entry.id === selectedId)) {
-      selectedId = entries.find((entry) => !entry.scoreBlocked && (isPrelim ? !validRawFestaScores(effectiveRawOf(entry, drafts)) : !validFestaScores(entry.myScores)))?.id || entries[0]?.id;
-    }
-    const current = entries.find((entry) => entry.id === selectedId);
-    const currentIndex = entries.findIndex((entry) => entry.id === selectedId);
-    root.innerHTML = `${jurorHeader(session, memberMode, runId)}<section class="card fj-stack"><div class="fj-head"><h3>작품 목록${isPrelim ? ' (블라인드)' : ''}</h3><span data-testid="juror-progress" class="festa-total">평가 ${completed} / ${eligible.length}건 완료</span></div><div class="fj-progress"><progress max="${Math.max(1, eligible.length)}" value="${completed}" aria-label="평가 완료 현황"></progress><p class="fj-note">현재 작품은 분홍 테두리, 완료 작품은 초록색으로 표시됩니다. 점수는 저장 버튼을 눌러야 반영됩니다.</p></div><nav class="fj-entry-nav" aria-label="심사할 작품 선택" data-testid="juror-entry-list">${entries.map((entry, index) => {
-      const done = !entry.scoreBlocked && (isPrelim ? validRawFestaScores(effectiveRawOf(entry, drafts)) : validFestaScores(entry.myScores));
-      const active = entry.id === selectedId;
-      return `<button type="button" class="fj-entry-choice ${done ? 'is-complete' : 'is-unscored'}${active ? ' is-current' : ''}" data-juror-entry="${attr(entry.id)}" ${active ? 'aria-current="step"' : ''}><span class="fj-entry-choice__title">${index + 1}. ${esc(entry.title)}</span><span class="fj-entry-choice__status">${active ? '현재 · ' : ''}${entry.scoreBlocked ? '평가 제외' : done ? '✓ 평가 완료' : '○ 미평가'}</span></button>`;
-    }).join('')}</nav>${isPrelim && incompleteReport ? `<div class="notice notice--warn" role="alert" data-testid="prelim-incomplete-alert"><div><strong>미완료 작품 ${incompleteReport.length}건</strong><ul class="fj-incomplete-list">${incompleteReport.map((item) => `<li><button type="button" class="btn btn--quiet btn--sm" data-jump-entry="${attr(item.entryId)}">${item.index + 1}. ${esc(item.title)}</button> — ${item.missing.map(esc).join(', ')}</li>`).join('')}</ul></div></div>` : ''}${isPrelim ? `<div class="fj-actions">${session.completion ? '<button type="button" class="btn btn--outline" data-testid="prelim-view-saved">저장된 결과·PDF 보기</button>' : ''}<button type="button" class="btn btn--festa" data-testid="prelim-complete-btn">심사 완료 (전체 점검 · 순위 확인)</button></div>` : ''}</section><div data-juror-detail>${current ? (isPrelim ? prelimDetailHtml(current, currentIndex) : detailHtml(current)) : emptyState({ title: '평가할 작품이 없습니다', body: '운영자에게 평가 대상 구성을 확인해 주세요.' })}</div>`;
-    bindSignout();
-    root.querySelectorAll('[data-juror-entry], [data-jump-entry]').forEach((button) => button.addEventListener('click', () => {
-      if (saving) { toastErr('평가를 저장하고 있습니다. 잠시 기다려 주세요.'); return; }
-      selectedId = button.dataset.jurorEntry || button.dataset.jumpEntry;
-      render();
-    }));
-    root.querySelector('[data-testid="prelim-view-saved"]')?.addEventListener('click', () => { step = 'completed'; render(); });
-    root.querySelector('[data-testid="prelim-complete-btn"]')?.addEventListener('click', () => {
-      const missing = [];
-      entries.forEach((entry, index) => {
-        if (entry.scoreBlocked) return;
-        const raw = effectiveRawOf(entry, drafts);
-        const missingNames = RUBRIC.map((rule, i) => (Number.isInteger(raw[i]) && raw[i] >= 1 && raw[i] <= 10 ? null : rule.name)).filter(Boolean);
-        if (missingNames.length) missing.push({ entryId: entry.id, index, title: entry.title, missing: missingNames });
-      });
-      if (missing.length) {
-        incompleteReport = missing;
-        toastErr(`미심사 작품 ${missing.length}건이 있습니다.`);
-        render();
-        return;
-      }
-      incompleteReport = null;
-      step = 'review';
-      render();
-    });
-
-    const form = root.querySelector('[data-testid="juror-score-form"]');
-    if (!form || !current) return;
-
     if (isPrelim) {
-      form.querySelectorAll('[data-pick-criterion]').forEach((btn) => btn.addEventListener('click', () => {
-        if (saving) return;
-        const ci = Number(btn.dataset.pickCriterion);
-        const val = Number(btn.dataset.pickValue);
-        const next = [...effectiveRawOf(current, drafts)];
-        next[ci] = val;
-        drafts.set(current.id, next);
-        incompleteReport = null;
-        form.elements[`score${ci}`].value = String(val);
-        const rowEl = form.querySelector(`[data-criterion-row="${ci}"]`);
-        rowEl.querySelectorAll('[data-pick-criterion]').forEach((b) => {
-          const picked = Number(b.dataset.pickValue) === val;
-          b.classList.toggle('is-picked', picked);
-          b.setAttribute('aria-checked', String(picked));
+      const savedCount = eligible.filter((entry) => validRawFestaScores(entry.myRawScores) || validFestaScores(entry.myScores)).length;
+      root.innerHTML = `${jurorHeader(session, false, runId)}
+        <section class="card fj-stack">
+          <div class="fj-head">
+            <div>
+              <h3>심사 대상 작품 리스트 (블라인드)</h3>
+              <p class="fj-note">소속과 성명은 비공개 처리되어 있습니다. 리스트에서 바로가기(서비스·깃허브), 상세보기(팝업), 심사하기(팝업)를 이용해 모든 작품을 평가한 뒤 아래 [심사 완료]를 눌러 주세요.</p>
+            </div>
+            <span data-testid="juror-progress" class="festa-total">평가 ${completed} / ${eligible.length}건 완료 (저장 ${savedCount}건)</span>
+          </div>
+          <div class="fj-progress">
+            <progress max="${Math.max(1, eligible.length)}" value="${completed}" aria-label="평가 완료 현황"></progress>
+          </div>
+          ${prelimListTableHtml(entries, drafts)}
+          ${incompleteReport ? `<div class="notice notice--warn" role="alert" data-testid="prelim-incomplete-alert"><div><strong>미완료 작품 ${incompleteReport.length}건</strong><ul class="fj-incomplete-list">${incompleteReport.map((item) => `<li><button type="button" class="btn btn--quiet btn--sm" data-jump-entry="${attr(item.entryId)}">${item.index + 1}. ${esc(item.title)} 심사하기</button> — ${item.missing.map(esc).join(', ')}</li>`).join('')}</ul></div></div>` : ''}
+          <div class="fj-actions">
+            ${session.completion ? '<button type="button" class="btn btn--outline" data-testid="prelim-view-saved">저장된 결과·PDF 보기</button>' : ''}
+            <button type="button" class="btn btn--festa" data-testid="prelim-complete-btn" ${eligible.length ? '' : 'disabled'}>심사 완료 (전체 점검 · 순위 확인)</button>
+          </div>
+        </section>`;
+      bindSignout();
+
+      const openDetailFor = (entryId) => {
+        const idx = entries.findIndex((item) => item.id === entryId);
+        if (idx < 0) return;
+        openPrelimDetailModal({
+          entry: entries[idx],
+          index: idx,
+          accessQuery: accessQuery(),
+          filePath: '/festa/jury/file',
+          onOpenScore: () => openScoreFor(entryId),
         });
-        const readout = form.querySelector(`[data-criterion-readout="${ci}"]`);
-        if (readout) readout.innerHTML = `<strong>${val} / 10</strong> <span class="field__hint">(환산 ${val * RUBRIC[ci].weight}/${RUBRIC[ci].max}점)</span>`;
-        const valid = validRawFestaScores(next);
-        root.querySelector('[data-testid="juror-score-total"]').textContent = valid
-          ? `원점수 ${rawTotalOf(next)} / 40점 · 환산 ${totalOf(convertRawFestaScores(next))} / 100점`
-          : '네 항목 모두 1~10 숫자를 선택해 주세요.';
-        statusText(form.querySelector('[data-score-status]'), '변경한 점수는 아직 저장되지 않았습니다.');
+      };
+
+      const openScoreFor = (entryId) => {
+        const idx = entries.findIndex((item) => item.id === entryId);
+        if (idx < 0 || entries[idx].scoreBlocked) return;
+        const entry = entries[idx];
+        openPrelimScoreModal({
+          entry,
+          index: idx,
+          drafts,
+          isSaving: () => saving,
+          setSaving: (v) => { saving = v; },
+          onOpenDetail: () => openDetailFor(entryId),
+          onAfterClose: () => render(),
+          onSave: async (rawScores, { close }) => {
+            try {
+              const res = await jury('score', { ...access(), entryId: entry.id, rawScores });
+              entry.myRawScores = [...res.myRawScores];
+              entry.myScores = [...res.myScores];
+              session.completion = null;
+              drafts.delete(entry.id);
+              incompleteReport = null;
+              toastOk(`원점수 ${rawTotalOf(rawScores)}/40점 · 환산 ${totalOf(res.myScores)}/100점으로 저장했습니다.`);
+            } catch (error) {
+              if (error.status === 401 || error.status === 403) {
+                close();
+                showUnlock('심사 로그인이 만료되었거나 변경되었습니다. 본인의 개인 코드로 다시 입장해 주세요.');
+                return 'closed';
+              }
+              if (error.status === 409) {
+                close();
+                try { await loadSession(); } catch { /* ignore */ }
+                toastErr(error.message);
+                return 'closed';
+              }
+              throw error;
+            }
+          },
+        });
+      };
+
+      root.querySelectorAll('[data-prelim-detail]').forEach((btn) => btn.addEventListener('click', () => {
+        if (saving) { toastErr('평가를 저장하고 있습니다. 잠시 기다려 주세요.'); return; }
+        openDetailFor(btn.dataset.prelimDetail);
       }));
-      form.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        if (saving) return;
-        const rawScores = effectiveRawOf(current, drafts);
-        const status = form.querySelector('[data-score-status]');
-        if (!validRawFestaScores(rawScores)) { statusText(status, '네 항목 모두 1~10 사이의 숫자를 선택해 주세요.', true); return; }
-        saving = true;
-        form.querySelector('fieldset').disabled = true;
-        statusText(status, '점수를 저장하고 있습니다.');
-        try {
-          const res = await jury('score', { ...access(), entryId: current.id, rawScores });
-          current.myRawScores = [...res.myRawScores];
-          current.myScores = [...res.myScores];
-          session.completion = null;
-          drafts.delete(current.id);
-          saving = false;
+      root.querySelectorAll('[data-prelim-score], [data-jump-entry]').forEach((btn) => btn.addEventListener('click', () => {
+        if (saving) { toastErr('평가를 저장하고 있습니다. 잠시 기다려 주세요.'); return; }
+        openScoreFor(btn.dataset.prelimScore || btn.dataset.jumpEntry);
+      }));
+      root.querySelector('[data-testid="prelim-view-saved"]')?.addEventListener('click', () => { step = 'completed'; render(); });
+      root.querySelector('[data-testid="prelim-complete-btn"]')?.addEventListener('click', () => {
+        const missing = [];
+        entries.forEach((entry, index) => {
+          if (entry.scoreBlocked) return;
+          const raw = effectiveRawOf(entry, drafts);
+          const missingNames = RUBRIC.map((rule, i) => (Number.isInteger(raw[i]) && raw[i] >= 1 && raw[i] <= 10 ? null : rule.name)).filter(Boolean);
+          if (missingNames.length) missing.push({ entryId: entry.id, index, title: entry.title, missing: missingNames });
+        });
+        if (missing.length) {
+          incompleteReport = missing;
+          toastErr(`미심사 작품 ${missing.length}건이 있습니다.`);
           render();
-          statusText(root.querySelector('[data-score-status]'), `원점수 ${rawTotalOf(rawScores)}/40점 · 환산 ${totalOf(res.myScores)}/100점으로 저장했습니다.`);
-        } catch (error) {
-          saving = false;
-          if (error.status === 401 || error.status === 403) showUnlock('심사 로그인이 만료되었거나 변경되었습니다. 본인의 개인 코드로 다시 입장해 주세요.');
-          else if (error.status === 409) {
-            try { await loadSession(); if (session.status === 'open') statusText(root.querySelector('[data-score-status]'), error.message, true); }
-            catch { statusText(status, error.message, true); form.querySelector('fieldset').disabled = false; }
-          } else { statusText(status, error.message, true); form.querySelector('fieldset').disabled = false; }
+          return;
         }
+        incompleteReport = null;
+        step = 'review';
+        render();
       });
       return;
     }
+
+    if (!entries.some((entry) => entry.id === selectedId)) {
+      selectedId = entries.find((entry) => !entry.scoreBlocked && !validFestaScores(entry.myScores))?.id || entries[0]?.id;
+    }
+    const current = entries.find((entry) => entry.id === selectedId);
+    root.innerHTML = `${jurorHeader(session, memberMode, runId)}<section class="card fj-stack"><div class="fj-head"><h3>작품 목록</h3><span data-testid="juror-progress" class="festa-total">평가 ${completed} / ${eligible.length}건 완료</span></div><div class="fj-progress"><progress max="${Math.max(1, eligible.length)}" value="${completed}" aria-label="평가 완료 현황"></progress><p class="fj-note">현재 작품은 분홍 테두리, 완료 작품은 초록색으로 표시됩니다. 여러 명의 평가 점수는 작품별 평균 점수로 자동 계산됩니다.</p></div><nav class="fj-entry-nav" aria-label="심사할 작품 선택" data-testid="juror-entry-list">${entries.map((entry, index) => {
+      const done = !entry.scoreBlocked && validFestaScores(entry.myScores);
+      const active = entry.id === selectedId;
+      return `<button type="button" class="fj-entry-choice ${done ? 'is-complete' : 'is-unscored'}${active ? ' is-current' : ''}" data-juror-entry="${attr(entry.id)}" ${active ? 'aria-current="step"' : ''}><span class="fj-entry-choice__title">${index + 1}. ${esc(entry.title)}</span><span class="fj-entry-choice__status">${active ? '현재 · ' : ''}${entry.scoreBlocked ? '평가 제외' : done ? '✓ 평가 완료' : '○ 미평가'}</span></button>`;
+    }).join('')}</nav></section><div data-juror-detail>${current ? detailHtml(current) : emptyState({ title: '평가할 작품이 없습니다', body: '운영자에게 평가 대상 구성을 확인해 주세요.' })}</div>`;
+    bindSignout();
+    root.querySelectorAll('[data-juror-entry]').forEach((button) => button.addEventListener('click', () => {
+      if (saving) { toastErr('평가를 저장하고 있습니다. 잠시 기다려 주세요.'); return; }
+      selectedId = button.dataset.jurorEntry;
+      render();
+    }));
+
+    const form = root.querySelector('[data-testid="juror-score-form"]');
+    if (!form || !current) return;
 
     const values = () => RUBRIC.map((_, index) => { const value = form.elements[`score${index}`].value.trim(); return value === '' ? null : Number(value); });
     form.addEventListener('input', () => {
@@ -1262,17 +1415,6 @@ export async function festaJurorView(mount, { invite, memberMode = false, runId 
         } else { statusText(status, error.message, true); form.querySelector('fieldset').disabled = false; }
       }
     });
-  };
-
-  const prelimDetailHtml = (entry, index) => {
-    const raw = effectiveRawOf(entry, drafts);
-    return `<article class="card fj-stack" data-testid="juror-entry-detail">
-      <div><span class="badge badge--soft">작품 ${index + 1} · 블라인드 심사</span><h2 class="page-title" style="font-size:2.3rem;margin-top:var(--space-2)">${esc(entry.title)}</h2></div>
-      ${linksHtml(entry)}
-      <section aria-label="작품 설명"><h3>📝 작품 설명</h3><div class="fj-description" data-testid="juror-description">${esc(entry.description)}</div></section>
-      <section aria-label="첨부 자료"><h3 style="margin-bottom:var(--space-3)">📎 첨부 자료</h3>${filesHtml(entry, accessQuery(), '/festa/jury/file')}</section>
-      ${entry.scoreBlocked ? `<p class="notice notice--info" data-testid="juror-score-blocked">${esc(entry.scoreBlocked)}</p>` : prelimScoreFormHtml(entry, raw)}
-    </article>`;
   };
 
   const detailHtml = (entry) => {

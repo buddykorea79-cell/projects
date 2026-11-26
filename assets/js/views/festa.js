@@ -2,7 +2,7 @@
 import { festa, FESTA_RUBRIC as RUBRIC } from '../festa.js';
 import { currentUser, isAdmin } from '../auth.js';
 import { esc, attr, fmtDate, fmtBytes, isEmail } from '../utils.js';
-import { spinner, emptyState, toastOk, toastErr, confirmModal, stat } from '../ui.js';
+import { spinner, emptyState, toastOk, toastErr, confirmModal, openModal, stat } from '../ui.js';
 import { adminNavBar } from './festa-tally.js';
 
 const TITLE = '말하는 대로, 바이브 코딩 페스타';
@@ -429,9 +429,32 @@ function adminOverviewTable(entries) {
       <td>${entry.localOnly ? '<span class="badge badge--soft">로컬</span>' : '<span class="badge badge--open">배포</span>'}</td>
       <td>${(entry.files || []).length}건</td>
       <td>${esc(fmtDate(entry.updatedAt || entry.createdAt, true))}</td>
-      <td style="white-space:nowrap"><a class="btn btn--outline btn--sm" href="#/admin/festa/entry/${attr(encodeURIComponent(entry.id))}" target="_blank" rel="noopener noreferrer" data-testid="festa-admin-detail-link" data-entry-id="${attr(entry.id)}">상세 보기<span class="sr-only">: ${esc(entry.title)} (새 창)</span></a></td>
+      <td style="white-space:nowrap"><button type="button" class="btn btn--outline btn--sm" data-testid="festa-admin-detail-link" data-open-entry-modal="${attr(entry.id)}" data-entry-id="${attr(entry.id)}">상세보기</button></td>
     </tr>`).join('')}</tbody>
   </table></div>`;
+}
+
+async function openAdminEntryDetailModal(entry, index) {
+  const filesMarkup = await attachments(entry.files);
+  openModal({
+    testid: 'festa-admin-entry-modal',
+    badgeHtml: `<span class="badge badge--soft">${index + 1}번 · ${esc(entry.institution || '소속기관 확인 필요')}</span>
+      <span class="badge ${entry.localOnly ? 'badge--soft' : 'badge--open'}">${entry.localOnly ? '로컬 실행 작품' : '웹 배포 작품'}</span>`,
+    title: entry.title,
+    subtitle: `${entry.institution || '소속기관 미지정'} · ${entry.author?.name || '이름 없음'} (${entry.author?.email || ''})`,
+    bodyHtml: `
+      <p class="field__hint" style="margin:0">접수 번호: ${esc(entry.id)} · 최초 접수 ${esc(fmtDate(entry.createdAt, true))} · 최종 수정 ${esc(fmtDate(entry.updatedAt || entry.createdAt, true))}</p>
+      <div>${entryLinks(entry)}</div>
+      <section aria-label="작품 설명">
+        <h3 style="font-size:1.7rem;margin-bottom:var(--space-2)">📝 작품 설명</h3>
+        <div class="festa-description card card--flat" data-testid="festa-admin-entry-detail" style="padding:var(--space-4);line-height:1.8">${esc(entry.description)}</div>
+      </section>
+      <section aria-label="첨부 파일">
+        <h3 style="font-size:1.7rem;margin-bottom:var(--space-2)">📎 첨부 파일 (${(entry.files || []).length}건)</h3>
+        ${filesMarkup}
+      </section>`,
+    footerHtml: '<button type="button" class="btn btn--primary" data-modal-close>닫기</button>',
+  });
 }
 
 export async function festaAdminEntryView(mount, { entryId }) {
@@ -513,7 +536,7 @@ export async function festaAdminView(mount) {
       <div class="festa-entry-head">
         <div>
           <h2 id="festaAdminListTitle" class="page-title" style="font-size:2.4rem">전체 접수 현황 · ${entries.length}건</h2>
-          <p class="page-sub">기관별 접수 현황과 전체 제출 작품 리스트를 한눈에 확인하고, [상세 보기]로 새 창에서 작품 내용과 첨부 파일을 열람합니다.</p>
+          <p class="page-sub">기관별 접수 현황과 전체 제출 작품 리스트를 한눈에 확인하고, [상세보기] 버튼으로 팝업 화면에서 작품 내용과 첨부 파일을 열람합니다.</p>
         </div>
         <button type="button" class="btn btn--outline btn--sm" data-festa-refresh>현황 새로고침</button>
       </div>
@@ -550,6 +573,16 @@ export async function festaAdminView(mount) {
     root.querySelectorAll('[data-org-filter]').forEach((button) => button.addEventListener('click', () => {
       selectedOrg = button.dataset.orgFilter;
       refresh().catch((error) => toastErr(error.message));
+    }));
+    root.querySelectorAll('[data-open-entry-modal]').forEach((button) => button.addEventListener('click', async () => {
+      const targetId = button.dataset.openEntryModal;
+      const idx = filtered.findIndex((item) => item.id === targetId);
+      const entry = idx >= 0 ? filtered[idx] : entries.find((item) => item.id === targetId);
+      if (!entry) return;
+      button.disabled = true;
+      try { await openAdminEntryDetailModal(entry, idx >= 0 ? idx : entries.indexOf(entry)); }
+      catch (error) { toastErr(error.message); }
+      finally { if (button.isConnected) button.disabled = false; }
     }));
     root.querySelector('[data-festa-refresh]').addEventListener('click', async (event) => {
       event.currentTarget.disabled = true;

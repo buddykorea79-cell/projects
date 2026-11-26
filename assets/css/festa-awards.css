@@ -21,104 +21,230 @@
 .festa-awards-project { margin-top:2rem; font-size:1.8rem; line-height:1.6; font-weight:600; }
 .festa-awards-prize { display:inline-block; border-top:1px solid #dcccae; padding-top:1.5rem; margin-top:2rem; font-size:1.7rem; color:#7a612f; font-weight:600; }
 .festa-awards-footer { text-align:center; margin:5rem 0 0; color:#70877e; font-size:1.3rem; letter-spacing:.05em; }
-.festa-awards--presentation { background:radial-gradient(ellipse at top,#234e43,#102f29); color:#fffdf5; }
-.festa-awards--presentation .festa-awards-heading > p:last-child { color:#cfddd3; }
-.festa-awards--presentation .btn--outline { border-color:#d6c29c; color:#f0dfbe; }
-.festa-awards--presentation .btn--quiet { color:#d9e2dc; }
-.festa-awards--presentation .btn--primary { color:#153e36; background:#e1c28a; border-color:#e1c28a; }
-.festa-awards-stage { max-width:1250px; margin:3rem auto 0; min-height:40rem; }
-.festa-awards-stage-label { text-align:center; color:#ebd4aa; font-size:3.4rem; letter-spacing:.12em; margin-bottom:3rem; font-weight:600; }
-.festa-awards-curtain { display:grid; gap:2.4rem; text-align:center; padding:7rem 2rem; border:1px solid #bda16a66; border-radius:14px; }
-.festa-awards-curtain h2 { font-size:clamp(2.5rem,5vw,4.5rem); }
-.festa-awards-curtain p { color:#d7c9aa; }
 .festa-awards-preview-list { display:grid; gap:1.6rem; margin-top:2.4rem; }
 .festa-awards-preview-list article { display:grid; grid-template-columns:10rem minmax(0,1fr); gap:.8rem 1.6rem; padding:1.6rem; border:1px solid var(--hairline); border-radius:8px; overflow-wrap:anywhere; }
 .festa-awards-preview-list article span:nth-last-child(-n+2) { grid-column:2; }
+
 /* 발표 중에만 화면 전체를 사용합니다. 다른 화면으로 이동하면 자동 복구됩니다. */
 body:has(.festa-awards--presentation) > .gnav,
 body:has(.festa-awards--presentation) > .foot,
 body:has(.festa-awards--presentation) > .frap { display:none; }
 .main:has(> .festa-awards--presentation) { padding-top:0; }
 html:has(.festa-awards--presentation) { scroll-behavior:auto; }
-.festa-awards--presentation { min-height:100vh; min-height:100svh; padding:2.4rem 3.2rem; }
+
+.festa-awards--presentation {
+  min-height:100vh; min-height:100svh; padding:2.4rem 3.2rem 4rem;
+  background:radial-gradient(ellipse at top,#234e43,#102f29 70%,#0b221e);
+  color:#fffdf5;
+}
 .festa-awards--presentation .festa-awards-mark,
 .festa-awards--presentation .festa-awards-footer { display:none; }
-.festa-awards--presentation .festa-awards-eyebrow { font-size:1.4rem; }
-.festa-awards--presentation .festa-awards-heading h1 { font-size:3.2rem; line-height:1.3; margin-top:.4rem; }
-.festa-awards--presentation .festa-awards-heading > p:last-child { font-size:1.4rem; margin-top:.4rem; }
-.festa-awards--presentation .festa-awards-stage { width:100%; min-height:0; margin:2rem auto 0; }
-.festa-awards--presentation .festa-awards-stage-label { font-size:3.4rem; line-height:1.3; margin-bottom:1.8rem; }
-.festa-awards--presentation .festa-awards-card { padding:2.8rem 2.4rem; }
-.festa-awards--presentation .festa-awards-name { margin-top:1.2rem; font-size:4rem; line-height:1.3; }
-.festa-awards--presentation .festa-awards-institution { margin-top:.6rem; font-size:1.7rem; }
-.festa-awards--presentation .festa-awards-project { margin-top:1.4rem; font-size:2rem; line-height:1.5; }
-.festa-awards--presentation .festa-awards-prize { margin-top:1.6rem; padding-top:1.2rem; font-size:2rem; }
-.festa-awards--presentation .festa-awards-stage-controls { margin:2rem auto 0; }
-.festa-ceremony-progress { display:flex; align-items:center; justify-content:center; gap:1.8rem; margin:0 0 1.6rem; font-size:1.4rem; letter-spacing:.12em; color:#d5dcd4; }
-.festa-ceremony-progress span { color:#e8c788; border-left:1px solid #bda16a66; padding-left:1.8rem; }
-.festa-ceremony-frame { width:min(820px,100%); margin:auto; min-width:0; }
-.festa-awards--presentation .festa-awards-curtain,
-.festa-ceremony-ending { position:relative; display:grid; align-content:center; gap:1.8rem; min-height:34rem; padding:3.2rem; text-align:center; border:1px solid #bda16a88; border-radius:18px; background:linear-gradient(135deg,#315b4933,#082a2366); box-shadow:inset 0 0 0 8px #e8c78806,0 16px 70px #0002; animation:festa-curtain-in .45s ease-out; }
-.festa-awards--presentation .festa-awards-curtain::before,
-.festa-awards--presentation .festa-awards-curtain::after { content:''; width:5rem; height:1px; background:#c4a46488; position:absolute; top:50%; }
-.festa-awards--presentation .festa-awards-curtain::before { left:3rem; }
-.festa-awards--presentation .festa-awards-curtain::after { right:3rem; }
-.festa-ceremony-seal { font-size:4.6rem; line-height:1; color:#d3b675; }
-.festa-awards--presentation .festa-awards-curtain h2,
-.festa-ceremony-ending h2 { font-size:clamp(3rem,5vw,5.6rem); line-height:1.25; letter-spacing:.08em; color:#f4e3bf; }
-.festa-awards--presentation .festa-awards-curtain p,
-.festa-ceremony-ending p { color:#d7c9aa; line-height:1.6; }
-.festa-ceremony-reveal { position:relative; overflow:hidden; border-radius:18px; }
-.festa-ceremony-reveal::before,.festa-ceremony-reveal::after { content:''; position:absolute; z-index:2; top:0; bottom:0; width:50%; pointer-events:none; background:linear-gradient(90deg,#193c31,#315446); box-shadow:0 0 32px #0004; }
-.festa-ceremony-reveal::before { left:0; border-right:1px solid #cfb277; animation:festa-curtain-left .95s cubic-bezier(.65,0,.25,1) forwards; }
-.festa-ceremony-reveal::after { right:0; border-left:1px solid #cfb277; background:linear-gradient(90deg,#315446,#193c31); animation:festa-curtain-right .95s cubic-bezier(.65,0,.25,1) forwards; }
-.festa-ceremony-reveal .festa-awards-name { animation:festa-name-rise .95s ease-out both; }
-.festa-awards--presentation .festa-ceremony-reveal .festa-awards-card { padding:2.4rem 3.2rem; border-color:#c7b98f; }
-.festa-awards--presentation .festa-ceremony-reveal .festa-awards-name { font-size:5.6rem; margin-top:.8rem; letter-spacing:.04em; }
-.festa-awards--presentation .festa-ceremony-reveal .festa-awards-certificate { font-size:1.6rem; }
-.festa-awards--presentation .festa-ceremony-reveal .festa-awards-prize { font-size:2.2rem; margin-top:1.2rem; }
-.festa-awards--presentation[data-award="excellence"] { background:radial-gradient(ellipse at 50% 25%,#344c47,#102f29 75%); }
-.festa-awards--presentation[data-award="excellence"] .festa-awards-curtain { border-color:#e4c690; box-shadow:inset 0 0 0 8px #e8c78809,0 0 60px #cfac6411; }
-.festa-awards--presentation[data-award="grand"] { background:radial-gradient(ellipse at 50% 45%,#494a32,#172f25 65%,#10271f); }
-.festa-awards--presentation[data-award="grand"] .festa-awards-curtain { border:2px solid #e7c57f; box-shadow:inset 0 0 0 8px #e8c78810,0 0 90px #e9c77e1c; }
-.festa-awards--presentation[data-award="grand"] .festa-ceremony-seal { color:#f5d99e; font-size:6rem; }
-.festa-awards--presentation[data-award="grand"] .festa-awards-stage-label { color:#f5d99e; font-size:3.8rem; }
-.festa-awards--presentation[data-award="grand"] .festa-awards-name { font-size:6.4rem; }
-.festa-awards--presentation[data-award="grand"] .festa-ceremony-reveal .festa-awards-card { overflow:hidden; }
-.festa-awards--presentation[data-award="grand"] .festa-ceremony-reveal .festa-awards-card::after { content:''; position:absolute; inset:-45% auto -45% 0; width:35%; background:linear-gradient(90deg,transparent,#f5dca080,transparent); pointer-events:none; animation:festa-gold-light 1.1s ease-in-out both; }
-.festa-awards--presentation [data-ceremony-action][aria-disabled="true"] { cursor:default; }
-@keyframes festa-curtain-in { from { opacity:0; } to { opacity:1; } }
-@keyframes festa-curtain-left { 0%,12% { transform:translateX(0); } 100% { transform:translateX(-105%); } }
-@keyframes festa-curtain-right { 0%,12% { transform:translateX(0); } 100% { transform:translateX(105%); } }
-@keyframes festa-name-rise { 0%,20% { opacity:0; transform:translateY(1.2rem); } 100% { opacity:1; transform:none; } }
-@keyframes festa-gold-light { 0%,25% { transform:translateX(-250%) rotate(24deg); } 100% { transform:translateX(450%) rotate(24deg); } }
-@media (prefers-reduced-motion:reduce) {
-  .festa-awards--presentation *, .festa-awards--presentation *::before, .festa-awards--presentation *::after { animation:none !important; transition:none !important; }
-  .festa-ceremony-reveal::before,.festa-ceremony-reveal::after,
-  .festa-awards--presentation .festa-ceremony-reveal .festa-awards-card::after { display:none; }
+.festa-awards--presentation .festa-awards-eyebrow { font-size:1.4rem; color:#ebd4aa; }
+.festa-awards--presentation .festa-awards-heading h1 { font-size:clamp(2.8rem,4.5vw,4rem); line-height:1.25; margin-top:.4rem; color:#fffdf5; }
+.festa-awards--presentation .festa-awards-heading > p:last-child { font-size:1.5rem; margin-top:.6rem; color:#cfddd3; }
+.festa-awards--presentation .btn--outline { border-color:#d6c29c; color:#f0dfbe; }
+.festa-awards--presentation .btn--outline:hover { background:rgba(225,194,138,.16); }
+.festa-awards--presentation .btn--quiet { color:#d9e2dc; }
+.festa-awards--presentation .btn--quiet:hover { background:rgba(255,255,255,.1); }
+.festa-awards--presentation .btn--primary { color:#153e36; background:#e1c28a; border-color:#e1c28a; font-weight:700; }
+.festa-awards--presentation .btn--primary:hover { background:#efd6a5; border-color:#efd6a5; }
+
+/* 6개 슬롯 시상 보드 (장려상 3 → 우수상 2 → 최우수상 1) */
+.festa-awards-stage { max-width:1200px; margin:2rem auto 0; width:100%; }
+.festa-ceremony-progress {
+  display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:1.4rem;
+  margin:0 0 2rem; padding:1rem 1.8rem; border-radius:999px;
+  background:rgba(255,255,255,.07); border:1px solid rgba(235,212,170,.25);
+  font-size:1.4rem; color:#e5eee9;
 }
+.festa-ceremony-progress strong { color:#f5d99e; font-variant-numeric:tabular-nums; }
+.festa-ceremony-complete-banner {
+  margin:0 auto 2rem; padding:1.4rem 2rem; border-radius:12px; text-align:center;
+  background:linear-gradient(135deg,rgba(235,212,170,.24),rgba(255,215,106,.12));
+  border:1px solid #f0d08a; color:#fff5db; font-size:1.8rem; font-weight:700;
+}
+.festa-ceremony-board { display:grid; gap:2.4rem; }
+.festa-ceremony-tier {
+  padding:2rem 2.4rem; border-radius:16px;
+  background:rgba(255,255,255,.04); border:1px solid rgba(214,194,156,.26);
+}
+.festa-ceremony-tier--grand {
+  background:linear-gradient(145deg,rgba(235,212,170,.12),rgba(16,47,41,.5));
+  border-color:rgba(240,208,138,.55);
+}
+.festa-ceremony-tier__head {
+  display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:.8rem;
+  margin-bottom:1.6rem;
+}
+.festa-ceremony-tier__head h2 { font-size:2.2rem; color:#f7e2b6; margin:0; }
+.festa-ceremony-tier__count { font-size:1.5rem; font-weight:500; color:#cfddd3; }
+.festa-ceremony-tier__sub { font-size:1.4rem; color:#d7c9aa; margin:0; }
+
+.festa-slot-grid { display:grid; gap:1.6rem; }
+.festa-slot-grid--encouragement { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.festa-slot-grid--excellence { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.festa-slot-grid--grand { grid-template-columns:minmax(0,1fr); max-width:560px; margin:0 auto; }
+
+.festa-slot {
+  display:grid; gap:.6rem; place-items:center; text-align:center; width:100%; min-width:0;
+  padding:2.2rem 1.8rem; border-radius:14px; cursor:pointer; color:#fffdf5;
+  border:1.5px solid rgba(214,194,156,.45);
+  background:linear-gradient(155deg,rgba(255,255,255,.09),rgba(16,47,41,.7));
+  transition:transform .16s ease, box-shadow .16s ease, border-color .16s ease, background .16s ease;
+  overflow-wrap:anywhere;
+}
+.festa-slot:hover {
+  transform:translateY(-3px); border-color:#f5d99e;
+  box-shadow:0 12px 32px rgba(0,0,0,.35), 0 0 0 2px rgba(245,217,158,.25);
+}
+.festa-slot.is-next {
+  border-color:#f7d784;
+  box-shadow:0 0 0 2px rgba(247,215,132,.35), 0 10px 28px rgba(0,0,0,.32);
+  animation:festa-slot-pulse 2.2s ease-in-out infinite;
+}
+.festa-slot--grand.is-sealed {
+  padding:2.8rem 2rem; border-width:2px; border-color:#f5d99e;
+  background:linear-gradient(145deg,rgba(245,217,158,.18),rgba(23,47,37,.85));
+}
+.festa-slot__seal { font-size:3.2rem; line-height:1; }
+.festa-slot__title { font-size:2.1rem; font-weight:700; color:#fff4d4; }
+.festa-slot__hint {
+  display:inline-block; padding:.4rem 1.2rem; border-radius:999px;
+  background:rgba(245,217,158,.18); color:#f9e4b4; font-size:1.35rem; font-weight:600;
+}
+.festa-slot__meta { font-size:1.25rem; color:#c8d8cf; margin-top:.4rem; }
+
+.festa-slot.is-revealed {
+  background:#fffdf8; color:#153e36; border-color:#dcccae;
+  box-shadow:0 8px 24px rgba(0,0,0,.22);
+}
+.festa-slot--grand.is-revealed {
+  background:linear-gradient(140deg,#fffdf8,#f7edd9); border:2px solid #c99d4a;
+}
+.festa-slot__badge {
+  display:inline-block; padding:.2rem 1rem; border-radius:999px;
+  background:#eef5f1; color:#153e36; font-size:1.2rem; font-weight:700;
+}
+.festa-slot--grand.is-revealed .festa-slot__badge { background:#f5e4bc; color:#6b4e18; }
+.festa-slot__name { font-size:2.4rem; color:#153e36; margin-top:.4rem; }
+.festa-slot__inst { font-size:1.4rem; color:#3d5b53; font-weight:600; }
+.festa-slot__project { font-size:1.45rem; color:#1e3932; font-weight:600; margin-top:.3rem; }
+.festa-slot.is-revealed .festa-slot__meta { color:#7a612f; font-weight:600; }
+
+/* 전체화면 수상 발표 팝업 + 폭죽 캔버스 */
+.festa-award-popup {
+  position:fixed; inset:0; z-index:300;
+  display:grid; place-items:center; padding:2rem;
+  overflow-y:auto;
+  background:radial-gradient(ellipse at 50% 35%,rgba(28,68,58,.96),rgba(10,30,26,.98));
+  animation:festa-popup-fade .28s ease-out;
+}
+.festa-award-popup--excellence {
+  background:radial-gradient(ellipse at 50% 30%,rgba(44,68,66,.96),rgba(11,30,27,.98));
+}
+.festa-award-popup--grand {
+  background:radial-gradient(ellipse at 50% 35%,rgba(84,72,34,.96),rgba(16,34,27,.98) 68%,rgba(10,24,19,.99));
+}
+.festa-fireworks-canvas {
+  position:fixed; inset:0; width:100%; height:100%; pointer-events:none; z-index:0;
+}
+.festa-award-popup__inner {
+  position:relative; z-index:1; width:min(860px,100%);
+  display:grid; gap:1.8rem; justify-items:center;
+  animation:festa-popup-rise .45s cubic-bezier(.22,1,.36,1);
+}
+.festa-award-popup__card {
+  width:100%; padding:2.8rem 3.2rem; border-radius:20px;
+  border:2px solid #d9be83; background:#fffdf8; color:#153e36;
+  box-shadow:0 24px 80px rgba(0,0,0,.48), 0 0 0 6px rgba(235,212,170,.16);
+  position:relative; overflow:hidden;
+}
+.festa-award-popup--grand .festa-award-popup__card {
+  border-color:#e5bd67; background:linear-gradient(145deg,#fffef9,#f8ebd0);
+  box-shadow:0 28px 90px rgba(0,0,0,.55), 0 0 50px rgba(245,217,158,.28);
+}
+.festa-award-popup--grand .festa-award-popup__card::after {
+  content:''; position:absolute; inset:-45% auto -45% 0; width:34%;
+  background:linear-gradient(90deg,transparent,rgba(255,232,168,.55),transparent);
+  pointer-events:none; animation:festa-gold-light 1.3s ease-in-out both;
+}
+.festa-award-popup__emblem { font-size:4.4rem; line-height:1; }
+.festa-award-popup__tier {
+  font-size:clamp(2.4rem,4vw,3.4rem); font-weight:800; letter-spacing:.1em;
+  color:#8f6823; margin-top:.6rem;
+}
+.festa-award-popup--grand .festa-award-popup__tier { color:#7a530f; font-size:clamp(2.8rem,4.5vw,3.8rem); }
+.festa-award-popup__card .festa-awards-certificate { font-size:1.8rem; font-weight:700; color:#5e471a; margin-top:.6rem; }
+.festa-award-popup__card .festa-awards-institution { font-size:1.8rem; font-weight:600; color:#2b4f46; margin-top:1.2rem; }
+.festa-award-popup__card .festa-awards-name {
+  font-size:clamp(3.6rem,6vw,5.4rem); line-height:1.2; margin-top:.4rem; color:#102f29;
+  letter-spacing:.04em;
+}
+.festa-award-popup__card .festa-awards-project {
+  font-size:clamp(1.7rem,2.4vw,2.2rem); margin-top:1.2rem; color:#1d4239; line-height:1.45;
+}
+.festa-award-popup__card .festa-awards-prize {
+  margin-top:1.4rem; padding-top:1.2rem; font-size:2rem; color:#7a530f; font-weight:700;
+}
+.festa-award-popup__congrats {
+  margin-top:1.6rem; padding:1.1rem 1.8rem; border-radius:12px;
+  background:#edf6f1; color:#153e36; font-size:1.75rem; font-weight:700; line-height:1.5;
+}
+.festa-award-popup--grand .festa-award-popup__congrats {
+  background:#f4e3bc; color:#5c3d09;
+}
+.festa-award-popup__actions {
+  display:flex; flex-wrap:wrap; justify-content:center; gap:1rem;
+}
+
+@keyframes festa-slot-pulse {
+  0%,100% { box-shadow:0 0 0 2px rgba(247,215,132,.35), 0 10px 28px rgba(0,0,0,.32); }
+  50% { box-shadow:0 0 0 5px rgba(247,215,132,.55), 0 14px 36px rgba(247,215,132,.22); }
+}
+@keyframes festa-popup-fade { from { opacity:0; } to { opacity:1; } }
+@keyframes festa-popup-rise {
+  0% { opacity:0; transform:translateY(2rem) scale(.95); }
+  100% { opacity:1; transform:none; }
+}
+@keyframes festa-gold-light {
+  0%,20% { transform:translateX(-250%) rotate(24deg); }
+  100% { transform:translateX(450%) rotate(24deg); }
+}
+
+@media (prefers-reduced-motion:reduce) {
+  .festa-awards--presentation *, .festa-awards--presentation *::before, .festa-awards--presentation *::after,
+  .festa-award-popup, .festa-award-popup *, .festa-award-popup *::after {
+    animation:none !important; transition:none !important;
+  }
+  .festa-award-popup--grand .festa-award-popup__card::after { display:none; }
+}
+
 @media (min-width:900px) {
-  .festa-awards--presentation { display:grid; grid-template-columns:minmax(0,1fr) auto; grid-template-rows:auto 1fr; gap:2rem 2.4rem; }
+  .festa-awards--presentation { display:grid; grid-template-columns:minmax(0,1fr) auto; grid-template-rows:auto 1fr; gap:1.6rem 2.4rem; }
   .festa-awards--presentation .festa-awards-heading { justify-self:start; margin:0; text-align:left; }
   .festa-awards--presentation .festa-awards-controls { align-self:start; margin:0; }
-  .festa-awards--presentation .festa-awards-stage { grid-column:1 / -1; align-self:center; margin:0 auto; }
+  .festa-awards--presentation .festa-awards-stage { grid-column:1 / -1; align-self:start; margin:0 auto; }
 }
-@media (max-width:700px) {
+
+@media (max-width:760px) {
   .festa-awards { padding:3rem 1.6rem; }
-  .festa-awards-grid,.festa-awards-grid--excellence { grid-template-columns:minmax(0,1fr); }
-  .festa-awards-heading h1 { font-size:3.2rem; }
-  .festa-awards-card { padding:2.8rem 2rem; }
-  .festa-awards-curtain { padding:5rem 1.6rem; }
+  .festa-awards-grid,.festa-awards-grid--excellence,
+  .festa-slot-grid--encouragement,.festa-slot-grid--excellence { grid-template-columns:minmax(0,1fr); }
+  .festa-awards-heading h1 { font-size:3rem; }
+  .festa-awards-card { padding:2.4rem 1.8rem; }
   .festa-awards-preview-list article { grid-template-columns:minmax(0,1fr); }
   .festa-awards-preview-list article span:nth-last-child(-n+2) { grid-column:auto; }
-  .festa-awards--presentation { padding:2.4rem 1.6rem; }
-  .festa-awards--presentation .festa-awards-controls { margin:2rem auto; }
-  .festa-awards--presentation .festa-awards-card { padding:2.4rem 2rem; }
-  .festa-awards--presentation .festa-awards-name { font-size:3.2rem; }
-  .festa-awards--presentation .festa-awards-curtain,.festa-ceremony-ending { padding:3.2rem 1.8rem; min-height:30rem; }
-  .festa-awards--presentation .festa-awards-curtain::before,.festa-awards--presentation .festa-awards-curtain::after { display:none; }
-  .festa-awards--presentation .festa-ceremony-reveal .festa-awards-card { padding:2.4rem 2rem; }
-  .festa-awards--presentation .festa-ceremony-reveal .festa-awards-name { font-size:4rem; }
-  .festa-awards--presentation .festa-ceremony-reveal .festa-awards-project { font-size:1.8rem; }
+  .festa-awards--presentation { padding:2rem 1.4rem 3rem; }
+  .festa-awards--presentation .festa-awards-controls { margin:1.6rem auto; }
+  .festa-ceremony-tier { padding:1.6rem; }
+  .festa-award-popup { padding:1.2rem; }
+  .festa-award-popup__card { padding:2rem 1.6rem; }
+  .festa-award-popup__card .festa-awards-name { font-size:3.2rem; }
+  .festa-award-popup__congrats { font-size:1.5rem; }
 }
-@media print { .festa-awards-controls,.festa-awards-stage-controls { display:none; } .festa-awards { padding:0; background:white; } .festa-awards-card { break-inside:avoid; box-shadow:none; } }
+
+@media print {
+  .festa-awards-controls,.festa-awards-stage-controls,.festa-award-popup__actions,.festa-fireworks-canvas { display:none; }
+  .festa-awards { padding:0; background:white; }
+  .festa-awards-card { break-inside:avoid; box-shadow:none; }
+}

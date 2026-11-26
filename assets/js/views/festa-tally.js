@@ -635,186 +635,329 @@ export async function festaPrelimResultsView(mount) {
 
 /* ----------------------------------------------------- 본선 심사 현황 -- */
 
+function finalShareUrl() {
+  const url = new URL(window.location.href);
+  url.search = '';
+  url.hash = '/festa/jury/final';
+  return url.href;
+}
+
+function compareRankingRows(a, b) {
+  if ((b.average ?? -1) !== (a.average ?? -1)) return (b.average ?? -1) - (a.average ?? -1);
+  for (let i = 0; i < 4; i += 1) {
+    const diff = (b.criterionAverages?.[i] ?? -1) - (a.criterionAverages?.[i] ?? -1);
+    if (diff !== 0) return diff;
+  }
+  return String(a.title || '').localeCompare(String(b.title || ''));
+}
+
+function buildFinalRankingRows(panel, targetEntries, cachedAwards) {
+  const recipients = cachedAwards?.publication?.recipients || cachedAwards?.recipients || [];
+  const awardByKey = new Map(recipients.map((rec) => [`${rec.name}::${rec.projectTitle}`, rec.awardName]));
+
+  let rows;
+  if (Array.isArray(cachedAwards?.ranking) && cachedAwards.ranking.length) {
+    rows = cachedAwards.ranking.map((row) => ({
+      entryId: row.entryId,
+      institution: row.institution,
+      title: row.projectTitle,
+      authorName: row.name,
+      scoreCount: row.ballotCount ?? 0,
+      criterionAverages: row.criterionAverages,
+      average: typeof row.average === 'number' && Number.isFinite(row.average) ? row.average : null,
+      awardName: awardByKey.get(`${row.name}::${row.projectTitle}`) || '',
+      projected: false,
+    }));
+  } else {
+    rows = targetEntries.map((entry) => {
+      const r = (panel.results || []).find((x) => x.entryId === entry.id) || {};
+      return {
+        entryId: entry.id,
+        institution: entry.institution || '',
+        title: entry.title,
+        authorName: entry.author?.name || '',
+        scoreCount: r.scoreCount || 0,
+        criterionAverages: r.criterionAverages || null,
+        average: typeof r.average === 'number' && Number.isFinite(r.average) ? r.average : null,
+        awardName: '',
+        projected: false,
+      };
+    }).sort(compareRankingRows);
+  }
+
+  let prevAvg = null;
+  let rankNum = 0;
+  rows.forEach((row, idx) => {
+    if (row.average === null) { row.rank = null; return; }
+    if (row.average !== prevAvg) { rankNum = idx + 1; prevAvg = row.average; }
+    row.rank = rankNum;
+  });
+
+  // 아직 미확정 상태이지만 점수가 있는 경우 기관별 2+1 규칙으로 예상 수상 구분 표시
+  if (!recipients.length && rows.length === 6 && rows.some((r) => r.average !== null)) {
+    const mois = rows.filter((r) => r.institution === '행정안전부').sort(compareRankingRows);
+    const iwest = rows.filter((r) => r.institution === '한국서부발전').sort(compareRankingRows);
+    if (mois.length >= 2 && iwest.length >= 1) {
+      const podium = [...mois.slice(0, 2), ...iwest.slice(0, 1)].sort(compareRankingRows);
+      const topIds = new Set(podium.map((r) => r.entryId));
+      podium.forEach((r, i) => {
+        if (r.average !== null) {
+          r.awardName = i === 0 ? '최우수상 (예상)' : '우수상 (예상)';
+          r.projected = true;
+        }
+      });
+      rows.filter((r) => !topIds.has(r.entryId)).forEach((r) => {
+        if (r.average !== null) {
+          r.awardName = '장려상 (예상)';
+          r.projected = true;
+        }
+      });
+    }
+  }
+  return { rows, recipients };
+}
+
 export async function festaFinalTallyView(mount) {
-  const root = shell(mount, 'tally-final', '본선 심사 현황', '2차 본선 심사 진행 현황과 수동심사 엑셀을 반영하고 최종 심사 결과 PDF를 내려받습니다.');
+  const root = shell(mount, 'tally-final', '본선 심사 현황', '심사위원에게 본선 심사 링크를 공유하여 여러 명이 평가하고 평균 점수로 집계합니다. 진행 상황을 확인하고 클릭 시점의 순위를 조회할 수 있습니다.');
   if (!isAdmin()) { root.innerHTML = '<p class="notice notice--err">관리자만 이용할 수 있습니다.</p>'; return; }
   let cachedAdmin = null;
   let cachedAwards = null;
-  const uploadState = { fileName: '', mode: 'merge', valid: [], errors: [] };
+  let rankSnapshot = null; // 관리자가 [현재 순위 확인]을 클릭한 시점의 순위 스냅샷
+
+  const fetchLatest = async () => {
+    [cachedAdmin, cachedAwards] = await Promise.all([
+      api('/festa/jury/admin'),
+      api('/festa/awards/preview').catch(() => null),
+    ]);
+  };
 
   const render = async (reload = true) => {
-    if (reload || !cachedAdmin) {
-      [cachedAdmin, cachedAwards] = await Promise.all([
-        api('/festa/jury/admin'),
-        api('/festa/awards/preview').catch(() => null),
-      ]);
-    }
+    if (reload || !cachedAdmin) await fetchLatest();
     if (!root.isConnected) return;
     const entries = Array.isArray(cachedAdmin.entries) ? cachedAdmin.entries : [];
     const panel = (cachedAdmin.panels || []).find((p) => p.key === 'final')
-      || { key: 'final', label: '2차 본선 평가', status: 'draft', entryIds: [], participants: [], manualJudges: [], adminTests: [], scores: [], results: [] };
+      || { key: 'final', label: '2차 본선 평가', status: 'draft', entryIds: [], participants: [], adminTests: [], scores: [], results: [] };
     const targetEntries = panel.entryIds.map((id) => entries.find((e) => e.id === id)).filter(Boolean);
-    const recipients = cachedAwards?.publication?.recipients || cachedAwards?.recipients || [];
-    const awardByTitleOrEntry = new Map();
-    for (const rec of recipients) {
-      awardByTitleOrEntry.set(`${rec.name}::${rec.projectTitle}`, rec.awardName);
-    }
-
-    const rankingSource = Array.isArray(cachedAwards?.ranking) && cachedAwards.ranking.length
-      ? cachedAwards.ranking.map((row, idx) => ({
-        rank: row.average !== null ? idx + 1 : null,
-        entryId: row.entryId,
-        institution: row.institution,
-        title: row.projectTitle,
-        authorName: row.name,
-        scoreCount: row.ballotCount ?? 0,
-        onlineCount: (panel.results.find((r) => r.entryId === row.entryId)?.onlineCount) ?? row.ballotCount ?? 0,
-        manualCount: (panel.results.find((r) => r.entryId === row.entryId)?.manualCount) ?? 0,
-        criterionAverages: row.criterionAverages,
-        average: row.average,
-        awardName: awardByTitleOrEntry.get(`${row.name}::${row.projectTitle}`) || '',
-      }))
-      : targetEntries.map((entry) => {
-        const r = (panel.results || []).find((x) => x.entryId === entry.id) || {};
-        return {
-          rank: null,
-          entryId: entry.id,
-          institution: entry.institution || '',
-          title: entry.title,
-          authorName: entry.author?.name || '',
-          scoreCount: r.scoreCount || 0,
-          onlineCount: r.onlineCount || 0,
-          manualCount: r.manualCount || 0,
-          criterionAverages: r.criterionAverages || null,
-          average: typeof r.average === 'number' && Number.isFinite(r.average) ? r.average : null,
-          awardName: '',
-        };
-      }).sort((a, b) => (b.average ?? -1) - (a.average ?? -1)).map((row, idx) => ({
-        ...row, rank: row.average !== null ? idx + 1 : null,
-      }));
-
-    const onlineParticipants = (panel.participants || []).filter((p) => !p.manual).length;
-    const manualCount = (panel.manualJudges || []).length;
+    const participants = Array.isArray(panel.participants) ? panel.participants : [];
     const totalScores = (panel.scores || []).length;
+    const avgScoresPerEntry = targetEntries.length ? (totalScores / targetEntries.length).toFixed(1) : '0.0';
     const statusLabel = cachedAwards?.published ? '수상 확정·공개 완료' : (STATUS[panel.status] || panel.status);
+    const shareUrl = finalShareUrl();
 
-    const participantNameOf = (row) => {
-      if (row.judgeName) return row.judgeName;
-      return (panel.participants || []).find((p) => p.id === row.judgeId)?.name
-        || (panel.manualJudges || []).find((j) => j.id === row.judgeId)?.name
-        || '평가 참여자';
-    };
+    const participantNameOf = (row) => (
+      row.judgeName
+      || participants.find((p) => p.id === row.judgeId)?.name
+      || '평가 참여자'
+    );
+
+    const entryProgressRows = targetEntries.map((entry, idx) => {
+      const r = (panel.results || []).find((x) => x.entryId === entry.id) || {};
+      const count = r.scoreCount || 0;
+      return { idx: idx + 1, entry, count };
+    });
 
     root.innerHTML = `<div class="fj-head">
-        <div>
+        <div class="fj-actions" style="align-items:center">
           <span class="badge ${cachedAwards?.published ? 'badge--gold' : panel.status === 'open' ? 'badge--open' : panel.status === 'closed' ? 'badge--closed' : 'badge--soft'}">${esc(statusLabel)}</span>
         </div>
         <div class="fj-actions">
-          <a class="btn btn--outline btn--sm" href="#/festa/jury/final">본선 화면 테스트</a>
+          <a class="btn btn--outline btn--sm" href="#/admin/festa/jury?panel=final">본선 대상·평가 설정</a>
+          <a class="btn btn--outline btn--sm" href="#/festa/jury/final">본선 심사 화면 테스트</a>
           <a class="btn btn--outline btn--sm" href="#/admin/festa/awards">수상작 확정·발표</a>
-          <button type="button" class="btn btn--quiet btn--sm" data-tally-refresh>새로고침</button>
+          <button type="button" class="btn btn--quiet btn--sm" data-tally-refresh>진행 상황 새로고침</button>
         </div>
       </div>
       ${adminTestNoticeHtml(panel)}
-      <div class="stat-row">
-        ${stat(`${targetEntries.length} / 6건`, '본선 대상 작품')}
-        ${stat(`${onlineParticipants}명`, '온라인 참여자')}
-        ${stat(`${manualCount}명`, '수동심사(엑셀) 참여자')}
-        ${stat(`${totalScores}건`, '총 유효 평가 수')}
-      </div>
-      <section class="card fj-stack" data-testid="final-tally-ranking">
+      <section class="card fj-stack" data-testid="final-share-link-card">
         <div class="fj-head">
           <div>
-            <h2 class="page-title" style="font-size:2.2rem">최종 심사 집계 결과</h2>
-            <p class="field__hint">행정안전부 상위 2명 + 한국서부발전 상위 1명 중 최우수상 1명·우수상 2명, 나머지 3명은 장려상으로 선정됩니다.</p>
-          </div>
-          <div class="fj-actions">
-            <button type="button" class="btn btn--primary" data-testid="final-tally-pdf" ${rankingSource.length ? '' : 'disabled'}>📄 최종 심사 결과 PDF 다운로드</button>
-            <button type="button" class="btn btn--outline" data-testid="final-tally-xlsx" ${rankingSource.length ? '' : 'disabled'}>📊 최종 집계 엑셀 다운로드</button>
+            <h2 class="page-title" style="font-size:2.1rem">🔗 본선 심사 링크 공유</h2>
+            <p class="field__hint">엑셀 업로드 없이 아래 링크를 심사위원(회원)에게 공유하면 여러 명이 각자 평가하고 작품별 평균 점수로 자동 계산됩니다.</p>
           </div>
         </div>
-        ${cachedAwards?.issues?.length ? `<div class="notice notice--warn"><div><strong>최종 확정 전 확인 사항</strong><ul style="margin-top:6px;padding-left:1.8rem;list-style:disc">${cachedAwards.issues.map((i) => `<li>${esc(i)}</li>`).join('')}</ul></div></div>` : ''}
-        ${rankingSource.length ? `<div class="fj-table-wrap"><table class="fj-table">
-          <thead><tr><th>순위</th><th>기관</th><th>작품명 · 제출자</th><th>평가수</th>${RUBRIC.map((r) => `<th>${r.name} (${r.max})</th>`).join('')}<th>최종 평균 (100)</th><th>수상 구분</th></tr></thead>
-          <tbody>${rankingSource.map((row) => `<tr>
-            <td>${row.rank ? `<span class="badge ${row.rank <= 3 ? 'badge--gold' : 'badge--soft'}">${row.rank}위</span>` : '—'}</td>
-            <td>${esc(row.institution)}</td>
-            <td><strong>${esc(row.title)}</strong><br><span class="field__hint">${esc(row.authorName)}</span></td>
-            <td>${row.scoreCount}건 <span class="field__hint">(${row.onlineCount}/${row.manualCount})</span></td>
-            ${[0, 1, 2, 3].map((i) => `<td>${fmtAvg(row.criterionAverages?.[i])}</td>`).join('')}
-            <td><strong>${row.average !== null ? `${row.average.toFixed(1)}점` : '—'}</strong></td>
-            <td>${row.awardName ? `<span class="badge badge--gold">${esc(row.awardName)}</span>` : '<span class="field__hint">대기</span>'}</td>
-          </tr>`).join('')}</tbody>
-        </table></div>` : emptyState({ title: '본선 대상 작품이 없습니다', body: '[심사위원·평가 대상 관리]의 2차 본선 평가 탭에서 본선 6작품을 먼저 선택해 주세요.' })}
-        ${recipients.length ? `<div class="card card--flat fj-stack">
-          <h4>${cachedAwards?.published ? '확정·공개된 수상 결과' : '예정 수상 결과 요약'}</h4>
-          <div class="festa-awards-preview-list">${recipients.map((rec) => `<article><span class="badge badge--gold">${esc(rec.awardName)}</span><strong>${esc(rec.institution)} · ${esc(rec.name)}</strong><span>${esc(rec.projectTitle)}</span><span>${esc(rec.certificate)} · ${esc(rec.prizeText)}</span></article>`).join('')}</div>
-        </div>` : ''}
+        <div class="fj-secret">
+          <label class="field">
+            <span class="field__label">본선 심사 링크</span>
+            <input class="input" value="${attr(shareUrl)}" readonly data-testid="final-share-url" />
+          </label>
+          <div class="fj-actions" style="margin-top:var(--space-2)">
+            <button type="button" class="btn btn--primary btn--sm" data-copy-final-link>본선 심사 링크 복사</button>
+            <a class="btn btn--outline btn--sm" href="#/admin/festa/jury?panel=final">본선 시작·마감 관리</a>
+          </div>
+          <p data-copy-final-status role="status" aria-live="polite" style="margin-top:6px"></p>
+        </div>
       </section>
-      ${manualExcelSectionHtml(panel, targetEntries, uploadState)}
-      <section class="card fj-stack">
-        <h3 style="font-size:2rem">평가 참여자별 상세 점수 내역</h3>
-        ${panel.scores.length ? `<div class="fj-table-wrap"><table class="fj-table" data-testid="final-tally-scores">
-          <thead><tr><th>구분</th><th>평가 참여자</th><th>작품</th>${RUBRIC.map((r) => `<th>${r.name} (${r.max})</th>`).join('')}<th>합계 (100)</th></tr></thead>
-          <tbody>${panel.scores.map((row) => `<tr>
-            <td>${row.source === 'excel' ? '<span class="badge badge--soft">수동(엑셀)</span>' : '<span class="badge badge--open">온라인</span>'}</td>
-            <td>${esc(participantNameOf(row))}</td>
-            <td>${esc(entries.find((e) => e.id === row.entryId)?.title || row.entryId)}</td>
-            ${[0, 1, 2, 3].map((i) => `<td>${row.scores[i]}</td>`).join('')}
-            <td><strong>${totalOf(row.scores) ?? '—'}점</strong></td>
+      <div class="stat-row">
+        ${stat(`${targetEntries.length} / 6건`, '본선 대상 작품')}
+        ${stat(`${participants.length}명`, '평가 참여 인원')}
+        ${stat(`${totalScores}건`, '누적 평가 건수')}
+        ${stat(`${avgScoresPerEntry}건`, '작품당 평균 평가')}
+      </div>
+      <section class="card fj-stack" data-testid="final-progress-entries">
+        <div class="fj-head">
+          <div>
+            <h2 class="page-title" style="font-size:2.1rem">📋 작품별 본선 심사 진행 상황</h2>
+            <p class="field__hint">각 본선 작품에 몇 명의 평가가 접수되었는지 실시간 진행 현황을 확인합니다. (점수·순위는 아래 [현재 순위 확인] 클릭 시 표시됩니다.)</p>
+          </div>
+        </div>
+        ${entryProgressRows.length ? `<div class="fj-table-wrap"><table class="fj-table">
+          <thead><tr><th>번호</th><th>소속기관</th><th>작품명 · 제출자</th><th>평가 완료 인원</th><th>진행 상태</th></tr></thead>
+          <tbody>${entryProgressRows.map(({ idx, entry, count }) => `<tr>
+            <td>${idx}</td>
+            <td>${esc(entry.institution || '미지정')}</td>
+            <td><strong>${esc(entry.title)}</strong><br><span class="field__hint">${esc(entry.author?.name || '')}</span></td>
+            <td><strong>${count}명</strong></td>
+            <td>${count > 0 ? `<span class="badge badge--open">평가 접수됨 (${count}건)</span>` : '<span class="badge badge--soft">평가 대기</span>'}</td>
           </tr>`).join('')}</tbody>
-        </table></div>` : '<p class="fj-note">아직 저장된 본선 평가 점수가 없습니다.</p>'}
+        </table></div>` : emptyState({ title: '본선 대상 작품이 없습니다', body: '[심사위원 관리]의 2차 본선 평가 탭에서 본선 6작품을 먼저 선택해 주세요.' })}
+      </section>
+      <section class="card fj-stack" data-testid="final-progress-participants">
+        <div class="fj-head">
+          <div>
+            <h3 style="font-size:2rem">👥 심사위원·참여자별 진행 현황 · ${participants.length}명</h3>
+            <p class="field__hint">본선 심사 링크로 접속해 점수를 저장한 참여자별 진행률입니다.</p>
+          </div>
+        </div>
+        ${participants.length ? `<div class="fj-table-wrap"><table class="fj-table">
+          <thead><tr><th>참여자</th><th>이메일</th><th>평가 진행</th><th>상태</th></tr></thead>
+          <tbody>${participants.map((person) => {
+            const doneAll = person.eligibleCount > 0 && person.scoredCount >= person.eligibleCount;
+            return `<tr>
+              <td><strong>${esc(person.name || '참여자')}</strong></td>
+              <td>${esc(person.email || '')}</td>
+              <td>${esc(person.scoredCount)} / ${esc(person.eligibleCount)}건</td>
+              <td>${doneAll ? '<span class="badge badge--open">✓ 전체 완료</span>' : '<span class="badge badge--gold">진행 중</span>'}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table></div>` : '<p class="fj-note">아직 본선 평가를 저장한 참여자가 없습니다.</p>'}
+      </section>
+      <section class="card fj-stack" data-testid="final-ranking-section">
+        <div class="fj-head">
+          <div>
+            <h2 class="page-title" style="font-size:2.2rem">🏆 실시간 순위 확인 (관리자 전용)</h2>
+            <p class="field__hint">관리자가 버튼을 클릭한 시점까지 저장된 여러 평가자의 평균 점수를 기준으로 현재 순위를 즉시 계산해 보여줍니다.</p>
+          </div>
+          <div class="fj-actions">
+            <button type="button" class="btn btn--primary" data-testid="final-check-ranking" ${targetEntries.length ? '' : 'disabled'}>${rankSnapshot ? '🔄 현재 순위 다시 확인' : '📊 현재 순위 확인 (클릭 시점 기준)'}</button>
+            ${rankSnapshot ? '<button type="button" class="btn btn--quiet btn--sm" data-hide-ranking>순위 숨기기</button>' : ''}
+          </div>
+        </div>
+        ${rankSnapshot ? `
+          <div class="notice notice--info fj-rank-snapshot" data-testid="final-ranking-timestamp">
+            <div class="fj-head" style="width:100%;align-items:center">
+              <div>
+                <strong>기준 시각: ${esc(fmtDate(rankSnapshot.checkedAt, true))} (클릭 시점 기준)</strong>
+                <p class="field__hint" style="margin-top:4px">참여 인원 ${rankSnapshot.participantCount}명 · 누적 평가 ${rankSnapshot.totalScores}건 · 작품별 평균 점수로 순위 산정</p>
+              </div>
+              <button type="button" class="btn btn--outline btn--sm" data-testid="final-tally-pdf" ${rankSnapshot.rows.length ? '' : 'disabled'}>📄 심사 결과 PDF 다운로드</button>
+            </div>
+          </div>
+          ${rankSnapshot.issues?.length ? `<div class="notice notice--warn"><div><strong>최종 확정 전 확인 사항</strong><ul style="margin-top:6px;padding-left:1.8rem;list-style:disc">${rankSnapshot.issues.map((i) => `<li>${esc(i)}</li>`).join('')}</ul></div></div>` : ''}
+          <div class="fj-table-wrap" data-testid="final-tally-ranking"><table class="fj-table">
+            <thead><tr><th>순위</th><th>기관</th><th>작품명 · 제출자</th><th>평가 인원</th>${RUBRIC.map((r) => `<th>${r.name} (${r.max})</th>`).join('')}<th>평균 점수 (100)</th><th>수상 구분</th></tr></thead>
+            <tbody>${rankSnapshot.rows.map((row) => `<tr>
+              <td>${row.rank ? `<span class="badge ${row.rank <= 3 ? 'badge--gold' : 'badge--soft'}">${row.rank}위</span>` : '—'}</td>
+              <td>${esc(row.institution)}</td>
+              <td><strong>${esc(row.title)}</strong><br><span class="field__hint">${esc(row.authorName)}</span></td>
+              <td>${row.scoreCount}명</td>
+              ${[0, 1, 2, 3].map((i) => `<td>${fmtAvg(row.criterionAverages?.[i])}</td>`).join('')}
+              <td><strong>${row.average !== null ? `${row.average.toFixed(1)}점` : '—'}</strong></td>
+              <td>${row.awardName ? `<span class="badge ${row.projected ? 'badge--soft' : 'badge--gold'}">${esc(row.awardName)}</span>` : '<span class="field__hint">대기</span>'}</td>
+            </tr>`).join('')}</tbody>
+          </table></div>
+          ${rankSnapshot.recipients.length ? `<div class="card card--flat fj-stack">
+            <h4>${rankSnapshot.published ? '확정·공개된 수상 결과' : '예정 수상 결과 요약'}</h4>
+            <div class="festa-awards-preview-list">${rankSnapshot.recipients.map((rec) => `<article><span class="badge badge--gold">${esc(rec.awardName)}</span><strong>${esc(rec.institution)} · ${esc(rec.name)}</strong><span>${esc(rec.projectTitle)}</span><span>${esc(rec.certificate)} · ${esc(rec.prizeText)}</span></article>`).join('')}</div>
+          </div>` : ''}
+          <details class="card card--flat">
+            <summary><strong>참여자별 상세 점수 내역 보기 (${rankSnapshot.scores.length}건)</strong></summary>
+            <div style="margin-top:var(--space-3)">
+              ${rankSnapshot.scores.length ? `<div class="fj-table-wrap"><table class="fj-table" data-testid="final-tally-scores">
+                <thead><tr><th>평가 참여자</th><th>작품</th>${RUBRIC.map((r) => `<th>${r.name} (${r.max})</th>`).join('')}<th>합계 (100)</th></tr></thead>
+                <tbody>${rankSnapshot.scores.map((row) => `<tr>
+                  <td>${esc(participantNameOf(row))}</td>
+                  <td>${esc(entries.find((e) => e.id === row.entryId)?.title || row.entryId)}</td>
+                  ${[0, 1, 2, 3].map((i) => `<td>${row.scores[i]}</td>`).join('')}
+                  <td><strong>${totalOf(row.scores) ?? '—'}점</strong></td>
+                </tr>`).join('')}</tbody>
+              </table></div>` : '<p class="fj-note">아직 저장된 본선 평가 점수가 없습니다.</p>'}
+            </div>
+          </details>
+        ` : `<p class="notice notice--info" data-testid="final-ranking-hidden">진행 현황 화면에서는 순위가 자동으로 노출되지 않습니다. 위 <strong>[현재 순위 확인]</strong> 버튼을 클릭하면 클릭 당시의 평균 점수 순위를 확인할 수 있습니다.</p>`}
       </section>`;
 
     root.querySelector('[data-tally-refresh]').addEventListener('click', () => render(true).catch((e) => toastErr(e.message)));
-    bindManualExcelHandlers(root, panel, targetEntries, uploadState, render);
+
+    root.querySelector('[data-copy-final-link]')?.addEventListener('click', async () => {
+      const input = root.querySelector('[data-testid="final-share-url"]');
+      const statusEl = root.querySelector('[data-copy-final-status]');
+      try {
+        await navigator.clipboard.writeText(input.value);
+        if (statusEl) { statusEl.className = 'notice notice--info'; statusEl.textContent = '본선 심사 링크를 복사했습니다. 심사위원에게 전달해 주세요.'; }
+        toastOk('본선 심사 링크를 복사했습니다.');
+      } catch {
+        input.focus(); input.select();
+        if (statusEl) { statusEl.className = 'notice notice--info'; statusEl.textContent = '링크를 선택했습니다. Ctrl+C로 복사해 주세요.'; }
+      }
+    });
+
+    root.querySelector('[data-clear-admin-test]')?.addEventListener('click', async () => {
+      if (!await confirmModal({ title: '관리자 테스트 기록을 초기화할까요?', body: '테스트 중 저장한 관리자 점수를 삭제합니다. 공식 집계에는 영향이 없습니다.', confirmLabel: '테스트 초기화' })) return;
+      try { await api('/festa/jury/test-clear', { panel: 'final', all: true }); toastOk('관리자 테스트 기록을 초기화했습니다.'); await render(true); }
+      catch (error) { toastErr(error.message); }
+    });
+
+    root.querySelector('[data-testid="final-check-ranking"]')?.addEventListener('click', async (event) => {
+      const btn = event.currentTarget;
+      btn.disabled = true;
+      try {
+        await fetchLatest();
+        const freshEntries = Array.isArray(cachedAdmin.entries) ? cachedAdmin.entries : [];
+        const freshPanel = (cachedAdmin.panels || []).find((p) => p.key === 'final')
+          || { key: 'final', status: 'draft', entryIds: [], participants: [], scores: [], results: [] };
+        const freshTargets = freshPanel.entryIds.map((id) => freshEntries.find((e) => e.id === id)).filter(Boolean);
+        const { rows, recipients } = buildFinalRankingRows(freshPanel, freshTargets, cachedAwards);
+        rankSnapshot = {
+          checkedAt: new Date().toISOString(),
+          rows,
+          recipients,
+          published: Boolean(cachedAwards?.published),
+          issues: Array.isArray(cachedAwards?.issues) ? cachedAwards.issues : [],
+          scores: Array.isArray(freshPanel.scores) ? freshPanel.scores : [],
+          participantCount: (freshPanel.participants || []).length,
+          totalScores: (freshPanel.scores || []).length,
+        };
+        await render(false);
+        toastOk('클릭 시점 기준 현재 순위를 불러왔습니다.');
+      } catch (error) {
+        toastErr(error.message);
+        btn.disabled = false;
+      }
+    });
+
+    root.querySelector('[data-hide-ranking]')?.addEventListener('click', () => {
+      rankSnapshot = null;
+      render(false);
+    });
 
     root.querySelector('[data-testid="final-tally-pdf"]')?.addEventListener('click', async (event) => {
       const btn = event.currentTarget;
+      if (!rankSnapshot) return;
       btn.disabled = true;
       try {
         await downloadTallyResultPdf({
           kind: 'final',
           title: '최종 심사 집계 결과표',
           statusLabel,
-          generatedAt: new Date().toISOString(),
-          summaryLine: `본선 작품 ${targetEntries.length}건 · 온라인 참여 ${onlineParticipants}명 · 수동(엑셀) ${manualCount}명 · 총 유효 평가 ${totalScores}건`,
-          rows: rankingSource,
-          recipients,
+          generatedAt: rankSnapshot.checkedAt,
+          summaryLine: `본선 작품 ${targetEntries.length}건 · 평가 참여 ${rankSnapshot.participantCount}명 · 누적 평가 ${rankSnapshot.totalScores}건`,
+          rows: rankSnapshot.rows,
+          recipients: rankSnapshot.recipients,
           note: '※ 선정 기준: 행정안전부 상위 2명·한국서부발전 상위 1명 중 평균 순 최우수상 1명·우수상 2명, 나머지 3명 장려상',
         }, '최종심사결과');
         toastOk('최종 심사 결과 PDF를 다운로드했습니다.');
       } catch (error) { toastErr(error.message); }
       finally { btn.disabled = false; }
-    });
-
-    root.querySelector('[data-testid="final-tally-xlsx"]')?.addEventListener('click', () => {
-      const summaryRows = [
-        ['순위', '접수번호', '소속기관', '작품명', '제출자', '전체평가수', '온라인수', '수동엑셀수', '문제인식(40)', '기능구현(30)', '완성도(20)', '확산가능성(10)', '최종평균(100)', '수상구분'],
-        ...rankingSource.map((r) => [
-          r.rank ?? '', r.entryId, r.institution, r.title, r.authorName,
-          r.scoreCount, r.onlineCount, r.manualCount,
-          r.criterionAverages?.[0] ?? '', r.criterionAverages?.[1] ?? '', r.criterionAverages?.[2] ?? '', r.criterionAverages?.[3] ?? '',
-          r.average != null ? Number(r.average.toFixed(2)) : '', r.awardName || '',
-        ]),
-      ];
-      const detailRows = [
-        ['구분', '평가자', '접수번호', '작품명', '문제인식(40)', '기능구현(30)', '완성도(20)', '확산가능성(10)', '합계(100)'],
-        ...panel.scores.map((row) => [
-          row.source === 'excel' ? '수동(엑셀)' : '온라인',
-          participantNameOf(row),
-          row.entryId,
-          entries.find((e) => e.id === row.entryId)?.title || row.entryId,
-          row.scores[0], row.scores[1], row.scores[2], row.scores[3], totalOf(row.scores),
-        ]),
-      ];
-      const blob = buildXlsx([
-        { name: '최종_집계순위', rows: summaryRows },
-        { name: '참여자별_상세점수', rows: detailRows },
-      ]);
-      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-      downloadBlob(blob, `최종심사집계_${stamp}.xlsx`);
-      toastOk('최종 심사 집계 엑셀을 다운로드했습니다.');
     });
   };
 

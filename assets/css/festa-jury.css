@@ -1,5 +1,5 @@
 .festa-jury { min-width: 0; overflow-wrap: anywhere; }
-.fj-stack { display: grid; gap: var(--space-4); min-width: 0; }
+.fj-stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); min-width: 0; }
 .fj-stack > * { min-width: 0; }
 .fj-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: var(--space-3); }
 .fj-head > * { min-width: 0; max-width: 100%; }
@@ -20,7 +20,7 @@
 .fj-pin-row .field { margin: 0; }
 .fj-secret { background: #fff7fa; border-inline-start: 4px solid #a51e57; padding: var(--space-3); border-radius: var(--radius-field); }
 .fj-secret .input { min-width: 0; width: 100%; }
-.fj-table-wrap { overflow-x: auto; max-width: 100%; }
+.fj-table-wrap { position: relative; overflow-x: auto; width: 100%; max-width: 100%; min-width: 0; }
 .fj-table { border-collapse: collapse; width: 100%; min-width: 600px; font-size: 1.4rem; }
 .fj-table th, .fj-table td { padding: 10px; text-align: left; border-bottom: 1px solid var(--hairline); vertical-align: top; }
 .fj-table th { background: var(--neutral-cool); font-weight: 700; }
@@ -115,6 +115,9 @@
 /* 관리자 테스트 중 배너 & 수동심사 엑셀 업로드 */
 .fj-test-banner { border-inline-start: 4px solid var(--gold, #cba258); }
 .fj-manual-upload { display: grid; gap: var(--space-3); padding: var(--space-3); background: var(--neutral-cool, #f6f7f6); border-radius: var(--radius-field); }
+.fj-prelim-table tr.is-complete { background: #f4faf6; }
+.fj-prelim-table td { vertical-align: middle; }
+.fj-rank-snapshot { border-inline-start: 4px solid var(--house-green, #1E3932); background: #f4faf6; }
 
 @media (max-width: 640px) {
   .fj-form-grid, .fj-assign-row { grid-template-columns: minmax(0,1fr); }
