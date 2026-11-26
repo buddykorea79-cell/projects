@@ -1360,6 +1360,8 @@ export async function membersView(mount) {
       return;
     }
 
+    const hasLegacyCandidates = all.some((x) => !x.googleLinked);
+
     rowsEl.innerHTML = `
       <div class="tablewrap">
         <table class="table">
@@ -1371,6 +1373,7 @@ export async function membersView(mount) {
               const st = m.status || 'active';
               const legacyEmail = m.linkRequestedEmail || '';
               const legacyMatch = legacyEmail ? byEmail.get(normEmail(legacyEmail)) : null;
+              const canAdminDirectLink = Boolean(m.googleLinked && !legacyEmail && hasLegacyCandidates);
               const statusBadge = st === 'pending'
                 ? '<span class="badge badge--gold">승인 대기</span>'
                 : st === 'blocked'
@@ -1420,7 +1423,8 @@ export async function membersView(mount) {
                         : legacyEmail ? `
                         <button class="btn btn--primary btn--sm" data-link-edit="${attr(m.email)}">이메일 수정·연계</button>
                         <button class="btn btn--outline btn--sm" data-approve="${attr(m.email)}">신규 승인</button>` : `
-                        <button class="btn btn--primary btn--sm" data-approve="${attr(m.email)}">승인</button>`}
+                        <button class="btn btn--primary btn--sm" data-approve="${attr(m.email)}">승인</button>
+                        ${canAdminDirectLink ? `<button class="btn btn--outline btn--sm" data-link-edit="${attr(m.email)}">기존 계정 연계</button>` : ''}`}
                       <button class="btn btn--danger btn--sm" data-remove="${attr(m.email)}">거절</button>`
                     : `
                       ${legacyEmail ? `
@@ -1428,7 +1432,10 @@ export async function membersView(mount) {
                           <button class="btn btn--primary btn--sm" data-link-approve="${attr(m.email)}" data-legacy="${attr(legacyEmail)}">연계 승인</button>
                           <button class="btn btn--outline btn--sm" data-link-edit="${attr(m.email)}">이메일 수정</button>`
                           : `<button class="btn btn--primary btn--sm" data-link-edit="${attr(m.email)}">이메일 수정·연계</button>`}
-                        <button class="btn btn--quiet btn--sm" data-link-reject="${attr(m.email)}">연계 거절</button>` : ''}
+                        <button class="btn btn--quiet btn--sm" data-link-reject="${attr(m.email)}">연계 거절</button>`
+                        : (st === 'active' && canAdminDirectLink)
+                          ? `<button class="btn btn--outline btn--sm" data-link-edit="${attr(m.email)}">기존 계정 연계</button>`
+                          : ''}
                       <button class="btn btn--quiet btn--sm" data-status="${attr(m.email)}"
                               data-next="${st === 'blocked' ? 'active' : 'blocked'}"
                               style="color:${st === 'blocked' ? 'var(--moss, var(--sb-green))' : 'var(--red)'}">
@@ -1656,6 +1663,7 @@ function openLinkEditModal({ target, allMembers, subCount }) {
   const targetInst = String(target.institution || '').trim().toLowerCase();
   const byEmail = new Map(allMembers.map((m) => [normEmail(m.email), m]));
   const isPending = (target.status || 'active') === 'pending';
+  const hasRequest = Boolean(target.linkRequestedEmail);
 
   // 연계 가능한 기존 비-구글 회원 후보 (동일 성명 → 동일 기관 → 이름순)
   const candidates = allMembers
@@ -1681,7 +1689,7 @@ function openLinkEditModal({ target, allMembers, subCount }) {
     root.innerHTML = `
       <div class="modal-scrim" data-scrim>
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mdLinkTitle" style="max-width:520px">
-          <h2 id="mdLinkTitle">기존 계정 연계 이메일 수정</h2>
+          <h2 id="mdLinkTitle">${hasRequest ? '기존 계정 연계 이메일 수정' : '기존 계정 연계'}</h2>
           <p style="color:var(--text-black-soft);font-size:1.4rem;line-height:1.6">
             대상 Google 계정: <strong>${esc(target.name || '—')}</strong>
             ${target.institution ? `(${esc(target.institution)})` : ''} · <code>${esc(target.email)}</code>
@@ -1716,9 +1724,9 @@ function openLinkEditModal({ target, allMembers, subCount }) {
 
           <div class="modal__actions" style="flex-wrap:wrap">
             <button type="button" class="btn btn--quiet" data-cancel>취소</button>
-            <button type="button" class="btn btn--outline" data-save-only>이메일만 저장</button>
+            ${hasRequest ? '<button type="button" class="btn btn--outline" data-save-only>이메일만 저장</button>' : ''}
             <button type="button" class="btn btn--primary" data-approve-link>
-              ${isPending ? '수정 후 승인 + 연계' : '수정 후 연계 승인'}
+              ${isPending ? (hasRequest ? '수정 후 승인 + 연계' : '승인 + 기존 계정 연계') : (hasRequest ? '수정 후 연계 승인' : '기존 계정 연계')}
             </button>
           </div>
         </div>
@@ -1748,7 +1756,7 @@ function openLinkEditModal({ target, allMembers, subCount }) {
       const match = val ? byEmail.get(val) : null;
       const canMerge = Boolean(validFormat && match && !match.googleLinked);
 
-      saveBtn.disabled = !validFormat;
+      if (saveBtn) saveBtn.disabled = !validFormat;
       approveBtn.disabled = !canMerge;
 
       if (!val) {
@@ -1784,7 +1792,7 @@ function openLinkEditModal({ target, allMembers, subCount }) {
     }
     inputEl.addEventListener('input', sync);
 
-    saveBtn.addEventListener('click', () => {
+    saveBtn?.addEventListener('click', () => {
       const val = normEmail(inputEl.value);
       if (!val || !isEmail(val) || val === targetEmail) return;
       close({ mode: 'update', legacyEmail: val });
